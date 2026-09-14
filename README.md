@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库处于阶段一开发。已经具备可运行的 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和部署脚本骨架；Binance、链上协议与 Telegram 的真实连接器尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库处于阶段一开发。已经具备可运行的 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库、规则引擎健康诊断和部署脚本骨架；Binance、链上协议与 Telegram 的真实连接器尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 技术栈
 

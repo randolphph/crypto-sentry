@@ -2,12 +2,16 @@ import { desc, eq, sql } from 'drizzle-orm';
 
 import type { AppDatabase } from '../../db/client.js';
 import { alerts, integrations, monitors } from '../../db/schema/index.js';
+import type { RuntimeHealthProvider } from './runtime-health.js';
 
 export class StatusService {
   private readonly startedAt = new Date().toISOString();
   private engineHeartbeatAt = this.startedAt;
 
-  public constructor(private readonly database: AppDatabase['db']) {}
+  public constructor(
+    private readonly database: AppDatabase['db'],
+    private readonly runtimeHealthProviders: RuntimeHealthProvider[] = [],
+  ) {}
 
   public heartbeat(now: Date = new Date()): void {
     this.engineHeartbeatAt = now.toISOString();
@@ -23,7 +27,10 @@ export class StatusService {
     const lastAlertAt = this.database.select({ createdAt: alerts.createdAt }).from(alerts).orderBy(desc(alerts.createdAt)).limit(1).get()?.createdAt ?? null;
     const sourceRows = this.database.select().from(integrations).where(eq(integrations.enabled, true)).all();
     const heartbeatAgeMs = Date.now() - Date.parse(this.engineHeartbeatAt);
-    const status = heartbeatAgeMs > 15_000 ? 'unhealthy' : error > 0 || stale > 0 ? 'degraded' : 'healthy';
+    const components = this.runtimeHealthProviders.map((provider) => provider.getHealth());
+    const status = heartbeatAgeMs > 15_000 || components.some((component) => component.status === 'error')
+      ? 'unhealthy'
+      : error > 0 || stale > 0 ? 'degraded' : 'healthy';
 
     return {
       status,
@@ -32,6 +39,7 @@ export class StatusService {
       engineHeartbeatAt: this.engineHeartbeatAt,
       monitors: { total: monitorRows.length, healthy, stale, error },
       alerts: { open, unacknowledged, lastAlertAt },
+      components,
       sources: sourceRows.map((row) => ({
         id: row.id,
         name: row.name,

@@ -1,6 +1,16 @@
 import { ZodError } from 'zod';
 import type { FastifyInstance } from 'fastify';
 
+interface RequestValidationIssue {
+  instancePath?: string;
+  params: { missingProperty?: string };
+  message?: string;
+}
+
+function isRequestValidationError(error: unknown): error is { validation: RequestValidationIssue[] } {
+  return typeof error === 'object' && error !== null && 'validation' in error && Array.isArray(error.validation);
+}
+
 export class AppError extends Error {
   public constructor(
     public readonly statusCode: number,
@@ -15,6 +25,16 @@ export class AppError extends Error {
 
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error, request, reply) => {
+    if (isRequestValidationError(error)) {
+      const fields = Object.fromEntries(error.validation.map((issue) => [
+        issue.instancePath || issue.params.missingProperty?.toString() || 'request',
+        issue.message ?? 'Invalid value',
+      ]));
+      return reply.status(400).send({
+        error: { code: 'INVALID_REQUEST', message: 'Request validation failed', fields },
+      });
+    }
+
     if (error instanceof ZodError) {
       const fields = Object.fromEntries(
         error.issues.map((issue) => [issue.path.join('.') || 'request', issue.message]),

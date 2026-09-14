@@ -64,7 +64,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const ruleExecutionStore = new RuleExecutionRepository(database.db);
   const ruleExecution = new RuleExecutionService(ruleExecutionStore);
   const alerts = new AlertRepository(database.db);
-  const status = new StatusService(database.db);
+  const status = new StatusService(database.db, [ruleExecution]);
   const latestMetrics = new LatestMetricStore();
   const metricPipeline = new MetricPipeline(monitors, latestMetrics, [ruleExecution]);
   app.decorate('metricPipeline', metricPipeline);

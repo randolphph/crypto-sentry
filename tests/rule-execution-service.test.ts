@@ -153,7 +153,8 @@ describe('RuleExecutionService', () => {
     const brokenRule = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, { name: 'Broken rule' }));
     const validRule = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, { name: 'Valid rule' }));
     fixture.database.db.update(rules).set({ threshold: 'not-a-number' }).where(eq(rules.id, brokenRule.id)).run();
-    const pipeline = createPipeline(fixture.database, fixture.monitors);
+    const execution = new RuleExecutionService(new RuleExecutionRepository(fixture.database.db));
+    const pipeline = new MetricPipeline(fixture.monitors, new LatestMetricStore(), [execution]);
 
     const result = await pipeline.ingest(priceMetric(fixture.monitor.id, '80', '2026-09-14T12:00:00.000Z'));
 
@@ -162,6 +163,14 @@ describe('RuleExecutionService', () => {
     expect(createdAlerts.total).toBe(1);
     expect(createdAlerts.items[0]?.ruleId).toBe(validRule.id);
     expect(fixture.database.db.select().from(ruleStates).where(eq(ruleStates.ruleId, brokenRule.id)).get()?.state).toBe('ARMED');
+    expect(execution.getHealth()).toMatchObject({
+      status: 'error',
+      lastError: '1 rule evaluation(s) failed',
+    });
+
+    fixture.database.db.update(rules).set({ threshold: '90' }).where(eq(rules.id, brokenRule.id)).run();
+    await pipeline.ingest(priceMetric(fixture.monitor.id, '80', '2026-09-14T12:00:01.000Z'));
+    expect(execution.getHealth()).toMatchObject({ status: 'healthy', lastError: null });
     await pipeline.close();
     fixture.database.close();
   });
