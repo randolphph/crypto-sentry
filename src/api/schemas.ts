@@ -53,12 +53,9 @@ export const marketMonitorConfigSchema = z.object({
     context.addIssue({ code: 'custom', path: ['priceType'], message: 'Perpetual monitors use the mark price' });
   }
 });
-const aaveMonitorConfigSchema = z.object({
-  chainId: z.number().int().positive(),
+export const aaveMonitorConfigSchema = z.object({
   walletAddress: address,
-  poolAddress: address,
-  rpcIntegrationId: z.string().min(1),
-});
+}).strict();
 const lpMonitorConfigSchema = z.object({
   protocol: z.enum(['uniswap', 'pancakeswap']),
   version: z.enum(['v3', 'v4']),

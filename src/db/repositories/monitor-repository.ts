@@ -1,7 +1,7 @@
 import { and, asc, eq } from 'drizzle-orm';
 
 import { AppError } from '../../api/errors.js';
-import { marketMonitorConfigSchema, validateMonitorConfig } from '../../api/schemas.js';
+import { aaveMonitorConfigSchema, marketMonitorConfigSchema, validateMonitorConfig } from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
@@ -52,6 +52,28 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
           monitorId: row.id,
           maxStaleSeconds: row.maxStaleSeconds,
           windowSeconds: windowsByMonitor.get(row.id) ?? [],
+          ...config.data,
+        }] : [];
+      });
+  }
+
+  public listEnabledAaveMonitors() {
+    return this.database
+      .select({
+        id: monitors.id,
+        configJson: monitors.configJson,
+        intervalSeconds: monitors.intervalSeconds,
+        maxStaleSeconds: monitors.maxStaleSeconds,
+      })
+      .from(monitors)
+      .where(and(eq(monitors.enabled, true), eq(monitors.type, 'aave_position')))
+      .all()
+      .flatMap((row) => {
+        const config = aaveMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
+        return config.success ? [{
+          monitorId: row.id,
+          intervalSeconds: row.intervalSeconds,
+          maxStaleSeconds: row.maxStaleSeconds,
           ...config.data,
         }] : [];
       });
@@ -119,6 +141,17 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
 
   private validateIntegrationReference(monitorType: string, config: Record<string, unknown>): void {
     validateMonitorConfig(monitorType as MonitorCreate['type'], config);
+    if (monitorType === 'aave_position') {
+      const rpcIntegration = this.database
+        .select({ id: integrations.id })
+        .from(integrations)
+        .where(and(eq(integrations.type, 'evm_rpc'), eq(integrations.enabled, true)))
+        .get();
+      if (rpcIntegration === undefined) {
+        throw new AppError(400, 'INVALID_MONITOR_CONFIG', 'At least one enabled evm_rpc integration is required');
+      }
+      return;
+    }
     const referenceKey = monitorType === 'market' ? 'integrationId' : 'rpcIntegrationId';
     const integrationId = config[referenceKey];
     if (typeof integrationId !== 'string') {

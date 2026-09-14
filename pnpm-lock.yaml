@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@aave-dao/aave-address-book':
+        specifier: ^4.67.4
+        version: 4.67.4(viem@2.56.5(typescript@5.9.3)(zod@4.6.5))
       '@fastify/swagger':
         specifier: ^9.5.1
         version: 9.8.1
@@ -65,6 +68,11 @@ importers:
         version: 3.2.7(@types/node@24.13.4)(tsx@4.23.13)(yaml@2.9.1)
 
 packages:
+
+  '@aave-dao/aave-address-book@4.67.4':
+    resolution: {integrity: sha512-u11u/nTJmOINTUTfFd8m7uieR59KBFpKZ2jexedHXGsesc8KbM6ROORrO873VxOPBIaYhVmzKWjmGh1ydayhVw==}
+    peerDependencies:
+      viem: ^2.23.5
 
   '@adraffy/ens-normalize@1.11.1':
     resolution: {integrity: sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==}
@@ -1603,6 +1611,10 @@ packages:
     resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
 snapshots:
+
+  '@aave-dao/aave-address-book@4.67.4(viem@2.56.5(typescript@5.9.3)(zod@4.6.5))':
+    dependencies:
+      viem: 2.56.5(typescript@5.9.3)(zod@4.6.5)
 
   '@adraffy/ens-normalize@1.11.1': {}
 

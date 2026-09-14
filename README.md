@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；通用 EVM RPC 与轮询调度底座也已接入，Aave/LP 协议读取和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；Aave V3 已支持按钱包地址自动扫描多链仓位，LP 协议读取和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 技术栈
 
@@ -19,7 +19,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Zod、OpenAPI 3、Swagger UI
 - SQLite WAL、Drizzle ORM、better-sqlite3
 - decimal.js 高精度数值运算
-- viem EVM JSON-RPC 与合约读取底座
+- viem EVM JSON-RPC 与合约读取底座、Aave 官方 Address Book
 - Vitest、ESLint
 - systemd 与 Caddy 生产部署
 
@@ -111,6 +111,32 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
 `evm_rpc/custom` 集成的 `POST /api/v1/integrations/:id/test` 会通过 viem 调用 `eth_chainId` 与 `eth_blockNumber`：配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，传输错误不会把带密钥的 RPC URL 暴露给 API。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
+
+## Aave V3 地址监控
+
+先为需要扫描的网络各创建一个启用的 `evm_rpc/custom` 集成。当前自动识别 Ethereum（1）、Arbitrum（42161）、Base（8453）和 BNB Chain（56）；同一网络配置多个 RPC 时会按顺序故障转移。Pool、Oracle、Data Provider 和资产地址均来自 Aave 官方 Address Book，无需手工填写合约地址。
+
+创建 Monitor 时只需要钱包地址：
+
+```json
+{
+  "name": "My Aave V3 account",
+  "type": "aave_position",
+  "intervalSeconds": 20,
+  "maxStaleSeconds": 90,
+  "config": {
+    "walletAddress": "0x0000000000000000000000000000000000001234"
+  }
+}
+```
+
+服务会自动扫描所有已配置且受支持的网络。没有 Aave 仓位的网络不会产生仓位资产指标；RPC 状态仍会保留，便于区分“没有仓位”和“网络读取失败”。通过 `GET /api/v1/monitors/:id/metrics` 可读取：
+
+- 账户级：`total_collateral_base`、`total_debt_base`、`available_borrows_base`、`ltv_percent`、`liquidation_threshold_percent`、`health_factor`
+- 资产级：`supplied_amount`、`stable_debt_amount`、`variable_debt_amount`、`total_debt_amount`、`supplied_base`、`debt_base`、`usage_as_collateral`
+- 扫描级：`rpc_status`、`position_chain_count`、`position_asset_count`
+
+每个链和资产通过 Metric labels 区分。读取完全只读，不需要私钥、助记词或钱包签名；单链读取失败会进入 `error`，不会把失败伪装成零仓位。
 
 ## 质量检查
 

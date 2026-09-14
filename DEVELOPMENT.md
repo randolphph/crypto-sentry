@@ -38,7 +38,7 @@
 ### 3. 链上协议
 
 - [x] 通用 EVM RPC 集成、链 ID 校验、非重叠轮询调度与任务故障隔离
-- [ ] Aave V3 仓位适配器
+- [x] Aave V3 地址式多链仓位适配器（Ethereum、Arbitrum、Base、BNB Chain）
 - [ ] Uniswap V3 与 PancakeSwap V3 LP 适配器
 - [ ] Uniswap V4 PositionManager/StateView 适配器
 - [ ] tick、价格方向、decimals、hooks 与 unsupported 费用测试
@@ -64,5 +64,5 @@
 ## 待部署前确认
 
 - 资产看板是否有后端代理层；若为纯静态站点，需要增加登录代理，不能暴露长期 Token。
-- 首批实际 chainId、RPC 服务商、合约地址和钱包/LP tokenId。
+- 首批实际 RPC 服务商、Aave 钱包地址和 LP tokenId；Aave 合约地址由官方 Address Book 管理。
 - 告警详情链接的资产看板基础 URL，以及是否发送恢复通知。

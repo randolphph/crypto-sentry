@@ -17,11 +17,14 @@ import { loadConfig } from './config.js';
 import type { AppConfig } from './config.js';
 import { ConfigEventBus } from './core/config-events/config-event-bus.js';
 import { BinanceMarketDataCoordinator } from './core/integrations/binance-market-data-coordinator.js';
+import { AaveV3PositionCoordinator } from './core/integrations/aave-v3-position-coordinator.js';
+import type { AaveV3PositionReaderFactory } from './core/integrations/aave-v3-position-coordinator.js';
 import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
 import { MarketMetricService } from './core/metrics/market-metric-service.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
 import { RuleExecutionService } from './core/rules/rule-execution-service.js';
+import { PollingScheduler } from './core/scheduling/polling-scheduler.js';
 import { StatusService } from './core/status/status-service.js';
 import { createDatabase } from './db/client.js';
 import { AlertRepository } from './db/repositories/alert-repository.js';
@@ -39,6 +42,8 @@ export interface CreateAppOptions {
   fetch?: typeof globalThis.fetch;
   webSocketFactory?: MarketWebSocketFactory | false;
   marketSampleIntervalMilliseconds?: number;
+  aavePositionReaderFactory?: AaveV3PositionReaderFactory;
+  pollingMinimumIntervalMilliseconds?: number;
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -83,6 +88,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const latestMetrics = new LatestMetricStore();
   const metricPipeline = new MetricPipeline(monitors, latestMetrics, [ruleExecution]);
   app.decorate('metricPipeline', metricPipeline);
+  const pollingScheduler = new PollingScheduler({
+    onError: (taskId, error) => app.log.warn({ err: error, taskId }, 'Polling task failed'),
+    ...(options.pollingMinimumIntervalMilliseconds === undefined
+      ? {}
+      : { minimumIntervalMilliseconds: options.pollingMinimumIntervalMilliseconds }),
+  });
+  const aavePositionCoordinator = new AaveV3PositionCoordinator(
+    integrations,
+    monitors,
+    metricPipeline,
+    pollingScheduler,
+    {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.aavePositionReaderFactory === undefined ? {} : { readerFactory: options.aavePositionReaderFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'Aave V3 position scan error'),
+    },
+  );
   const marketMetricService = options.webSocketFactory === false ? undefined : new MarketMetricService(
     new PriceSampleRepository(database.db),
     metricPipeline,
@@ -114,8 +136,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (event.entity === 'monitor' || event.entity === 'integration' || event.entity === 'rule') {
       marketDataCoordinator?.reconcile();
     }
+    if (event.entity === 'monitor' || event.entity === 'integration') {
+      aavePositionCoordinator.reconcile();
+    }
   });
   marketDataCoordinator?.reconcile();
+  aavePositionCoordinator.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
     database.sqlite.prepare('SELECT 1').get();
@@ -140,6 +166,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     clearInterval(heartbeat);
     unsubscribeConfigEvents();
     marketDataCoordinator?.close();
+    aavePositionCoordinator.close();
+    await pollingScheduler.close();
     await marketMetricService?.close();
     await metricPipeline.close();
     database.close();
