@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 
 import type { ConfigEventBus } from '../../core/config-events/config-event-bus.js';
 import type { MetricSnapshotReader } from '../../core/metrics/latest-metric-store.js';
+import { AavePositionSnapshotService } from '../../core/positions/aave-position-snapshot-service.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import { AppError } from '../errors.js';
 import { openApiSchema } from '../openapi.js';
@@ -13,6 +14,7 @@ export function registerMonitorRoutes(
   events: ConfigEventBus,
   metrics: MetricSnapshotReader,
 ): void {
+  const aavePositions = new AavePositionSnapshotService(repository, metrics);
   app.get('/api/v1/monitors', { schema: { tags: ['monitors'] } }, async () => ({ items: repository.list() }));
 
   app.post('/api/v1/monitors', { schema: {
@@ -59,5 +61,14 @@ export function registerMonitorRoutes(
     const { id } = idParamsSchema.parse(request.params);
     repository.get(id);
     return { items: metrics.list(id) };
+  });
+
+  app.get('/api/v1/monitors/:id/positions', { schema: {
+    tags: ['monitors'],
+    summary: 'Get a structured Aave V3 position snapshot',
+    params: openApiSchema(idParamsSchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return aavePositions.get(id);
   });
 }

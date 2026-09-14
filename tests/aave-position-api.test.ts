@@ -111,6 +111,25 @@ describe('Aave position monitor API', () => {
       expect(items.find(({ name }) => name === 'position_chain_count')).toMatchObject({ value: '1' });
     });
     expect(read).toHaveBeenCalledWith(walletAddress, expect.any(AbortSignal));
+
+    const positionResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/monitors/${monitorId}/positions`,
+      headers: authorization,
+    });
+    expect(positionResponse.statusCode).toBe(200);
+    expect(positionResponse.json()).toMatchObject({
+      monitorId,
+      walletAddress,
+      status: 'ok',
+      summary: { positionChainCount: 1, positionAssetCount: 1 },
+      positions: [{
+        chainId: 1,
+        chainName: 'Ethereum',
+        account: { healthFactor: '1.5', totalCollateralBase: '5000' },
+        assets: [{ symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5' }],
+      }],
+    });
   });
 
   it('rejects manual Aave chain and contract configuration', async () => {

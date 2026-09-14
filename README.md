@@ -130,7 +130,13 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 }
 ```
 
-服务会自动扫描所有已配置且受支持的网络。没有 Aave 仓位的网络不会产生仓位资产指标；RPC 状态仍会保留，便于区分“没有仓位”和“网络读取失败”。通过 `GET /api/v1/monitors/:id/metrics` 可读取：
+服务会自动扫描所有已配置且受支持的网络。没有 Aave 仓位的网络不会产生仓位资产指标；RPC 状态仍会保留，便于区分“没有仓位”和“网络读取失败”。前端优先使用结构化接口：
+
+```text
+GET /api/v1/monitors/:id/positions
+```
+
+响应包含 `status`、数据时间与年龄、扫描成功/失败网络数，以及按网络分组的账户风险和逐资产余额。`status` 明确区分 `warming_up`、`ok`、`empty`、`partial`、`stale` 和 `error`；没有仓位的网络只出现在 `networkScans`，不会生成空仓位卡片。底层原始数据仍可通过 `GET /api/v1/monitors/:id/metrics` 读取：
 
 - 账户级：`total_collateral_base`、`total_debt_base`、`available_borrows_base`、`ltv_percent`、`liquidation_threshold_percent`、`health_factor`
 - 资产级：`supplied_amount`、`stable_debt_amount`、`variable_debt_amount`、`total_debt_amount`、`supplied_base`、`debt_base`、`usage_as_collateral`
