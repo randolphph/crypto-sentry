@@ -14,6 +14,7 @@ import { registerStatusRoutes } from './api/status/routes.js';
 import { loadConfig } from './config.js';
 import type { AppConfig } from './config.js';
 import { ConfigEventBus } from './core/config-events/config-event-bus.js';
+import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
 import { RuleExecutionService } from './core/rules/rule-execution-service.js';
@@ -21,6 +22,7 @@ import { StatusService } from './core/status/status-service.js';
 import { createDatabase } from './db/client.js';
 import { AlertRepository } from './db/repositories/alert-repository.js';
 import { IntegrationRepository } from './db/repositories/integration-repository.js';
+import { MarketRepository } from './db/repositories/market-repository.js';
 import { MonitorRepository } from './db/repositories/monitor-repository.js';
 import { RuleRepository } from './db/repositories/rule-repository.js';
 import { RuleExecutionRepository } from './db/repositories/rule-execution-repository.js';
@@ -29,6 +31,7 @@ import { EncryptionService } from './security/encryption/encryption-service.js';
 export interface CreateAppOptions {
   config?: AppConfig;
   logger?: boolean;
+  fetch?: typeof globalThis.fetch;
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -59,6 +62,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const encryption = new EncryptionService(config.masterEncryptionKey);
   const events = new ConfigEventBus();
   const integrations = new IntegrationRepository(database.db, encryption);
+  const markets = new MarketRepository(database.db);
+  const integrationOperations = new IntegrationOperationsService(integrations, markets, options.fetch);
   const monitors = new MonitorRepository(database.db);
   const rules = new RuleRepository(database.db);
   const ruleExecutionStore = new RuleExecutionRepository(database.db);
@@ -91,7 +96,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     };
   });
 
-  registerIntegrationRoutes(app, integrations, events);
+  registerIntegrationRoutes(app, integrations, integrationOperations, events);
   registerMonitorRoutes(app, monitors, events, latestMetrics);
   registerRuleRoutes(app, rules, events);
   registerAlertRoutes(app, alerts);

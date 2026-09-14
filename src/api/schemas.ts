@@ -20,8 +20,9 @@ const thresholdString = z.string().refine((value) => {
   }
 }, 'Expected a decimal or boolean string');
 
-const binanceConfigSchema = z.object({
+export const binanceIntegrationConfigSchema = z.object({
   restUrl: z.url(),
+  futuresRestUrl: z.url().default('https://fapi.binance.com'),
   spotWebsocketUrl: z.url(),
   futuresWebsocketUrl: z.url(),
 });
@@ -74,7 +75,7 @@ export const integrationCreateSchema = z
       (value.type === 'notification' && value.provider === 'telegram');
     if (!supported) context.addIssue({ code: 'custom', path: ['provider'], message: 'Unsupported integration type/provider combination' });
     const expectedConfig =
-      value.type === 'market_data' && value.provider === 'binance' ? binanceConfigSchema :
+      value.type === 'market_data' && value.provider === 'binance' ? binanceIntegrationConfigSchema :
       value.type === 'evm_rpc' && value.provider === 'custom' ? rpcConfigSchema :
       value.type === 'notification' && value.provider === 'telegram' ? telegramConfigSchema : undefined;
     if (expectedConfig !== undefined) {

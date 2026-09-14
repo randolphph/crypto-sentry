@@ -11,6 +11,26 @@ export const integrations = sqliteTable('integrations', {
   updatedAt: text('updated_at').notNull(),
 });
 
+export const integrationMarkets = sqliteTable(
+  'integration_markets',
+  {
+    integrationId: text('integration_id')
+      .notNull()
+      .references(() => integrations.id, { onDelete: 'cascade' }),
+    marketType: text('market_type').notNull(),
+    providerSymbol: text('provider_symbol').notNull(),
+    canonicalSymbol: text('canonical_symbol').notNull(),
+    baseAsset: text('base_asset').notNull(),
+    quoteAsset: text('quote_asset').notNull(),
+    status: text('status').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.integrationId, table.marketType, table.providerSymbol] }),
+    index('integration_markets_canonical_idx').on(table.integrationId, table.canonicalSymbol),
+  ],
+);
+
 export const monitors = sqliteTable(
   'monitors',
   {

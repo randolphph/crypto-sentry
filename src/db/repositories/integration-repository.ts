@@ -40,9 +40,17 @@ export class IntegrationRepository {
   }
 
   public getRuntimeConfig(id: string): Record<string, unknown> {
+    return this.getRuntime(id).config;
+  }
+
+  public getRuntime(id: string) {
     const row = this.database.select().from(integrations).where(eq(integrations.id, id)).get();
     if (row === undefined) throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Integration was not found');
-    return this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext);
+    const { configCiphertext: _, ...runtimeRow } = row;
+    return {
+      ...runtimeRow,
+      config: this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext),
+    };
   }
 
   public create(input: IntegrationCreate) {

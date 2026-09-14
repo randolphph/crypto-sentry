@@ -1,14 +1,15 @@
 import type { FastifyInstance } from 'fastify';
 
 import type { ConfigEventBus } from '../../core/config-events/config-event-bus.js';
+import type { IntegrationOperationsService } from '../../core/integrations/integration-operations-service.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
-import { AppError } from '../errors.js';
 import { openApiSchema } from '../openapi.js';
 import { idParamsSchema, integrationCreateSchema, integrationPatchSchema } from '../schemas.js';
 
 export function registerIntegrationRoutes(
   app: FastifyInstance,
   repository: IntegrationRepository,
+  operations: IntegrationOperationsService,
   events: ConfigEventBus,
 ): void {
   app.get('/api/v1/integrations', { schema: { tags: ['integrations'] } }, async () => ({ items: repository.list() }));
@@ -50,19 +51,16 @@ export function registerIntegrationRoutes(
 
   app.post('/api/v1/integrations/:id/test', { schema: { tags: ['integrations'], params: openApiSchema(idParamsSchema) } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
-    repository.get(id);
-    throw new AppError(409, 'ADAPTER_NOT_READY', 'This integration adapter is not available in the current development stage');
+    return operations.test(id);
   });
 
   app.post('/api/v1/integrations/:id/sync-markets', { schema: { tags: ['integrations'], params: openApiSchema(idParamsSchema) } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
-    repository.get(id);
-    throw new AppError(409, 'ADAPTER_NOT_READY', 'Market synchronization will be enabled with the Binance adapter');
+    return operations.syncMarkets(id);
   });
 
   app.get('/api/v1/integrations/:id/markets', { schema: { tags: ['integrations'], params: openApiSchema(idParamsSchema) } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
-    repository.get(id);
-    return { items: [] };
+    return operations.listMarkets(id);
   });
 }

@@ -28,7 +28,8 @@
 
 ### 2. Binance 行情
 
-- [ ] 市场同步与 canonical symbol 映射
+- [x] 现货与 U 本位永续 REST 连通测试
+- [x] 市场同步、事务缓存与 canonical symbol 映射
 - [ ] 共享现货/永续 WebSocket、ping/pong、重连与 23.5 小时换线
 - [ ] 5 秒采样、30 分钟窗口、REST K 线预热
 - [ ] 价格、窗口涨跌幅与数据过期指标
