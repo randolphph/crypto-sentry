@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断，并开始接入 Binance 行情。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；链上协议与 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；通用 EVM RPC 与轮询调度底座也已接入，Aave/LP 协议读取和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 技术栈
 
@@ -19,6 +19,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Zod、OpenAPI 3、Swagger UI
 - SQLite WAL、Drizzle ORM、better-sqlite3
 - decimal.js 高精度数值运算
+- viem EVM JSON-RPC 与合约读取底座
 - Vitest、ESLint
 - systemd 与 Caddy 生产部署
 
@@ -108,6 +109,8 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 滚动涨跌幅的参考价是“不晚于当前时间减窗口长度的最近样本”。不同窗口通过 Metric 的 `labels.windowSeconds` 区分，只会匹配相同窗口的规则。过期的涨跌幅不会触发规则；`data_age_seconds` 虽处于 `stale` 状态，其年龄数值仍可用于配置断流告警。
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
+
+`evm_rpc/custom` 集成的 `POST /api/v1/integrations/:id/test` 会通过 viem 调用 `eth_chainId` 与 `eth_blockNumber`：配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，传输错误不会把带密钥的 RPC URL 暴露给 API。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
 
 ## 质量检查
 

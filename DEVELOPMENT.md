@@ -37,7 +37,7 @@
 
 ### 3. 链上协议
 
-- [ ] 通用 EVM RPC 集成、链 ID 校验、轮询调度与故障隔离
+- [x] 通用 EVM RPC 集成、链 ID 校验、非重叠轮询调度与任务故障隔离
 - [ ] Aave V3 仓位适配器
 - [ ] Uniswap V3 与 PancakeSwap V3 LP 适配器
 - [ ] Uniswap V4 PositionManager/StateView 适配器

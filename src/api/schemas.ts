@@ -37,7 +37,7 @@ export const binanceIntegrationConfigSchema = z.object({
   ...config,
   futuresWebsocketUrl: normalizeBinanceFuturesWebsocketUrl(config.futuresWebsocketUrl),
 }));
-const rpcConfigSchema = z.object({ chainId: z.number().int().positive(), rpcUrl: z.url() });
+export const rpcIntegrationConfigSchema = z.object({ chainId: z.number().int().positive(), rpcUrl: z.url() });
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
 export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),
@@ -94,7 +94,7 @@ export const integrationCreateSchema = z
     if (!supported) context.addIssue({ code: 'custom', path: ['provider'], message: 'Unsupported integration type/provider combination' });
     const expectedConfig =
       value.type === 'market_data' && value.provider === 'binance' ? binanceIntegrationConfigSchema :
-      value.type === 'evm_rpc' && value.provider === 'custom' ? rpcConfigSchema :
+      value.type === 'evm_rpc' && value.provider === 'custom' ? rpcIntegrationConfigSchema :
       value.type === 'notification' && value.provider === 'telegram' ? telegramConfigSchema : undefined;
     if (expectedConfig !== undefined) {
       const parsedConfig = expectedConfig.safeParse(value.config);
