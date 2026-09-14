@@ -64,7 +64,15 @@ describe('Binance market data hot reload', () => {
       sockets.push(socket);
       return socket;
     };
-    app = await createApp({ config, logger: false, webSocketFactory: factory });
+    app = await createApp({
+      config,
+      logger: false,
+      webSocketFactory: factory,
+      fetch: async () => new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    });
   });
 
   afterEach(async () => {
@@ -125,9 +133,10 @@ describe('Binance market data hot reload', () => {
       url: `/api/v1/monitors/${monitorId}/metrics`,
       headers: authorization,
     });
-    expect(metricsResponse.json<{ items: Array<{ value: string; target: string }> }>().items).toEqual([
-      expect.objectContaining({ value: '91234.5678', target: 'BTC/USD' }),
-    ]);
+    expect(metricsResponse.json<{ items: Array<{ value: string; target: string }> }>().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'price', value: '91234.5678', target: 'BTC/USD' }),
+      expect.objectContaining({ name: 'data_age_seconds', target: 'BTC/USD' }),
+    ]));
 
     const disableResponse = await app.inject({
       method: 'PATCH',

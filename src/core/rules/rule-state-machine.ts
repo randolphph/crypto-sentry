@@ -1,5 +1,6 @@
 import { Decimal } from 'decimal.js';
 
+import { isActionableMetric } from '../metrics/metric.js';
 import type { Metric } from '../metrics/metric.js';
 
 export type RuleOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq';
@@ -88,7 +89,7 @@ export function evaluateRule(
 ): RuleEvaluation {
   const value = String(metric.value);
   const baseState = { ...currentState, lastValue: value };
-  if (metric.status !== 'ok') return { action: 'none', state: baseState };
+  if (!isActionableMetric(metric)) return { action: 'none', state: baseState };
 
   if (currentState.state === 'TRIGGERED') {
     if (hasRecovered(metric.value, rule)) {

@@ -41,6 +41,7 @@ export class RuleExecutionRepository implements RuleExecutionStore {
         monitorId: row.monitorId,
         name: row.name,
         metric: row.metric,
+        windowSeconds: row.windowSeconds,
         operator: row.operator as RuleOperator,
         threshold: row.threshold,
         durationSeconds: row.durationSeconds,

@@ -1,4 +1,4 @@
-import { parseMetric } from './metric.js';
+import { isActionableMetric, parseMetric } from './metric.js';
 import type { Metric, MetricStatus } from './metric.js';
 import type { LatestMetricStore } from './latest-metric-store.js';
 
@@ -109,7 +109,7 @@ export class MetricPipeline {
     }
 
     this.monitorStates.updateRuntimeState(metric.monitorId, aggregateMonitorState(this.latestMetrics.list(metric.monitorId)));
-    if (metric.status !== 'ok') {
+    if (!isActionableMetric(metric)) {
       return { accepted: true, forwardedToConsumers: false, consumerErrors: [] };
     }
 

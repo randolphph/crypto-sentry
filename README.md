@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断，并开始接入 Binance 行情。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存和实时价格 Metric；滚动价格窗口、链上协议与 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断，并开始接入 Binance 行情。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；链上协议与 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 技术栈
 
@@ -96,6 +96,16 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 同步只保留状态为 `TRADING` 的现货和 `PERPETUAL` 合约，并把 USDT、USDC、FDUSD 等美元稳定币报价统一映射为 canonical `BASE/USD`，同时保留 Binance 原始交易对代码。只有现货和永续两侧都拉取成功时才会事务替换缓存。
 
 启用 `market` Monitor 后，服务会按集成共享连接并动态订阅行情：现货使用 `<symbol>@miniTicker` 的最新成交价，U 本位永续使用 `<symbol>@markPrice@1s` 的标记价格。连接器负责协议级 ping/pong、指数退避重连、自动恢复订阅和 23.5 小时主动换线。配置中的旧 `wss://fstream.binance.com` 地址会自动迁移到 Binance 当前的 `/market` 入口。
+
+行情处理层每 5 秒为每个启用市场写入一个 SQLite 价格采样，并滚动清理 30 分钟以前的数据。服务启动时先恢复本地窗口；窗口不足则使用 Binance 1 分钟 K 线补齐，现货读取 `/api/v3/klines`，永续标记价格读取 `/fapi/v1/markPriceKlines`。预热未完成时，`price_change_percent` 为 `warming_up`，不会进入规则引擎。
+
+每个市场目前输出三个 Metric：
+
+- `price`：WebSocket 最新成交价或标记价格
+- `price_change_percent`：按规则的 `windowSeconds` 独立计算；默认同时提供 5 分钟窗口
+- `data_age_seconds`：最后一条实时行情距当前时间的秒数；超过 Monitor 的 `maxStaleSeconds` 后状态变为 `stale`
+
+滚动涨跌幅的参考价是“不晚于当前时间减窗口长度的最近样本”。不同窗口通过 Metric 的 `labels.windowSeconds` 区分，只会匹配相同窗口的规则。过期的涨跌幅不会触发规则；`data_age_seconds` 虽处于 `stale` 状态，其年龄数值仍可用于配置断流告警。
 
 ## 质量检查
 

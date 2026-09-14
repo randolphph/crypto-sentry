@@ -1,5 +1,6 @@
 import type { MetricConsumer } from '../metrics/metric-pipeline.js';
 import type { Metric } from '../metrics/metric.js';
+import { isActionableMetric } from '../metrics/metric.js';
 import type { RuntimeComponentHealth, RuntimeHealthProvider } from '../status/runtime-health.js';
 import { evaluateRule } from './rule-state-machine.js';
 import type { EvaluatedRule, RuleAction, RuleOperator, RuleRuntimeState } from './rule-state-machine.js';
@@ -9,6 +10,7 @@ export interface ExecutableRule extends EvaluatedRule {
   monitorId: string;
   name: string;
   metric: string;
+  windowSeconds: number | null;
   operator: RuleOperator;
   severity: string;
   notificationIntegrationIds: string[];
@@ -52,7 +54,7 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
   }
 
   public async consume(metric: Metric): Promise<void> {
-    if (metric.status !== 'ok') return;
+    if (!isActionableMetric(metric)) return;
 
     const failures: Error[] = [];
     let rules: ExecutableRule[];
@@ -63,7 +65,10 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
       this.markFailed(failure);
       throw failure;
     }
-    for (const rule of rules) {
+    const matchingRules = metric.name === 'price_change_percent'
+      ? rules.filter((rule) => String(rule.windowSeconds) === metric.labels?.windowSeconds)
+      : rules;
+    for (const rule of matchingRules) {
       try {
         const state = this.store.getState(rule.id);
         const evaluatedAt = metric.receivedAt;

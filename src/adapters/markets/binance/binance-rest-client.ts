@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { Decimal } from 'decimal.js';
 
 import type { DiscoveredMarket } from '../market.js';
+import type { MarketType } from '../market.js';
 
 const pingResponseSchema = z.object({}).passthrough();
 const spotExchangeInfoSchema = z.object({
@@ -21,6 +23,7 @@ const futuresExchangeInfoSchema = z.object({
     quoteAsset: z.string().min(1),
   }).passthrough()),
 }).passthrough();
+const klineResponseSchema = z.array(z.array(z.unknown()).min(7));
 
 const usdEquivalentQuotes = new Set(['USD', 'USDT', 'USDC', 'FDUSD', 'BUSD', 'TUSD']);
 
@@ -29,6 +32,18 @@ export interface BinanceRestClientOptions {
   futuresRestUrl: string;
   fetch?: typeof globalThis.fetch;
   timeoutMilliseconds?: number;
+}
+
+export interface BinanceKlineRequest {
+  marketType: MarketType;
+  providerSymbol: string;
+  startTime: number;
+  endTime: number;
+}
+
+export interface BinancePriceSample {
+  observedAt: string;
+  price: string;
 }
 
 export class BinanceRestError extends Error {
@@ -88,6 +103,38 @@ export class BinanceRestClient {
       }));
 
     return [...spotMarkets, ...perpetualMarkets];
+  }
+
+  public async loadPriceSamples(input: BinanceKlineRequest): Promise<BinancePriceSample[]> {
+    const path = input.marketType === 'spot' ? '/api/v3/klines' : '/fapi/v1/markPriceKlines';
+    const baseUrl = input.marketType === 'spot' ? this.options.spotRestUrl : this.options.futuresRestUrl;
+    const parameters = new URLSearchParams({
+      symbol: input.providerSymbol.toUpperCase(),
+      interval: '1m',
+      startTime: String(input.startTime),
+      endTime: String(input.endTime),
+      limit: '1000',
+    });
+    const rows = await this.request(baseUrl, `${path}?${parameters.toString()}`, klineResponseSchema);
+    return rows.flatMap((row) => {
+      const close = row[4];
+      const closeTime = row[6];
+      if (typeof close !== 'string' || typeof closeTime !== 'number' || !Number.isSafeInteger(closeTime)) return [];
+      try {
+        const price = new Decimal(close);
+        const observedAt = new Date(closeTime);
+        if (
+          !price.isFinite() ||
+          !price.isPositive() ||
+          Number.isNaN(observedAt.getTime()) ||
+          closeTime < input.startTime ||
+          closeTime > input.endTime
+        ) return [];
+        return [{ observedAt: observedAt.toISOString(), price: close }];
+      } catch {
+        return [];
+      }
+    });
   }
 
   private async request<Output>(baseUrl: string, path: string, schema: z.ZodType<Output>): Promise<Output> {

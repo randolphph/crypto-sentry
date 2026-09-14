@@ -102,6 +102,23 @@ describe('MetricPipeline', () => {
     expect(monitorStates.states.get('mon_btc')?.status).toBe('stale');
   });
 
+  it('forwards stale data age as an actionable value while retaining stale monitor status', async () => {
+    const consume = vi.fn(async () => undefined);
+    const { monitorStates, pipeline } = setup({ consume });
+
+    const result = await pipeline.ingest({
+      ...baseMetric,
+      name: 'data_age_seconds',
+      value: '91',
+      unit: 'seconds',
+      status: 'stale',
+    });
+
+    expect(result).toMatchObject({ accepted: true, forwardedToConsumers: true, consumerErrors: [] });
+    expect(consume).toHaveBeenCalledOnce();
+    expect(monitorStates.states.get('mon_btc')?.status).toBe('stale');
+  });
+
   it('uses absolute time when choosing the latest successful observation', async () => {
     const { monitorStates, pipeline } = setup();
     await pipeline.ingest({

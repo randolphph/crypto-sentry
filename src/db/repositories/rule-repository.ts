@@ -23,6 +23,7 @@ export class RuleRepository {
     const monitor = this.database.select({ id: monitors.id }).from(monitors).where(eq(monitors.id, input.monitorId)).get();
     if (monitor === undefined) throw new AppError(400, 'INVALID_RULE_CONFIG', 'monitorId must reference an existing monitor');
     this.validateOperatorThreshold(input.operator, input.threshold);
+    this.validateWindow(input.metric, input.windowSeconds);
     this.validateNotificationIntegrations(input.notificationIntegrationIds);
     const timestamp = new Date().toISOString();
     const row = {
@@ -53,6 +54,7 @@ export class RuleRepository {
     const row = this.database.select().from(rules).where(eq(rules.id, id)).get();
     if (row === undefined) throw new AppError(404, 'RULE_NOT_FOUND', 'Rule was not found');
     this.validateOperatorThreshold(input.operator ?? row.operator, input.threshold ?? row.threshold);
+    this.validateWindow(input.metric ?? row.metric, input.windowSeconds ?? row.windowSeconds ?? undefined);
     if (input.notificationIntegrationIds !== undefined) this.validateNotificationIntegrations(input.notificationIntegrationIds);
     const timestamp = new Date().toISOString();
     const updated = {
@@ -127,6 +129,15 @@ export class RuleRepository {
   private validateOperatorThreshold(operator: string, threshold: string): void {
     if ((threshold === 'true' || threshold === 'false') && !['eq', 'neq'].includes(operator)) {
       throw new AppError(400, 'INVALID_RULE_CONFIG', 'Boolean thresholds only support eq and neq');
+    }
+  }
+
+  private validateWindow(metric: string, windowSeconds: number | undefined): void {
+    if (metric === 'price_change_percent' && windowSeconds === undefined) {
+      throw new AppError(400, 'INVALID_RULE_CONFIG', 'price_change_percent rules require windowSeconds');
+    }
+    if (metric === 'price_change_percent' && (windowSeconds ?? 0) > 1_800) {
+      throw new AppError(400, 'INVALID_RULE_CONFIG', 'price_change_percent windowSeconds cannot exceed 1800');
     }
   }
 }

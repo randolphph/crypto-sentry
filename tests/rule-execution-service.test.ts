@@ -214,4 +214,58 @@ describe('RuleExecutionService', () => {
     await pipeline.close();
     fixture.database.close();
   });
+
+  it('matches rolling change rules only to the metric with the same window', async () => {
+    const fixture = createFixture();
+    const fiveMinute = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, {
+      name: 'Five minute move',
+      metric: 'price_change_percent',
+      operator: 'gte',
+      threshold: '5',
+      windowSeconds: 300,
+    }));
+    fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, {
+      name: 'Fifteen minute move',
+      metric: 'price_change_percent',
+      operator: 'gte',
+      threshold: '5',
+      windowSeconds: 900,
+    }));
+    const pipeline = createPipeline(fixture.database, fixture.monitors);
+
+    await pipeline.ingest({
+      ...priceMetric(fixture.monitor.id, '10', '2026-09-14T12:05:00.000Z'),
+      name: 'price_change_percent',
+      unit: 'percent',
+      labels: { windowSeconds: '300' },
+    });
+
+    const createdAlerts = fixture.alerts.list({ limit: 50, offset: 0 });
+    expect(createdAlerts.total).toBe(1);
+    expect(createdAlerts.items[0]?.ruleId).toBe(fiveMinute.id);
+    await pipeline.close();
+    fixture.database.close();
+  });
+
+  it('allows a stale data-age metric to trigger a disconnect rule', async () => {
+    const fixture = createFixture();
+    const rule = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, {
+      name: 'Market data is stale',
+      metric: 'data_age_seconds',
+      operator: 'gt',
+      threshold: '90',
+    }));
+    const pipeline = createPipeline(fixture.database, fixture.monitors);
+
+    await pipeline.ingest({
+      ...priceMetric(fixture.monitor.id, '91', '2026-09-14T12:05:00.000Z'),
+      name: 'data_age_seconds',
+      unit: 'seconds',
+      status: 'stale',
+    });
+
+    expect(fixture.alerts.list({ limit: 50, offset: 0 }).items[0]?.ruleId).toBe(rule.id);
+    await pipeline.close();
+    fixture.database.close();
+  });
 });

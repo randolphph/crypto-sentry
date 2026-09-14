@@ -1,14 +1,23 @@
 import { BinanceMarketStreamManager } from '../../adapters/markets/binance/binance-market-stream-manager.js';
-import type { BinanceMonitorSubscription } from '../../adapters/markets/binance/binance-market-stream-manager.js';
 import type { MarketWebSocketFactory } from '../../adapters/markets/websocket/websocket-port.js';
 import { binanceIntegrationConfigSchema } from '../../api/schemas.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
-import type { MetricPipeline } from '../metrics/metric-pipeline.js';
+import type { MarketMetricRuntime, MarketMetricService } from '../metrics/market-metric-service.js';
 
 interface ActiveManager {
   fingerprint: string;
   manager: BinanceMarketStreamManager;
+}
+
+type RuntimeSubscription = ReturnType<MonitorRepository['listEnabledMarketSubscriptions']>[number];
+
+interface ManagerPlan {
+  integrationId: string;
+  fingerprint: string;
+  spotWebsocketUrl: string;
+  futuresWebsocketUrl: string;
+  subscriptions: RuntimeSubscription[];
 }
 
 export class BinanceMarketDataCoordinator {
@@ -17,20 +26,21 @@ export class BinanceMarketDataCoordinator {
   public constructor(
     private readonly integrations: IntegrationRepository,
     private readonly monitors: MonitorRepository,
-    private readonly metricPipeline: MetricPipeline,
+    private readonly marketMetrics: MarketMetricService,
     private readonly webSocketFactory: MarketWebSocketFactory,
     private readonly onError: (error: Error) => void,
   ) {}
 
   public reconcile(): void {
-    const subscriptionsByIntegration = new Map<string, BinanceMonitorSubscription[]>();
+    const subscriptionsByIntegration = new Map<string, RuntimeSubscription[]>();
     for (const subscription of this.monitors.listEnabledMarketSubscriptions()) {
       const subscriptions = subscriptionsByIntegration.get(subscription.integrationId) ?? [];
       subscriptions.push(subscription);
       subscriptionsByIntegration.set(subscription.integrationId, subscriptions);
     }
 
-    const activeIntegrationIds = new Set<string>();
+    const plans: ManagerPlan[] = [];
+    const metricRuntimes: MarketMetricRuntime[] = [];
     for (const integration of this.integrations.listRuntime()) {
       if (!integration.enabled || integration.type !== 'market_data' || integration.provider !== 'binance') continue;
       const subscriptions = subscriptionsByIntegration.get(integration.id) ?? [];
@@ -40,22 +50,42 @@ export class BinanceMarketDataCoordinator {
         this.onError(new Error(`Binance integration ${integration.id} has invalid runtime configuration`));
         continue;
       }
-      activeIntegrationIds.add(integration.id);
       const fingerprint = `${parsedConfig.data.spotWebsocketUrl}\n${parsedConfig.data.futuresWebsocketUrl}`;
-      let active = this.managers.get(integration.id);
+      plans.push({
+        integrationId: integration.id,
+        fingerprint,
+        spotWebsocketUrl: parsedConfig.data.spotWebsocketUrl,
+        futuresWebsocketUrl: parsedConfig.data.futuresWebsocketUrl,
+        subscriptions,
+      });
+      metricRuntimes.push(...subscriptions.map((subscription) => ({
+        ...subscription,
+        integrationId: integration.id,
+        maxStaleSeconds: subscription.maxStaleSeconds,
+        windowSeconds: subscription.windowSeconds,
+        spotRestUrl: parsedConfig.data.restUrl,
+        futuresRestUrl: parsedConfig.data.futuresRestUrl,
+      })));
+    }
+
+    this.marketMetrics.reconcile(metricRuntimes);
+    const activeIntegrationIds = new Set(plans.map((plan) => plan.integrationId));
+    for (const plan of plans) {
+      const { integrationId, fingerprint, spotWebsocketUrl, futuresWebsocketUrl, subscriptions } = plan;
+      let active = this.managers.get(integrationId);
       if (active === undefined || active.fingerprint !== fingerprint) {
         active?.manager.close();
         const manager = new BinanceMarketStreamManager({
-          spotWebsocketUrl: parsedConfig.data.spotWebsocketUrl,
-          futuresWebsocketUrl: parsedConfig.data.futuresWebsocketUrl,
+          spotWebsocketUrl,
+          futuresWebsocketUrl,
           webSocketFactory: this.webSocketFactory,
           emitMetric: async (metric) => {
-            await this.metricPipeline.ingest(metric);
+            await this.marketMetrics.ingestPrice(metric);
           },
           onError: this.onError,
         });
         active = { fingerprint, manager };
-        this.managers.set(integration.id, active);
+        this.managers.set(integrationId, active);
       }
       active.manager.setSubscriptions(subscriptions);
     }

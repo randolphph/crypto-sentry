@@ -6,7 +6,7 @@ import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
 import type { AppDatabase } from '../client.js';
-import { integrations, monitors } from '../schema/index.js';
+import { integrations, monitors, rules } from '../schema/index.js';
 
 export class MonitorRepository implements MonitorRuntimeStateStore {
   public constructor(private readonly database: AppDatabase['db']) {}
@@ -30,14 +30,30 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   }
 
   public listEnabledMarketSubscriptions() {
+    const windowsByMonitor = new Map<string, number[]>();
+    for (const rule of this.database
+      .select({ monitorId: rules.monitorId, windowSeconds: rules.windowSeconds })
+      .from(rules)
+      .where(and(eq(rules.enabled, true), eq(rules.metric, 'price_change_percent')))
+      .all()) {
+      if (rule.windowSeconds === null) continue;
+      const windows = windowsByMonitor.get(rule.monitorId) ?? [];
+      windows.push(rule.windowSeconds);
+      windowsByMonitor.set(rule.monitorId, windows);
+    }
     return this.database
-      .select({ id: monitors.id, configJson: monitors.configJson })
+      .select({ id: monitors.id, configJson: monitors.configJson, maxStaleSeconds: monitors.maxStaleSeconds })
       .from(monitors)
       .where(and(eq(monitors.enabled, true), eq(monitors.type, 'market')))
       .all()
       .flatMap((row) => {
         const config = marketMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
-        return config.success ? [{ monitorId: row.id, ...config.data }] : [];
+        return config.success ? [{
+          monitorId: row.id,
+          maxStaleSeconds: row.maxStaleSeconds,
+          windowSeconds: windowsByMonitor.get(row.id) ?? [],
+          ...config.data,
+        }] : [];
       });
   }
 

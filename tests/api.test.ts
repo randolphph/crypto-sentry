@@ -181,6 +181,22 @@ describe('HTTP API foundation', () => {
     expect(ruleResponse.statusCode).toBe(201);
     expect(ruleResponse.json<{ monitorId: string; threshold: string }>()).toMatchObject({ monitorId: monitor.id, threshold: '90000' });
 
+    const invalidWindowRule = await app.inject({
+      method: 'POST',
+      url: '/api/v1/rules',
+      headers: authorization,
+      payload: {
+        monitorId: monitor.id,
+        name: 'Missing rolling window',
+        metric: 'price_change_percent',
+        operator: 'lte',
+        threshold: '-3',
+        severity: 'critical',
+      },
+    });
+    expect(invalidWindowRule.statusCode).toBe(400);
+    expect(invalidWindowRule.body).toContain('windowSeconds');
+
     await app.metricPipeline.ingest({
       monitorId: monitor.id,
       source: 'binance',

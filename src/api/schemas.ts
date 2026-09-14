@@ -162,6 +162,12 @@ export const ruleCreateSchema = ruleBaseSchema.superRefine((value, context) => {
   if ((value.threshold === 'true' || value.threshold === 'false') && !['eq', 'neq'].includes(value.operator)) {
     context.addIssue({ code: 'custom', path: ['operator'], message: 'Boolean thresholds only support eq and neq' });
   }
+  if (value.metric === 'price_change_percent' && value.windowSeconds === undefined) {
+    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'Price change rules require a window' });
+  }
+  if (value.metric === 'price_change_percent' && (value.windowSeconds ?? 0) > 1_800) {
+    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'Price change windows cannot exceed the 30 minute sample retention' });
+  }
 });
 
 export const rulePatchSchema = ruleBaseSchema

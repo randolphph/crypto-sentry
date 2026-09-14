@@ -22,6 +22,10 @@ export function parseMetric(input: unknown): Metric {
   return metricSchema.parse(input);
 }
 
+export function isActionableMetric(metric: Metric): boolean {
+  return metric.status === 'ok' || (metric.name === 'data_age_seconds' && metric.status === 'stale');
+}
+
 export interface AdapterContext<TConfig> {
   monitorId: string;
   config: TConfig;

@@ -70,6 +70,34 @@ describe('Binance REST client', () => {
     await expect(failingClient.testConnectivity()).rejects.toBeInstanceOf(BinanceRestError);
   });
 
+  it('loads spot close prices and perpetual mark-price closes for window warmup', async () => {
+    const closeTime = 1_725_000_059_999;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      expect(url.searchParams.get('symbol')).toBe('BTCUSDT');
+      expect(url.searchParams.get('interval')).toBe('1m');
+      return jsonResponse([
+        [1_725_000_000_000, '90', '101', '89', '100.25', '1', closeTime, '1', 1, '1', '1', '0'],
+        [1_725_000_060_000, 'bad', '101', '89', '-1', '1', closeTime + 60_000, '1', 1, '1', '1', '0'],
+      ]);
+    });
+    const client = new BinanceRestClient({
+      spotRestUrl: 'https://spot.example',
+      futuresRestUrl: 'https://futures.example',
+      fetch: fetchMock,
+    });
+
+    const request = { providerSymbol: 'btcusdt', startTime: 1_725_000_000_000, endTime: 1_725_001_800_000 };
+    await expect(client.loadPriceSamples({ ...request, marketType: 'spot' })).resolves.toEqual([
+      { observedAt: new Date(closeTime).toISOString(), price: '100.25' },
+    ]);
+    await expect(client.loadPriceSamples({ ...request, marketType: 'perpetual' })).resolves.toHaveLength(1);
+    expect(fetchMock.mock.calls.map(([input]) => new URL(input instanceof Request ? input.url : input).pathname)).toEqual([
+      '/api/v3/klines',
+      '/fapi/v1/markPriceKlines',
+    ]);
+  });
+
   it('only collapses USD-equivalent quote assets', () => {
     expect(canonicalizeBinanceSymbol('btc', 'fdusd')).toBe('BTC/USD');
     expect(canonicalizeBinanceSymbol('eth', 'btc')).toBe('ETH/BTC');

@@ -19,6 +19,7 @@ import { ConfigEventBus } from './core/config-events/config-event-bus.js';
 import { BinanceMarketDataCoordinator } from './core/integrations/binance-market-data-coordinator.js';
 import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
+import { MarketMetricService } from './core/metrics/market-metric-service.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
 import { RuleExecutionService } from './core/rules/rule-execution-service.js';
 import { StatusService } from './core/status/status-service.js';
@@ -27,6 +28,7 @@ import { AlertRepository } from './db/repositories/alert-repository.js';
 import { IntegrationRepository } from './db/repositories/integration-repository.js';
 import { MarketRepository } from './db/repositories/market-repository.js';
 import { MonitorRepository } from './db/repositories/monitor-repository.js';
+import { PriceSampleRepository } from './db/repositories/price-sample-repository.js';
 import { RuleRepository } from './db/repositories/rule-repository.js';
 import { RuleExecutionRepository } from './db/repositories/rule-execution-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
@@ -36,6 +38,7 @@ export interface CreateAppOptions {
   logger?: boolean;
   fetch?: typeof globalThis.fetch;
   webSocketFactory?: MarketWebSocketFactory | false;
+  marketSampleIntervalMilliseconds?: number;
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -80,12 +83,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const latestMetrics = new LatestMetricStore();
   const metricPipeline = new MetricPipeline(monitors, latestMetrics, [ruleExecution]);
   app.decorate('metricPipeline', metricPipeline);
-  const marketDataCoordinator = options.webSocketFactory === false
+  const marketMetricService = options.webSocketFactory === false ? undefined : new MarketMetricService(
+    new PriceSampleRepository(database.db),
+    metricPipeline,
+    {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.marketSampleIntervalMilliseconds === undefined
+        ? {}
+        : { sampleIntervalMilliseconds: options.marketSampleIntervalMilliseconds }),
+      onError: (error) => app.log.warn({ err: error }, 'Market metric processing error'),
+    },
+  );
+  const marketDataCoordinator = marketMetricService === undefined
     ? undefined
     : new BinanceMarketDataCoordinator(
       integrations,
       monitors,
-      metricPipeline,
+      marketMetricService,
       webSocketFactory,
       (error) => app.log.warn({ err: error }, 'Binance market data stream error'),
     );
@@ -97,7 +111,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         metricPipeline.forgetMonitor(event.id);
       }
     }
-    if (event.entity === 'monitor' || event.entity === 'integration') marketDataCoordinator?.reconcile();
+    if (event.entity === 'monitor' || event.entity === 'integration' || event.entity === 'rule') {
+      marketDataCoordinator?.reconcile();
+    }
   });
   marketDataCoordinator?.reconcile();
 
@@ -124,6 +140,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     clearInterval(heartbeat);
     unsubscribeConfigEvents();
     marketDataCoordinator?.close();
+    await marketMetricService?.close();
     await metricPipeline.close();
     database.close();
   });
