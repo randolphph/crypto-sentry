@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 
 import { createApp } from '../src/app.js';
+import type { MarketWebSocketFactory } from '../src/adapters/markets/websocket/websocket-port.js';
 import type { AppConfig } from '../src/config.js';
 
 const token = 'binance-test-api-token-that-is-long-enough';
@@ -38,11 +39,24 @@ describe('Binance integration API', () => {
     }
     throw new Error(`Unexpected path: ${path}`);
   });
+  const webSocketFactory: MarketWebSocketFactory = (_url, handlers) => {
+    const handle = {
+      readyState: 0,
+      send: () => undefined,
+      close: () => undefined,
+      terminate: () => undefined,
+    };
+    queueMicrotask(() => {
+      handle.readyState = 1;
+      handlers.open();
+    });
+    return handle;
+  };
 
   beforeEach(async () => {
     failFuturesDiscovery = false;
     fetchMock.mockClear();
-    app = await createApp({ config, logger: false, fetch: fetchMock });
+    app = await createApp({ config, logger: false, fetch: fetchMock, webSocketFactory });
   });
 
   afterEach(async () => {
@@ -77,7 +91,10 @@ describe('Binance integration API', () => {
     expect(testResponse.json()).toEqual({
       ok: true,
       provider: 'binance',
-      connectivity: { spot: 'ok', perpetual: 'ok' },
+      connectivity: {
+        spot: { rest: 'ok', websocket: 'ok' },
+        perpetual: { rest: 'ok', websocket: 'ok' },
+      },
     });
 
     const syncResponse = await app.inject({

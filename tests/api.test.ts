@@ -20,7 +20,7 @@ describe('HTTP API foundation', () => {
   let app: FastifyInstance;
 
   beforeEach(async () => {
-    app = await createApp({ config, logger: false });
+    app = await createApp({ config, logger: false, webSocketFactory: false });
   });
 
   afterEach(async () => {

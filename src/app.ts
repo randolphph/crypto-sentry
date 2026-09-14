@@ -11,9 +11,12 @@ import { registerIntegrationRoutes } from './api/integrations/routes.js';
 import { registerMonitorRoutes } from './api/monitors/routes.js';
 import { registerRuleRoutes } from './api/rules/routes.js';
 import { registerStatusRoutes } from './api/status/routes.js';
+import { createNodeMarketWebSocket } from './adapters/markets/websocket/websocket-port.js';
+import type { MarketWebSocketFactory } from './adapters/markets/websocket/websocket-port.js';
 import { loadConfig } from './config.js';
 import type { AppConfig } from './config.js';
 import { ConfigEventBus } from './core/config-events/config-event-bus.js';
+import { BinanceMarketDataCoordinator } from './core/integrations/binance-market-data-coordinator.js';
 import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
@@ -32,6 +35,7 @@ export interface CreateAppOptions {
   config?: AppConfig;
   logger?: boolean;
   fetch?: typeof globalThis.fetch;
+  webSocketFactory?: MarketWebSocketFactory | false;
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -63,7 +67,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const events = new ConfigEventBus();
   const integrations = new IntegrationRepository(database.db, encryption);
   const markets = new MarketRepository(database.db);
-  const integrationOperations = new IntegrationOperationsService(integrations, markets, options.fetch);
+  const webSocketFactory = options.webSocketFactory === false
+    ? createNodeMarketWebSocket
+    : options.webSocketFactory ?? createNodeMarketWebSocket;
+  const integrationOperations = new IntegrationOperationsService(integrations, markets, options.fetch, webSocketFactory);
   const monitors = new MonitorRepository(database.db);
   const rules = new RuleRepository(database.db);
   const ruleExecutionStore = new RuleExecutionRepository(database.db);
@@ -73,17 +80,26 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const latestMetrics = new LatestMetricStore();
   const metricPipeline = new MetricPipeline(monitors, latestMetrics, [ruleExecution]);
   app.decorate('metricPipeline', metricPipeline);
+  const marketDataCoordinator = options.webSocketFactory === false
+    ? undefined
+    : new BinanceMarketDataCoordinator(
+      integrations,
+      monitors,
+      metricPipeline,
+      webSocketFactory,
+      (error) => app.log.warn({ err: error }, 'Binance market data stream error'),
+    );
 
   const unsubscribeConfigEvents = events.subscribe((event) => {
-    if (event.entity !== 'monitor') return;
-    if (event.operation === 'deleted') {
-      metricPipeline.forgetMonitor(event.id);
-      return;
+    if (event.entity === 'monitor') {
+      if (event.operation === 'deleted') metricPipeline.forgetMonitor(event.id);
+      if (event.operation === 'updated' && monitors.findRuntimeMonitor(event.id)?.enabled === false) {
+        metricPipeline.forgetMonitor(event.id);
+      }
     }
-    if (event.operation === 'updated' && monitors.findRuntimeMonitor(event.id)?.enabled === false) {
-      metricPipeline.forgetMonitor(event.id);
-    }
+    if (event.entity === 'monitor' || event.entity === 'integration') marketDataCoordinator?.reconcile();
   });
+  marketDataCoordinator?.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
     database.sqlite.prepare('SELECT 1').get();
@@ -107,6 +123,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.addHook('onClose', async () => {
     clearInterval(heartbeat);
     unsubscribeConfigEvents();
+    marketDataCoordinator?.close();
     await metricPipeline.close();
     database.close();
   });

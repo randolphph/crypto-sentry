@@ -1,4 +1,9 @@
 import { BinanceRestClient, BinanceRestError } from '../../adapters/markets/binance/binance-rest-client.js';
+import {
+  createNodeMarketWebSocket,
+  testWebSocketConnectivity,
+} from '../../adapters/markets/websocket/websocket-port.js';
+import type { MarketWebSocketFactory } from '../../adapters/markets/websocket/websocket-port.js';
 import { AppError } from '../../api/errors.js';
 import { binanceIntegrationConfigSchema } from '../../api/schemas.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
@@ -9,20 +14,32 @@ export class IntegrationOperationsService {
     private readonly integrations: IntegrationRepository,
     private readonly markets: MarketRepository,
     private readonly fetchImplementation: typeof globalThis.fetch = globalThis.fetch,
+    private readonly webSocketFactory: MarketWebSocketFactory = createNodeMarketWebSocket,
   ) {}
 
   public async test(id: string) {
-    const client = this.binanceClient(id);
+    const { client, config } = this.binanceContext(id);
     try {
-      const connectivity = await client.testConnectivity();
-      return { ok: true, provider: 'binance', connectivity };
+      await Promise.all([
+        client.testConnectivity(),
+        testWebSocketConnectivity(config.spotWebsocketUrl, this.webSocketFactory),
+        testWebSocketConnectivity(config.futuresWebsocketUrl, this.webSocketFactory),
+      ]);
+      return {
+        ok: true,
+        provider: 'binance',
+        connectivity: {
+          spot: { rest: 'ok', websocket: 'ok' },
+          perpetual: { rest: 'ok', websocket: 'ok' },
+        },
+      };
     } catch (error) {
       this.throwConnectionError(error);
     }
   }
 
   public async syncMarkets(id: string) {
-    const client = this.binanceClient(id);
+    const { client } = this.binanceContext(id);
     try {
       const discovered = await client.discoverMarkets();
       this.markets.replace(id, discovered);
@@ -39,17 +56,20 @@ export class IntegrationOperationsService {
     return { items: this.markets.list(id) };
   }
 
-  private binanceClient(id: string): BinanceRestClient {
+  private binanceContext(id: string) {
     const integration = this.requireBinance(id);
     if (!integration.enabled) {
       throw new AppError(409, 'INTEGRATION_DISABLED', 'Enable the integration before using it');
     }
     const config = binanceIntegrationConfigSchema.parse(integration.config);
-    return new BinanceRestClient({
-      spotRestUrl: config.restUrl,
-      futuresRestUrl: config.futuresRestUrl,
-      fetch: this.fetchImplementation,
-    });
+    return {
+      config,
+      client: new BinanceRestClient({
+        spotRestUrl: config.restUrl,
+        futuresRestUrl: config.futuresRestUrl,
+        fetch: this.fetchImplementation,
+      }),
+    };
   }
 
   private requireBinance(id: string) {
@@ -61,9 +81,9 @@ export class IntegrationOperationsService {
   }
 
   private throwConnectionError(error: unknown): never {
-    if (error instanceof BinanceRestError) {
-      throw new AppError(502, 'INTEGRATION_CONNECTION_FAILED', error.message);
-    }
-    throw error;
+    const message = error instanceof BinanceRestError || error instanceof Error
+      ? error.message
+      : 'Binance integration connection failed';
+    throw new AppError(502, 'INTEGRATION_CONNECTION_FAILED', message);
   }
 }

@@ -5,6 +5,7 @@ import {
   BinanceRestError,
   canonicalizeBinanceSymbol,
 } from '../src/adapters/markets/binance/binance-rest-client.js';
+import { normalizeBinanceFuturesWebsocketUrl } from '../src/api/schemas.js';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -72,5 +73,10 @@ describe('Binance REST client', () => {
   it('only collapses USD-equivalent quote assets', () => {
     expect(canonicalizeBinanceSymbol('btc', 'fdusd')).toBe('BTC/USD');
     expect(canonicalizeBinanceSymbol('eth', 'btc')).toBe('ETH/BTC');
+  });
+
+  it('migrates the retired USDⓈ-M WebSocket root to the market endpoint', () => {
+    expect(normalizeBinanceFuturesWebsocketUrl('wss://fstream.binance.com')).toBe('wss://fstream.binance.com/market');
+    expect(normalizeBinanceFuturesWebsocketUrl('wss://proxy.example/custom')).toBe('wss://proxy.example/custom');
   });
 });

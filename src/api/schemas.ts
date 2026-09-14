@@ -20,20 +20,38 @@ const thresholdString = z.string().refine((value) => {
   }
 }, 'Expected a decimal or boolean string');
 
+export function normalizeBinanceFuturesWebsocketUrl(value: string): string {
+  const url = new URL(value);
+  if (url.hostname === 'fstream.binance.com' && ['', '/', '/ws', '/stream'].includes(url.pathname)) {
+    url.pathname = '/market';
+  }
+  return url.toString().replace(/\/$/, '');
+}
+
 export const binanceIntegrationConfigSchema = z.object({
   restUrl: z.url(),
   futuresRestUrl: z.url().default('https://fapi.binance.com'),
   spotWebsocketUrl: z.url(),
-  futuresWebsocketUrl: z.url(),
-});
+  futuresWebsocketUrl: z.url().default('wss://fstream.binance.com/market'),
+}).transform((config) => ({
+  ...config,
+  futuresWebsocketUrl: normalizeBinanceFuturesWebsocketUrl(config.futuresWebsocketUrl),
+}));
 const rpcConfigSchema = z.object({ chainId: z.number().int().positive(), rpcUrl: z.url() });
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
-const marketMonitorConfigSchema = z.object({
+export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),
   marketType: z.enum(['spot', 'perpetual']),
   providerSymbol: z.string().min(1),
   canonicalSymbol: z.string().min(1).optional(),
   priceType: z.enum(['last', 'mark']).optional(),
+}).superRefine((config, context) => {
+  if (config.marketType === 'spot' && config.priceType === 'mark') {
+    context.addIssue({ code: 'custom', path: ['priceType'], message: 'Spot monitors use the last price' });
+  }
+  if (config.marketType === 'perpetual' && config.priceType === 'last') {
+    context.addIssue({ code: 'custom', path: ['priceType'], message: 'Perpetual monitors use the mark price' });
+  }
 });
 const aaveMonitorConfigSchema = z.object({
   chainId: z.number().int().positive(),

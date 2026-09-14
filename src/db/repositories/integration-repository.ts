@@ -33,6 +33,16 @@ export class IntegrationRepository {
     return this.database.select().from(integrations).orderBy(asc(integrations.createdAt)).all().map((row) => this.present(row));
   }
 
+  public listRuntime() {
+    return this.database.select().from(integrations).orderBy(asc(integrations.createdAt)).all().map((row) => {
+      const { configCiphertext: _, ...runtimeRow } = row;
+      return {
+        ...runtimeRow,
+        config: this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext),
+      };
+    });
+  }
+
   public get(id: string) {
     const row = this.database.select().from(integrations).where(eq(integrations.id, id)).get();
     if (row === undefined) throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Integration was not found');

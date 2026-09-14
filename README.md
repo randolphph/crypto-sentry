@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断，并开始接入 Binance 行情。Binance 现货与 U 本位永续已支持 REST 连通测试、市场发现和本地缓存；实时 WebSocket、链上协议与 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断，并开始接入 Binance 行情。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存和实时价格 Metric；滚动价格窗口、链上协议与 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 技术栈
 
@@ -88,12 +88,14 @@ Authorization: Bearer <API_TOKEN>
 Binance `market_data` 集成还提供：
 
 ```text
-POST /api/v1/integrations/:id/test          # 测试现货和 U 本位 REST 连通性
+POST /api/v1/integrations/:id/test          # 测试现货和 U 本位 REST/WebSocket 连通性
 POST /api/v1/integrations/:id/sync-markets  # 同步可交易现货和永续市场
 GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 ```
 
 同步只保留状态为 `TRADING` 的现货和 `PERPETUAL` 合约，并把 USDT、USDC、FDUSD 等美元稳定币报价统一映射为 canonical `BASE/USD`，同时保留 Binance 原始交易对代码。只有现货和永续两侧都拉取成功时才会事务替换缓存。
+
+启用 `market` Monitor 后，服务会按集成共享连接并动态订阅行情：现货使用 `<symbol>@miniTicker` 的最新成交价，U 本位永续使用 `<symbol>@markPrice@1s` 的标记价格。连接器负责协议级 ping/pong、指数退避重连、自动恢复订阅和 23.5 小时主动换线。配置中的旧 `wss://fstream.binance.com` 地址会自动迁移到 Binance 当前的 `/market` 入口。
 
 ## 质量检查
 

@@ -1,7 +1,7 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 
 import { AppError } from '../../api/errors.js';
-import { validateMonitorConfig } from '../../api/schemas.js';
+import { marketMonitorConfigSchema, validateMonitorConfig } from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
@@ -27,6 +27,18 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       .from(monitors)
       .where(eq(monitors.id, id))
       .get();
+  }
+
+  public listEnabledMarketSubscriptions() {
+    return this.database
+      .select({ id: monitors.id, configJson: monitors.configJson })
+      .from(monitors)
+      .where(and(eq(monitors.enabled, true), eq(monitors.type, 'market')))
+      .all()
+      .flatMap((row) => {
+        const config = marketMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
+        return config.success ? [{ monitorId: row.id, ...config.data }] : [];
+      });
   }
 
   public updateRuntimeState(id: string, state: MonitorRuntimeState): void {
