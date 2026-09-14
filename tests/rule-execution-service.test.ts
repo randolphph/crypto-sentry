@@ -264,7 +264,14 @@ describe('RuleExecutionService', () => {
       status: 'stale',
     });
 
-    expect(fixture.alerts.list({ limit: 50, offset: 0 }).items[0]?.ruleId).toBe(rule.id);
+    const alert = fixture.alerts.list({ limit: 50, offset: 0 }).items[0];
+    expect(alert?.ruleId).toBe(rule.id);
+    await pipeline.ingest({
+      ...priceMetric(fixture.monitor.id, '0', '2026-09-14T12:05:01.000Z'),
+      name: 'data_age_seconds',
+      unit: 'seconds',
+    });
+    expect(fixture.alerts.get(String(alert?.id)).status).toBe('resolved');
     await pipeline.close();
     fixture.database.close();
   });

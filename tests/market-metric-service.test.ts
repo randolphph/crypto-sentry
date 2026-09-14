@@ -114,6 +114,15 @@ describe('MarketMetricService', () => {
     }));
     expect(monitorStore.states.get('mon_btc')?.status).toBe('stale');
     expect(samples.byMonitor.get('mon_btc')).not.toContainEqual({ observedAt: current.toISOString(), price: '110' });
+
+    current = new Date('2026-09-14T12:06:32.000Z');
+    await service.ingestPrice(price('120', current.toISOString()));
+    await service.runCycle(current);
+    expect(latest.list('mon_btc')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'data_age_seconds', value: '0', status: 'ok' }),
+      expect.objectContaining({ name: 'price_change_percent', status: 'ok' }),
+    ]));
+    expect(monitorStore.states.get('mon_btc')?.status).toBe('ok');
     await service.close();
   });
 

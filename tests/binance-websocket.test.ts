@@ -100,10 +100,11 @@ describe('Shared WebSocket feed lifecycle', () => {
   it('updates subscriptions, reconnects with backoff, and resubscribes', async () => {
     const { factory, sockets } = createFakeFactory();
     const errors: Error[] = [];
+    const messages: string[] = [];
     const feed = new SharedWebSocketFeed({
       baseUrl: 'wss://stream.example',
       factory,
-      onMessage: () => undefined,
+      onMessage: (message) => messages.push(message),
       onError: (error) => errors.push(error),
       reconnectBaseMilliseconds: 1_000,
       reconnectMaxMilliseconds: 30_000,
@@ -135,6 +136,9 @@ describe('Shared WebSocket feed lifecycle', () => {
       method: 'SUBSCRIBE',
       params: ['btcusdt@miniTicker', 'solusdt@miniTicker'],
     });
+    sockets[0]?.message('ignored from old connection');
+    sockets[1]?.message('received after reconnect');
+    expect(messages).toEqual(['received after reconnect']);
     feed.close();
   });
 
