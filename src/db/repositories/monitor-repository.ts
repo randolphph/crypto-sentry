@@ -4,10 +4,11 @@ import { AppError } from '../../api/errors.js';
 import { validateMonitorConfig } from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
+import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
 import type { AppDatabase } from '../client.js';
 import { integrations, monitors } from '../schema/index.js';
 
-export class MonitorRepository {
+export class MonitorRepository implements MonitorRuntimeStateStore {
   public constructor(private readonly database: AppDatabase['db']) {}
 
   public list() {
@@ -18,6 +19,26 @@ export class MonitorRepository {
     const row = this.database.select().from(monitors).where(eq(monitors.id, id)).get();
     if (row === undefined) throw new AppError(404, 'MONITOR_NOT_FOUND', 'Monitor was not found');
     return this.present(row);
+  }
+
+  public findRuntimeMonitor(id: string): RuntimeMonitor | undefined {
+    return this.database
+      .select({ id: monitors.id, enabled: monitors.enabled })
+      .from(monitors)
+      .where(eq(monitors.id, id))
+      .get();
+  }
+
+  public updateRuntimeState(id: string, state: MonitorRuntimeState): void {
+    this.database
+      .update(monitors)
+      .set({
+        lastStatus: state.status,
+        lastError: state.lastError,
+        ...(state.lastDataAt === undefined ? {} : { lastDataAt: state.lastDataAt }),
+      })
+      .where(eq(monitors.id, id))
+      .run();
   }
 
   public create(input: MonitorCreate) {

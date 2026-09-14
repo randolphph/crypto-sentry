@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import type { ConfigEventBus } from '../../core/config-events/config-event-bus.js';
+import type { MetricSnapshotReader } from '../../core/metrics/latest-metric-store.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import { AppError } from '../errors.js';
 import { idParamsSchema, monitorCreateSchema, monitorPatchSchema } from '../schemas.js';
@@ -9,6 +10,7 @@ export function registerMonitorRoutes(
   app: FastifyInstance,
   repository: MonitorRepository,
   events: ConfigEventBus,
+  metrics: MetricSnapshotReader,
 ): void {
   app.get('/api/v1/monitors', { schema: { tags: ['monitors'] } }, async () => ({ items: repository.list() }));
 
@@ -46,6 +48,6 @@ export function registerMonitorRoutes(
   app.get('/api/v1/monitors/:id/metrics', { schema: { tags: ['monitors'] } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     repository.get(id);
-    return { items: [] };
+    return { items: metrics.list(id) };
   });
 }

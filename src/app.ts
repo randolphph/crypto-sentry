@@ -14,6 +14,8 @@ import { registerStatusRoutes } from './api/status/routes.js';
 import { loadConfig } from './config.js';
 import type { AppConfig } from './config.js';
 import { ConfigEventBus } from './core/config-events/config-event-bus.js';
+import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
+import { MetricPipeline } from './core/metrics/metric-pipeline.js';
 import { StatusService } from './core/status/status-service.js';
 import { createDatabase } from './db/client.js';
 import { AlertRepository } from './db/repositories/alert-repository.js';
@@ -59,6 +61,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const rules = new RuleRepository(database.db);
   const alerts = new AlertRepository(database.db);
   const status = new StatusService(database.db);
+  const latestMetrics = new LatestMetricStore();
+  const metricPipeline = new MetricPipeline(monitors, latestMetrics);
+  app.decorate('metricPipeline', metricPipeline);
+
+  const unsubscribeConfigEvents = events.subscribe((event) => {
+    if (event.entity !== 'monitor') return;
+    if (event.operation === 'deleted') {
+      metricPipeline.forgetMonitor(event.id);
+      return;
+    }
+    if (event.operation === 'updated' && monitors.findRuntimeMonitor(event.id)?.enabled === false) {
+      metricPipeline.forgetMonitor(event.id);
+    }
+  });
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
     database.sqlite.prepare('SELECT 1').get();
@@ -72,7 +88,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   registerIntegrationRoutes(app, integrations, events);
-  registerMonitorRoutes(app, monitors, events);
+  registerMonitorRoutes(app, monitors, events, latestMetrics);
   registerRuleRoutes(app, rules, events);
   registerAlertRoutes(app, alerts);
   registerStatusRoutes(app, status);
@@ -81,6 +97,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   heartbeat.unref();
   app.addHook('onClose', async () => {
     clearInterval(heartbeat);
+    unsubscribeConfigEvents();
+    await metricPipeline.close();
     database.close();
   });
 

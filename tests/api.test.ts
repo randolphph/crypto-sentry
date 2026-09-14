@@ -113,6 +113,47 @@ describe('HTTP API foundation', () => {
     expect(monitorResponse.statusCode).toBe(201);
     const monitor = monitorResponse.json<{ id: string }>();
 
+    await expect(app.metricPipeline.ingest({
+      monitorId: monitor.id,
+      source: 'binance',
+      target: 'BTCUSDT',
+      name: 'price',
+      value: '90123.456789',
+      unit: 'USDT',
+      observedAt: '2026-09-14T12:00:00.000Z',
+      receivedAt: '2026-09-14T12:00:00.100Z',
+      status: 'ok',
+    })).resolves.toMatchObject({ accepted: true });
+
+    const metricsResponse = await app.inject({
+      method: 'GET',
+      url: `/api/v1/monitors/${monitor.id}/metrics`,
+      headers: authorization,
+    });
+    expect(metricsResponse.statusCode).toBe(200);
+    expect(metricsResponse.json<{ items: Array<{ name: string; value: string }> }>().items).toEqual([
+      expect.objectContaining({ name: 'price', value: '90123.456789' }),
+    ]);
+
+    const refreshedMonitor = await app.inject({
+      method: 'GET',
+      url: `/api/v1/monitors/${monitor.id}`,
+      headers: authorization,
+    });
+    expect(refreshedMonitor.json<{ lastStatus: string; lastDataAt: string }>()).toMatchObject({
+      lastStatus: 'ok',
+      lastDataAt: '2026-09-14T12:00:00.000Z',
+    });
+    const statusResponse = await app.inject({
+      method: 'GET',
+      url: '/api/v1/status/summary',
+      headers: authorization,
+    });
+    expect(statusResponse.json<{ status: string; monitors: { healthy: number } }>()).toMatchObject({
+      status: 'healthy',
+      monitors: { healthy: 1 },
+    });
+
     const ruleResponse = await app.inject({
       method: 'POST',
       url: '/api/v1/rules',
@@ -129,5 +170,18 @@ describe('HTTP API foundation', () => {
     });
     expect(ruleResponse.statusCode).toBe(201);
     expect(ruleResponse.json<{ monitorId: string; threshold: string }>()).toMatchObject({ monitorId: monitor.id, threshold: '90000' });
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/monitors/${monitor.id}`,
+      headers: authorization,
+      payload: { enabled: false },
+    });
+    const metricsAfterDisable = await app.inject({
+      method: 'GET',
+      url: `/api/v1/monitors/${monitor.id}/metrics`,
+      headers: authorization,
+    });
+    expect(metricsAfterDisable.json<{ items: unknown[] }>().items).toEqual([]);
   });
 });

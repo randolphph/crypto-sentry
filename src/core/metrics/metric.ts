@@ -1,16 +1,25 @@
-export type MetricStatus = 'ok' | 'stale' | 'error' | 'unsupported' | 'warming_up';
+import { z } from 'zod';
 
-export interface Metric {
-  monitorId: string;
-  source: string;
-  target: string;
-  name: string;
-  value: string | boolean;
-  unit?: string;
-  observedAt: string;
-  receivedAt: string;
-  status: MetricStatus;
-  labels?: Record<string, string>;
+export const metricStatusSchema = z.enum(['ok', 'stale', 'error', 'unsupported', 'warming_up']);
+export type MetricStatus = z.infer<typeof metricStatusSchema>;
+
+export const metricSchema = z.object({
+  monitorId: z.string().min(1),
+  source: z.string().min(1),
+  target: z.string().min(1),
+  name: z.string().min(1),
+  value: z.union([z.string().min(1), z.boolean()]),
+  unit: z.string().min(1).optional(),
+  observedAt: z.iso.datetime({ offset: true }),
+  receivedAt: z.iso.datetime({ offset: true }),
+  status: metricStatusSchema,
+  labels: z.record(z.string(), z.string()).optional(),
+});
+
+export type Metric = z.infer<typeof metricSchema>;
+
+export function parseMetric(input: unknown): Metric {
+  return metricSchema.parse(input);
 }
 
 export interface AdapterContext<TConfig> {
