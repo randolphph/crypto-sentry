@@ -1,10 +1,10 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq, ne } from 'drizzle-orm';
 
 import { AppError } from '../../api/errors.js';
 import type { RuleCreate, RulePatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { AppDatabase } from '../client.js';
-import { integrations, monitors, ruleStates, rules } from '../schema/index.js';
+import { alerts, integrations, monitors, ruleStates, rules } from '../schema/index.js';
 
 export class RuleRepository {
   public constructor(private readonly database: AppDatabase['db']) {}
@@ -54,6 +54,7 @@ export class RuleRepository {
     if (row === undefined) throw new AppError(404, 'RULE_NOT_FOUND', 'Rule was not found');
     this.validateOperatorThreshold(input.operator ?? row.operator, input.threshold ?? row.threshold);
     if (input.notificationIntegrationIds !== undefined) this.validateNotificationIntegrations(input.notificationIntegrationIds);
+    const timestamp = new Date().toISOString();
     const updated = {
       ...row,
       ...(input.name === undefined ? {} : { name: input.name }),
@@ -69,9 +70,33 @@ export class RuleRepository {
         ? {}
         : { notificationIntegrationIdsJson: JSON.stringify(input.notificationIntegrationIds) }),
       ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
-      updatedAt: new Date().toISOString(),
+      updatedAt: timestamp,
     };
-    this.database.update(rules).set(updated).where(eq(rules.id, id)).run();
+    const resetState =
+      input.metric !== undefined ||
+      input.operator !== undefined ||
+      input.threshold !== undefined ||
+      input.windowSeconds !== undefined ||
+      input.durationSeconds !== undefined ||
+      input.hysteresis !== undefined ||
+      (input.enabled !== undefined && input.enabled !== row.enabled);
+    this.database.transaction((transaction) => {
+      transaction.update(rules).set(updated).where(eq(rules.id, id)).run();
+      if (resetState) {
+        transaction.update(ruleStates).set({
+          state: 'ARMED',
+          conditionSince: null,
+          lastValue: null,
+          lastAlertAt: null,
+          updatedAt: timestamp,
+        }).where(eq(ruleStates.ruleId, id)).run();
+        transaction.update(alerts).set({
+          status: 'resolved',
+          resolvedAt: timestamp,
+          updatedAt: timestamp,
+        }).where(and(eq(alerts.ruleId, id), ne(alerts.status, 'resolved'))).run();
+      }
+    });
     return this.present(updated);
   }
 

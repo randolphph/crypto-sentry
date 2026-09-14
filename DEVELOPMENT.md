@@ -20,6 +20,7 @@
 - [x] integrations、monitors、rules、alerts、status 的仓储与 API 骨架
 - [x] Metric 类型、配置事件总线、规则状态机基础实现
 - [x] Metric 运行时校验、按监控串行处理、乱序保护、最新快照和健康状态聚合
+- [x] 规则匹配、状态持久化、冷却去重、重复提醒、恢复和告警事务闭环
 - [ ] 完成阶段一所有 API 行为测试与热加载编排
 - [x] systemd、Caddy、安装/发布/回滚/备份脚本初稿与 Shell 语法检查
 - [ ] 在干净 Ubuntu 24.04 环境演练安装、发布、回滚与备份恢复

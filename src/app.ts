@@ -16,12 +16,14 @@ import type { AppConfig } from './config.js';
 import { ConfigEventBus } from './core/config-events/config-event-bus.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
+import { RuleExecutionService } from './core/rules/rule-execution-service.js';
 import { StatusService } from './core/status/status-service.js';
 import { createDatabase } from './db/client.js';
 import { AlertRepository } from './db/repositories/alert-repository.js';
 import { IntegrationRepository } from './db/repositories/integration-repository.js';
 import { MonitorRepository } from './db/repositories/monitor-repository.js';
 import { RuleRepository } from './db/repositories/rule-repository.js';
+import { RuleExecutionRepository } from './db/repositories/rule-execution-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
 
 export interface CreateAppOptions {
@@ -59,10 +61,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const integrations = new IntegrationRepository(database.db, encryption);
   const monitors = new MonitorRepository(database.db);
   const rules = new RuleRepository(database.db);
+  const ruleExecutionStore = new RuleExecutionRepository(database.db);
+  const ruleExecution = new RuleExecutionService(ruleExecutionStore);
   const alerts = new AlertRepository(database.db);
   const status = new StatusService(database.db);
   const latestMetrics = new LatestMetricStore();
-  const metricPipeline = new MetricPipeline(monitors, latestMetrics);
+  const metricPipeline = new MetricPipeline(monitors, latestMetrics, [ruleExecution]);
   app.decorate('metricPipeline', metricPipeline);
 
   const unsubscribeConfigEvents = events.subscribe((event) => {

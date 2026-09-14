@@ -171,6 +171,58 @@ describe('HTTP API foundation', () => {
     expect(ruleResponse.statusCode).toBe(201);
     expect(ruleResponse.json<{ monitorId: string; threshold: string }>()).toMatchObject({ monitorId: monitor.id, threshold: '90000' });
 
+    await app.metricPipeline.ingest({
+      monitorId: monitor.id,
+      source: 'binance',
+      target: 'BTCUSDT',
+      name: 'price',
+      value: '89999.999999',
+      unit: 'USDT',
+      observedAt: '2026-09-14T12:00:01.000Z',
+      receivedAt: '2026-09-14T12:00:01.100Z',
+      status: 'ok',
+    });
+    const alertsResponse = await app.inject({
+      method: 'GET',
+      url: '/api/v1/alerts?status=open',
+      headers: authorization,
+    });
+    expect(alertsResponse.statusCode).toBe(200);
+    const alertList = alertsResponse.json<{ total: number; items: Array<{ id: string; ruleId: string; currentValue: string }> }>();
+    expect(alertList).toMatchObject({
+      total: 1,
+      items: [expect.objectContaining({
+        ruleId: ruleResponse.json<{ id: string }>().id,
+        currentValue: '89999.999999',
+      })],
+    });
+    const alertId = alertList.items[0]?.id;
+    expect(alertId).toBeDefined();
+    const acknowledgeResponse = await app.inject({
+      method: 'POST',
+      url: `/api/v1/alerts/${String(alertId)}/acknowledge`,
+      headers: authorization,
+    });
+    expect(acknowledgeResponse.json<{ status: string }>().status).toBe('acknowledged');
+
+    await app.metricPipeline.ingest({
+      monitorId: monitor.id,
+      source: 'binance',
+      target: 'BTCUSDT',
+      name: 'price',
+      value: '90600',
+      unit: 'USDT',
+      observedAt: '2026-09-14T12:00:02.000Z',
+      receivedAt: '2026-09-14T12:00:02.100Z',
+      status: 'ok',
+    });
+    const resolvedAlert = await app.inject({
+      method: 'GET',
+      url: `/api/v1/alerts/${String(alertId)}`,
+      headers: authorization,
+    });
+    expect(resolvedAlert.json<{ status: string }>().status).toBe('resolved');
+
     await app.inject({
       method: 'PATCH',
       url: `/api/v1/monitors/${monitor.id}`,
