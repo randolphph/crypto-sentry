@@ -19,6 +19,10 @@ const thresholdString = z.string().refine((value) => {
     return false;
   }
 }, 'Expected a decimal or boolean string');
+const metricLabelsSchema = z.record(z.string().min(1), z.string().min(1)).refine(
+  (labels) => Object.keys(labels).length <= 10,
+  'At most 10 metric labels may be selected',
+);
 
 export function normalizeBinanceFuturesWebsocketUrl(value: string): string {
   const url = new URL(value);
@@ -144,6 +148,7 @@ const ruleBaseSchema = z.object({
   monitorId: z.string().min(1),
   name: z.string().trim().min(1).max(120),
   metric: z.string().trim().min(1).max(120),
+  labels: metricLabelsSchema.default({}),
   operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']),
   threshold: thresholdString,
   windowSeconds: z.number().int().min(1).max(86_400).optional(),
@@ -153,6 +158,23 @@ const ruleBaseSchema = z.object({
   severity: z.enum(['info', 'warning', 'critical', 'emergency']),
   notificationIntegrationIds: z.array(z.string().min(1)).default([]),
   enabled: enabled.default(true),
+});
+
+export const aaveRiskRulePresetSchema = z.object({
+  warningThreshold: positiveDecimalString.default('1.2'),
+  criticalThreshold: positiveDecimalString.default('1.05'),
+  warningDurationSeconds: z.number().int().min(0).max(86_400).default(60),
+  criticalDurationSeconds: z.number().int().min(0).max(86_400).default(0),
+  cooldownSeconds: z.number().int().min(0).max(604_800).default(1800),
+  notificationIntegrationIds: z.array(z.string().min(1)).default([]),
+}).superRefine((value, context) => {
+  if (new Decimal(value.warningThreshold).lte(value.criticalThreshold)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['warningThreshold'],
+      message: 'warningThreshold must be greater than criticalThreshold',
+    });
+  }
 });
 
 export const ruleCreateSchema = ruleBaseSchema.superRefine((value, context) => {
@@ -188,3 +210,4 @@ export type MonitorCreate = z.infer<typeof monitorCreateSchema>;
 export type MonitorPatch = z.infer<typeof monitorPatchSchema>;
 export type RuleCreate = z.infer<typeof ruleCreateSchema>;
 export type RulePatch = z.infer<typeof rulePatchSchema>;
+export type AaveRiskRulePreset = z.infer<typeof aaveRiskRulePresetSchema>;

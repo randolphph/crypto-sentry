@@ -155,7 +155,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   registerIntegrationRoutes(app, integrations, integrationOperations, events);
-  registerMonitorRoutes(app, monitors, events, latestMetrics);
+  registerMonitorRoutes(app, monitors, events, latestMetrics, rules);
   registerRuleRoutes(app, rules, events);
   registerAlertRoutes(app, alerts);
   registerStatusRoutes(app, status);

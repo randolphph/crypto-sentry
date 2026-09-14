@@ -16,9 +16,14 @@ function alertTitle(commit: RuleEvaluationCommit): string {
 }
 
 function alertMessage(commit: RuleEvaluationCommit): string {
+  const labels = Object.entries(commit.metric.labels ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, value]) => `${name}=${value}`)
+    .join(', ');
   return [
     `Rule: ${commit.rule.name}`,
     `Target: ${commit.metric.target}`,
+    ...(labels.length === 0 ? [] : [`Labels: ${labels}`]),
     `Metric: ${commit.metric.name}`,
     `Current value: ${String(commit.metric.value)}${commit.metric.unit === undefined ? '' : ` ${commit.metric.unit}`}`,
     `Condition: ${commit.rule.operator} ${commit.rule.threshold}`,
@@ -41,6 +46,7 @@ export class RuleExecutionRepository implements RuleExecutionStore {
         monitorId: row.monitorId,
         name: row.name,
         metric: row.metric,
+        labels: JSON.parse(row.labelsJson) as Record<string, string>,
         windowSeconds: row.windowSeconds,
         operator: row.operator as RuleOperator,
         threshold: row.threshold,

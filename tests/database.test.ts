@@ -31,7 +31,7 @@ describe('SQLite persistence', () => {
     });
     expect(firstDatabase.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
     expect(firstDatabase.sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(firstDatabase.sqlite.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 2 });
+    expect(firstDatabase.sqlite.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 3 });
     firstDatabase.close();
 
     expect(readFileSync(databasePath).includes(Buffer.from('database-secret'))).toBe(false);

@@ -144,6 +144,17 @@ GET /api/v1/monitors/:id/positions
 
 每个链和资产通过 Metric labels 区分。读取完全只读，不需要私钥、助记词或钱包签名；单链读取失败会进入 `error`，不会把失败伪装成零仓位。
 
+规则支持可选的 `labels` 精确匹配。例如 `{"chainId":"1"}` 只消费 Ethereum 指标，不会被其他网络的同名 `health_factor` 更新或恢复。完成首次 Aave 扫描后，可一键为每个已发现网络创建默认健康因子规则：
+
+```text
+POST /api/v1/monitors/:id/aave-risk-rules
+Content-Type: application/json
+
+{}
+```
+
+默认创建 `health_factor <= 1.2` 的 warning（持续 60 秒）和 `health_factor <= 1.05` 的 critical（立即触发），冷却时间为 30 分钟。请求体可覆盖 `warningThreshold`、`criticalThreshold`、两级持续时间、`cooldownSeconds` 和 `notificationIntegrationIds`。接口是幂等的：同一 Monitor 和网络重复调用不会重复创建默认规则。
+
 ## 质量检查
 
 提交或发布前运行：

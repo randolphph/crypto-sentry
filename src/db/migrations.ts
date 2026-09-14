@@ -103,6 +103,12 @@ CREATE INDEX integration_markets_canonical_idx
   ON integration_markets(integration_id, canonical_symbol);
 `,
   },
+  {
+    name: '0002_rule_labels',
+    sql: `
+ALTER TABLE rules ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}';
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

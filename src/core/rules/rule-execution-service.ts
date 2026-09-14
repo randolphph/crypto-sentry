@@ -10,6 +10,7 @@ export interface ExecutableRule extends EvaluatedRule {
   monitorId: string;
   name: string;
   metric: string;
+  labels: Record<string, string>;
   windowSeconds: number | null;
   operator: RuleOperator;
   severity: string;
@@ -33,6 +34,10 @@ export interface RuleExecutionStore {
 function describeError(rule: ExecutableRule, error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(`Rule ${rule.id} (${rule.name}) failed: ${message}`, { cause: error });
+}
+
+function labelsMatch(rule: ExecutableRule, metric: Metric): boolean {
+  return Object.entries(rule.labels).every(([name, value]) => metric.labels?.[name] === value);
 }
 
 export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvider {
@@ -65,9 +70,10 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
       this.markFailed(failure);
       throw failure;
     }
-    const matchingRules = metric.name === 'price_change_percent'
-      ? rules.filter((rule) => String(rule.windowSeconds) === metric.labels?.windowSeconds)
-      : rules;
+    const matchingRules = rules.filter((rule) => (
+      labelsMatch(rule, metric) &&
+      (metric.name !== 'price_change_percent' || String(rule.windowSeconds) === metric.labels?.windowSeconds)
+    ));
     for (const rule of matchingRules) {
       try {
         const state = this.store.getState(rule.id);

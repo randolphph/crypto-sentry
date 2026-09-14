@@ -66,6 +66,7 @@ function ruleInput(monitorId: string, overrides: Partial<RuleCreate> = {}): Rule
     monitorId,
     name: 'BTC below 90',
     metric: 'price',
+    labels: {},
     operator: 'lte',
     threshold: '90',
     durationSeconds: 0,
@@ -243,6 +244,58 @@ describe('RuleExecutionService', () => {
     const createdAlerts = fixture.alerts.list({ limit: 50, offset: 0 });
     expect(createdAlerts.total).toBe(1);
     expect(createdAlerts.items[0]?.ruleId).toBe(fiveMinute.id);
+    await pipeline.close();
+    fixture.database.close();
+  });
+
+  it('matches rules only to metrics containing every selected label', async () => {
+    const fixture = createFixture();
+    const ethereumRule = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, {
+      name: 'Ethereum health factor',
+      metric: 'health_factor',
+      labels: { chainId: '1' },
+      operator: 'lte',
+      threshold: '1.2',
+      hysteresis: '0.05',
+    }));
+    fixture.ruleConfigs.create(ruleInput(fixture.monitor.id, {
+      name: 'Base health factor',
+      metric: 'health_factor',
+      labels: { chainId: '8453' },
+      operator: 'lte',
+      threshold: '1.2',
+      hysteresis: '0.05',
+    }));
+    const pipeline = createPipeline(fixture.database, fixture.monitors);
+
+    await pipeline.ingest({
+      ...priceMetric(fixture.monitor.id, '1.1', '2026-09-14T12:00:00.000Z'),
+      source: 'aave_v3',
+      name: 'health_factor',
+      unit: 'ratio',
+      labels: { chainId: '1', chainName: 'Ethereum' },
+    });
+    await pipeline.ingest({
+      ...priceMetric(fixture.monitor.id, '1.5', '2026-09-14T12:00:01.000Z'),
+      source: 'aave_v3',
+      name: 'health_factor',
+      unit: 'ratio',
+      labels: { chainId: '8453', chainName: 'Base' },
+    });
+
+    const openAlerts = fixture.alerts.list({ limit: 50, offset: 0, status: 'open' });
+    expect(openAlerts.total).toBe(1);
+    expect(openAlerts.items[0]?.ruleId).toBe(ethereumRule.id);
+    expect(openAlerts.items[0]?.message).toContain('Labels: chainId=1, chainName=Ethereum');
+
+    await pipeline.ingest({
+      ...priceMetric(fixture.monitor.id, '1.3', '2026-09-14T12:00:02.000Z'),
+      source: 'aave_v3',
+      name: 'health_factor',
+      unit: 'ratio',
+      labels: { chainId: '1', chainName: 'Ethereum' },
+    });
+    expect(fixture.alerts.get(String(openAlerts.items[0]?.id)).status).toBe('resolved');
     await pipeline.close();
     fixture.database.close();
   });

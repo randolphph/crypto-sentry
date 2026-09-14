@@ -186,4 +186,66 @@ describe('Aave position monitor API', () => {
     expect(monitor.json<{ lastStatus: string }>().lastStatus).toBe('error');
     expect(monitor.body).not.toContain('private-key');
   });
+
+  it('creates idempotent chain-scoped default health-factor rules', async () => {
+    await createRpcIntegration();
+    const createdMonitor = await app.inject({
+      method: 'POST',
+      url: '/api/v1/monitors',
+      headers: authorization,
+      payload: {
+        name: 'Aave alert account',
+        type: 'aave_position',
+        config: { walletAddress },
+      },
+    });
+    const monitorId = createdMonitor.json<{ id: string }>().id;
+    await vi.waitFor(async () => {
+      const positions = await app.inject({
+        method: 'GET',
+        url: `/api/v1/monitors/${monitorId}/positions`,
+        headers: authorization,
+      });
+      expect(positions.json<{ status: string }>().status).toBe('ok');
+    });
+
+    const first = await app.inject({
+      method: 'POST',
+      url: `/api/v1/monitors/${monitorId}/aave-risk-rules`,
+      headers: authorization,
+      payload: {},
+    });
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({
+      createdCount: 2,
+      existingCount: 0,
+      items: [
+        { chainId: 1, severity: 'warning', threshold: '1.2', created: true },
+        { chainId: 1, severity: 'critical', threshold: '1.05', created: true },
+      ],
+    });
+
+    const rulesResponse = await app.inject({ method: 'GET', url: '/api/v1/rules', headers: authorization });
+    const createdRules = rulesResponse.json<{ items: Array<{ monitorId: string; labels: Record<string, string> }> }>().items;
+    expect(createdRules).toHaveLength(2);
+    expect(createdRules.every((rule) => rule.monitorId === monitorId && rule.labels.chainId === '1')).toBe(true);
+
+    const repeated = await app.inject({
+      method: 'POST',
+      url: `/api/v1/monitors/${monitorId}/aave-risk-rules`,
+      headers: authorization,
+      payload: {},
+    });
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toMatchObject({ createdCount: 0, existingCount: 2 });
+
+    const invalidThresholds = await app.inject({
+      method: 'POST',
+      url: `/api/v1/monitors/${monitorId}/aave-risk-rules`,
+      headers: authorization,
+      payload: { warningThreshold: '1.0', criticalThreshold: '1.1' },
+    });
+    expect(invalidThresholds.statusCode).toBe(400);
+    expect(invalidThresholds.body).toContain('warningThreshold');
+  });
 });

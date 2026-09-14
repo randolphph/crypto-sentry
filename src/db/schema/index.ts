@@ -59,6 +59,7 @@ export const rules = sqliteTable(
       .references(() => monitors.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     metric: text('metric').notNull(),
+    labelsJson: text('labels_json').notNull().default('{}'),
     operator: text('operator').notNull(),
     threshold: text('threshold').notNull(),
     windowSeconds: integer('window_seconds'),

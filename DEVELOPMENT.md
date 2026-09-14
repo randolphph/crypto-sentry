@@ -40,6 +40,7 @@
 - [x] 通用 EVM RPC 集成、链 ID 校验、非重叠轮询调度与任务故障隔离
 - [x] Aave V3 地址式多链仓位适配器（Ethereum、Arbitrum、Base、BNB Chain）
 - [x] Aave V3 结构化仓位快照 API、空仓位/部分失败/过期状态建模
+- [x] Metric label 规则过滤与按网络幂等创建的 Aave 健康因子预设规则
 - [ ] Uniswap V3 与 PancakeSwap V3 LP 适配器
 - [ ] Uniswap V4 PositionManager/StateView 适配器
 - [ ] tick、价格方向、decimals、hooks 与 unsupported 费用测试

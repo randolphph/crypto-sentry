@@ -3,18 +3,22 @@ import type { FastifyInstance } from 'fastify';
 import type { ConfigEventBus } from '../../core/config-events/config-event-bus.js';
 import type { MetricSnapshotReader } from '../../core/metrics/latest-metric-store.js';
 import { AavePositionSnapshotService } from '../../core/positions/aave-position-snapshot-service.js';
+import { AaveRiskRulePresetService } from '../../core/rules/aave-risk-rule-preset-service.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
+import type { RuleRepository } from '../../db/repositories/rule-repository.js';
 import { AppError } from '../errors.js';
 import { openApiSchema } from '../openapi.js';
-import { idParamsSchema, monitorCreateSchema, monitorPatchSchema } from '../schemas.js';
+import { aaveRiskRulePresetSchema, idParamsSchema, monitorCreateSchema, monitorPatchSchema } from '../schemas.js';
 
 export function registerMonitorRoutes(
   app: FastifyInstance,
   repository: MonitorRepository,
   events: ConfigEventBus,
   metrics: MetricSnapshotReader,
+  rules: RuleRepository,
 ): void {
   const aavePositions = new AavePositionSnapshotService(repository, metrics);
+  const aaveRiskRules = new AaveRiskRulePresetService(aavePositions, rules);
   app.get('/api/v1/monitors', { schema: { tags: ['monitors'] } }, async () => ({ items: repository.list() }));
 
   app.post('/api/v1/monitors', { schema: {
@@ -70,5 +74,19 @@ export function registerMonitorRoutes(
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return aavePositions.get(id);
+  });
+
+  app.post('/api/v1/monitors/:id/aave-risk-rules', { schema: {
+    tags: ['monitors', 'rules'],
+    summary: 'Create chain-scoped default Aave V3 health-factor rules',
+    params: openApiSchema(idParamsSchema),
+    body: openApiSchema(aaveRiskRulePresetSchema),
+  } }, async (request, reply) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const result = aaveRiskRules.create(id, aaveRiskRulePresetSchema.parse(request.body));
+    for (const item of result.items) {
+      if (item.created) events.publish({ entity: 'rule', operation: 'created', id: item.id });
+    }
+    return reply.status(result.createdCount > 0 ? 201 : 200).send(result);
   });
 }

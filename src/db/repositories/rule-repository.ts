@@ -31,6 +31,7 @@ export class RuleRepository {
       monitorId: input.monitorId,
       name: input.name,
       metric: input.metric,
+      labelsJson: JSON.stringify(input.labels),
       operator: input.operator,
       threshold: input.threshold,
       windowSeconds: input.windowSeconds ?? null,
@@ -61,6 +62,7 @@ export class RuleRepository {
       ...row,
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.metric === undefined ? {} : { metric: input.metric }),
+      ...(input.labels === undefined ? {} : { labelsJson: JSON.stringify(input.labels) }),
       ...(input.operator === undefined ? {} : { operator: input.operator }),
       ...(input.threshold === undefined ? {} : { threshold: input.threshold }),
       ...(input.windowSeconds === undefined ? {} : { windowSeconds: input.windowSeconds }),
@@ -76,6 +78,7 @@ export class RuleRepository {
     };
     const resetState =
       input.metric !== undefined ||
+      input.labels !== undefined ||
       input.operator !== undefined ||
       input.threshold !== undefined ||
       input.windowSeconds !== undefined ||
@@ -108,9 +111,10 @@ export class RuleRepository {
   }
 
   private present(this: void, row: typeof rules.$inferSelect) {
-    const { notificationIntegrationIdsJson: _, ...publicRow } = row;
+    const { labelsJson: _, notificationIntegrationIdsJson: __, ...publicRow } = row;
     return {
       ...publicRow,
+      labels: JSON.parse(row.labelsJson) as Record<string, string>,
       notificationIntegrationIds: JSON.parse(row.notificationIntegrationIdsJson) as string[],
     };
   }
