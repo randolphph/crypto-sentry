@@ -1,0 +1,3 @@
+-- Canonical SQL is embedded in src/db/migrations.ts so compiled releases can migrate
+-- without relying on source files. This file exists for review and Drizzle tooling.
+-- Do not edit an applied migration; append a new numbered migration instead.

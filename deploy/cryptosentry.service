@@ -1,0 +1,23 @@
+[Unit]
+Description=CryptoSentry Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cryptosentry
+Group=cryptosentry
+WorkingDirectory=/opt/cryptosentry/app
+EnvironmentFile=/etc/cryptosentry.env
+ExecStart=__NODE_PATH__ dist/app.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cryptosentry/data /opt/cryptosentry/backups
+
+[Install]
+WantedBy=multi-user.target

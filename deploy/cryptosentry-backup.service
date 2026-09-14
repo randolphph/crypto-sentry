@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up the CryptoSentry SQLite database
+
+[Service]
+Type=oneshot
+User=cryptosentry
+Group=cryptosentry
+ExecStart=/opt/cryptosentry/app/scripts/backup.sh
