@@ -120,11 +120,11 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
-`evm_rpc/custom` 集成的 `POST /api/v1/integrations/:id/test` 会通过 viem 调用 `eth_chainId` 与 `eth_blockNumber`：配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，传输错误不会把带密钥的 RPC URL 暴露给 API。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
+`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 不仅调用 `eth_chainId` 与 `eth_blockNumber`，还会在受支持网络上读取 Aave V3 Pool 和 Oracle 合约；只有基础 RPC 和真实 `eth_call` 都成功才返回 `connectivity: { rpc: "ok", aaveV3: "ok" }`。配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，无法读取合约时返回 `INTEGRATION_CONNECTION_FAILED`，避免基础探针成功但监控无法运行的误判。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
 
 ## Aave V3 地址监控
 
-先为需要扫描的网络各创建一个启用的 `evm_rpc/custom` 集成。当前自动识别 Ethereum（1）、Arbitrum（42161）、Base（8453）和 BNB Chain（56）；同一网络配置多个 RPC 时会按顺序故障转移。Pool、Oracle、Data Provider 和资产地址均来自 Aave 官方 Address Book，无需手工填写合约地址。
+先为需要扫描的网络各创建一个启用的 `evm_rpc` 集成。当前自动识别 Ethereum（1）、Arbitrum（42161）、Base（8453）和 BNB Chain（56）；同一网络配置多个 RPC 时会按顺序故障转移。Pool、Oracle、Data Provider 和资产地址均来自 Aave 官方 Address Book，无需手工填写合约地址。
 
 创建 Monitor 时只需要钱包地址：
 

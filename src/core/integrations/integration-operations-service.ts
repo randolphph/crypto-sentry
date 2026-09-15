@@ -9,12 +9,14 @@ import { AppError } from '../../api/errors.js';
 import { binanceIntegrationConfigSchema, rpcIntegrationConfigSchema } from '../../api/schemas.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MarketRepository } from '../../db/repositories/market-repository.js';
-import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
+import { AaveV3PositionReader, supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
 import {
   BINANCE_DEFAULT_CONFIG,
   INTEGRATION_CATALOG,
   isEvmRpcProvider,
 } from './integration-catalog.js';
+
+const ZERO_EVM_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 export class IntegrationOperationsService {
   public constructor(
@@ -105,11 +107,25 @@ export class IntegrationOperationsService {
           rpcUrl: config.rpcUrl,
           expectedChainId: config.chainId,
           fetch: this.fetchImplementation,
+          timeoutMilliseconds: config.timeoutMilliseconds,
         }).testConnectivity();
+        const supportsAaveV3 = supportedAaveV3Markets.has(config.chainId);
+        if (supportsAaveV3) {
+          await new AaveV3PositionReader({
+            rpcUrl: config.rpcUrl,
+            expectedChainId: config.chainId,
+            fetch: this.fetchImplementation,
+            timeoutMilliseconds: config.timeoutMilliseconds,
+            multicallBatchSizeBytes: config.multicallBatchSizeBytes,
+          }).read(ZERO_EVM_ADDRESS);
+        }
         return {
           ok: true,
           provider: integration.provider,
-          connectivity: { rpc: 'ok' },
+          connectivity: {
+            rpc: 'ok',
+            ...(supportsAaveV3 ? { aaveV3: 'ok' } : {}),
+          },
           ...probe,
         };
       } catch (error) {
