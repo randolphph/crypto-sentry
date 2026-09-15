@@ -35,9 +35,9 @@ mkdir -p "$RELEASES_DIR"
 git clone --quiet --depth 1 --branch "$TAG" "$REPOSITORY_URL" "$RELEASE_DIR"
 chown -R cryptosentry:cryptosentry "$RELEASE_DIR"
 
-sudo -u cryptosentry pnpm --dir "$RELEASE_DIR" install --frozen-lockfile
-sudo -u cryptosentry pnpm --dir "$RELEASE_DIR" test
-sudo -u cryptosentry pnpm --dir "$RELEASE_DIR" build
+sudo -u cryptosentry npm --prefix "$RELEASE_DIR" ci
+sudo -u cryptosentry npm --prefix "$RELEASE_DIR" test
+sudo -u cryptosentry npm --prefix "$RELEASE_DIR" run build
 
 systemctl stop "$SERVICE"
 if ! sudo -u cryptosentry "$CURRENT_RELEASE/scripts/backup.sh"; then
@@ -50,7 +50,7 @@ set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 set +a
-sudo -u cryptosentry --preserve-env=DATABASE_PATH,API_TOKEN,MASTER_ENCRYPTION_KEY pnpm --dir "$RELEASE_DIR" db:migrate
+sudo -u cryptosentry --preserve-env=DATABASE_PATH,API_TOKEN,MASTER_ENCRYPTION_KEY npm --prefix "$RELEASE_DIR" run db:migrate
 
 ln -s "$RELEASE_DIR" "$APP_LINK.next"
 mv -Tf "$APP_LINK.next" "$APP_LINK"

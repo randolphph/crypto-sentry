@@ -21,7 +21,6 @@ apt-get install -y ca-certificates curl git sqlite3 sudo gnupg openssl debian-ke
 curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/cryptosentry-nodesource.sh
 bash /tmp/cryptosentry-nodesource.sh
 apt-get install -y nodejs
-npm install --global pnpm@10.15.1
 
 if ! command -v caddy >/dev/null; then
   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -36,9 +35,9 @@ install -d -o cryptosentry -g cryptosentry -m 0750 "$ROOT_DIR" "$ROOT_DIR/releas
 readonly RELEASE_DIR="$ROOT_DIR/releases/$TAG"
 git clone --depth 1 --branch "$TAG" "$REPOSITORY_URL" "$RELEASE_DIR"
 chown -R cryptosentry:cryptosentry "$RELEASE_DIR"
-sudo -u cryptosentry pnpm --dir "$RELEASE_DIR" install --frozen-lockfile
-sudo -u cryptosentry pnpm --dir "$RELEASE_DIR" test
-sudo -u cryptosentry pnpm --dir "$RELEASE_DIR" build
+sudo -u cryptosentry npm --prefix "$RELEASE_DIR" ci
+sudo -u cryptosentry npm --prefix "$RELEASE_DIR" test
+sudo -u cryptosentry npm --prefix "$RELEASE_DIR" run build
 ln -s "$RELEASE_DIR" "$ROOT_DIR/app"
 
 if [[ ! -e /etc/cryptosentry.env ]]; then
@@ -62,7 +61,7 @@ set -a
 # shellcheck disable=SC1091
 source /etc/cryptosentry.env
 set +a
-sudo -u cryptosentry --preserve-env=DATABASE_PATH,API_TOKEN,MASTER_ENCRYPTION_KEY pnpm --dir "$RELEASE_DIR" db:migrate
+sudo -u cryptosentry --preserve-env=DATABASE_PATH,API_TOKEN,MASTER_ENCRYPTION_KEY npm --prefix "$RELEASE_DIR" run db:migrate
 
 systemctl daemon-reload
 systemctl enable --now cryptosentry.service cryptosentry-backup.timer caddy.service

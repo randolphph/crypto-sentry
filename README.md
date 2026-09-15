@@ -42,7 +42,7 @@ tests/               # 单元与 API 测试
 要求：
 
 - Node.js 24 LTS
-- pnpm 10.15.1
+- npm 11 或更高版本
 - 编译 `better-sqlite3` 所需的本机构建工具
 
 初始化：
@@ -55,12 +55,12 @@ openssl rand -base64 32
 编辑 `.env`，设置一个至少 32 个字符的 `API_TOKEN`，并把上一步结果写入 `MASTER_ENCRYPTION_KEY`。随后执行：
 
 ```bash
-pnpm install
-pnpm db:migrate
-pnpm dev
+npm install
+npm run db:migrate
+npm run dev
 ```
 
-服务默认只监听 `127.0.0.1:3000`：
+按照 `.env.example` 启动时，服务只监听 `127.0.0.1:3001`：
 
 - 健康检查：`GET /health`
 - Swagger UI：`GET /docs/`
@@ -152,7 +152,7 @@ GET /api/v1/monitors/:id/positions
 AAVE_SMOKE_RPC_URL='https://...' \
 AAVE_SMOKE_CHAIN_ID=1 \
 AAVE_SMOKE_WALLET_ADDRESS='0x...' \
-pnpm test:aave:live
+npm run test:aave:live
 ```
 
 命令输出固定块高的结构化仓位，但错误输出不会打印 RPC URL。
@@ -173,7 +173,7 @@ Content-Type: application/json
 提交或发布前运行：
 
 ```bash
-pnpm check
+npm run check
 ```
 
 该命令依次执行 ESLint、Shell 语法检查、TypeScript 类型检查、Vitest 和生产构建。普通测试不访问 Binance、RPC 或 Telegram；真实外部接口测试将在对应适配器阶段单独启用。
