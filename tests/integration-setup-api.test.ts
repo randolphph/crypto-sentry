@@ -61,8 +61,11 @@ describe('Integration setup API', () => {
       evmRpc: {
         providers: [{ id: 'alchemy' }, { id: 'infura' }, { id: 'quicknode' }, { id: 'custom' }],
       },
-      uniswap: { deployments: [{ chainId: 4_663, version: 'v3' }] },
     });
+    expect(catalogBody.uniswap.deployments.map(({ chainId, version }) => ({ chainId, version }))).toEqual([
+      { chainId: 4_663, version: 'v3' },
+      { chainId: 4_663, version: 'v4' },
+    ]);
     expect(catalogBody.evmRpc.networks).toEqual([
       expect.objectContaining({ chainId: 1, name: 'Ethereum' }),
       expect.objectContaining({ chainId: 42_161, name: 'Arbitrum' }),

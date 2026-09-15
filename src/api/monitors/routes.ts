@@ -80,7 +80,16 @@ export function registerMonitorRoutes(
 
   app.get('/api/v1/monitors/:id/uniswap-position', { schema: {
     tags: ['monitors'],
-    summary: 'Get a structured Uniswap V3 LP position snapshot',
+    summary: 'Get a legacy single-token Uniswap V3/V4 LP position snapshot',
+    params: openApiSchema(idParamsSchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return uniswapPositions.getLegacy(id);
+  });
+
+  app.get('/api/v1/monitors/:id/uniswap-positions', { schema: {
+    tags: ['monitors'],
+    summary: 'Get wallet-discovered Uniswap V3/V4 LP position snapshots',
     params: openApiSchema(idParamsSchema),
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);

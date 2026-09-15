@@ -8,6 +8,23 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const positionManagerAbi = [
   {
     type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }],
+    outputs: [{ name: 'balance', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'tokenOfOwnerByIndex',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'index', type: 'uint256' },
+    ],
+    outputs: [{ name: 'tokenId', type: 'uint256' }],
+  },
+  {
+    type: 'function',
     name: 'ownerOf',
     stateMutability: 'view',
     inputs: [{ name: 'tokenId', type: 'uint256' }],
@@ -132,6 +149,11 @@ export interface UniswapV3PositionReaderOptions {
   publicClient?: PublicClient;
 }
 
+export interface UniswapV3OwnedPositions {
+  blockNumber: bigint;
+  tokenIds: string[];
+}
+
 export class UniswapV3PositionReader {
   private readonly publicClient: PublicClient;
 
@@ -139,17 +161,40 @@ export class UniswapV3PositionReader {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
   }
 
-  public async read(tokenId: string, signal?: AbortSignal): Promise<UniswapV3Position> {
-    const deployment = supportedUniswapV3Deployments.get(this.options.expectedChainId);
-    if (deployment === undefined) {
-      throw new Error(`Uniswap V3 is not supported on chain ${this.options.expectedChainId}`);
-    }
-    const chainId = await this.publicClient.getChainId();
-    if (chainId !== deployment.chainId) {
-      throw new Error(`EVM RPC chain ID mismatch: expected ${deployment.chainId}, received ${chainId}`);
-    }
+  public async discover(walletAddress: Address, signal?: AbortSignal): Promise<UniswapV3OwnedPositions> {
+    const deployment = await this.deployment();
     signal?.throwIfAborted();
     const blockNumber = await this.publicClient.getBlockNumber({ cacheTime: 0 });
+    const balance = await this.publicClient.readContract({
+      address: deployment.positionManagerAddress,
+      abi: positionManagerAbi,
+      functionName: 'balanceOf',
+      args: [getAddress(walletAddress)],
+      blockNumber,
+    });
+    const tokenIds: string[] = [];
+    for (let index = 0n; index < balance; index += 1n) {
+      signal?.throwIfAborted();
+      const tokenId = await this.publicClient.readContract({
+        address: deployment.positionManagerAddress,
+        abi: positionManagerAbi,
+        functionName: 'tokenOfOwnerByIndex',
+        args: [getAddress(walletAddress), index],
+        blockNumber,
+      });
+      tokenIds.push(tokenId.toString());
+    }
+    return { blockNumber, tokenIds };
+  }
+
+  public async read(
+    tokenId: string,
+    signal?: AbortSignal,
+    requestedBlockNumber?: bigint,
+  ): Promise<UniswapV3Position> {
+    const deployment = await this.deployment();
+    signal?.throwIfAborted();
+    const blockNumber = requestedBlockNumber ?? await this.publicClient.getBlockNumber({ cacheTime: 0 });
     const numericTokenId = BigInt(tokenId);
     const [owner, position] = await Promise.all([
       this.publicClient.readContract({
@@ -190,7 +235,7 @@ export class UniswapV3PositionReader {
     return {
       protocol: 'uniswap',
       version: 'v3',
-      chainId,
+      chainId: deployment.chainId,
       chainName: deployment.chainName,
       blockNumber: blockNumber.toString(),
       tokenId,
@@ -208,5 +253,17 @@ export class UniswapV3PositionReader {
       tokensOwed0: formatUnits(owed0, decimals0),
       tokensOwed1: formatUnits(owed1, decimals1),
     };
+  }
+
+  private async deployment(): Promise<UniswapV3Deployment> {
+    const deployment = supportedUniswapV3Deployments.get(this.options.expectedChainId);
+    if (deployment === undefined) {
+      throw new Error(`Uniswap V3 is not supported on chain ${this.options.expectedChainId}`);
+    }
+    const chainId = await this.publicClient.getChainId();
+    if (chainId !== deployment.chainId) {
+      throw new Error(`EVM RPC chain ID mismatch: expected ${deployment.chainId}, received ${chainId}`);
+    }
+    return deployment;
   }
 }

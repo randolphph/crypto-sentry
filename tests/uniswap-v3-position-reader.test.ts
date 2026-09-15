@@ -12,6 +12,33 @@ const token1 = '0x0000000000000000000000000000000000000020';
 const pool = '0x0000000000000000000000000000000000000030';
 
 describe('UniswapV3PositionReader', () => {
+  it('discovers every V3 NFT owned by a wallet at one block', async () => {
+    const readContract = vi.fn(async ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+      if (functionName === 'balanceOf') return 2n;
+      if (functionName === 'tokenOfOwnerByIndex') return (args[1] as bigint) === 0n ? 42n : 77n;
+      throw new Error(`Unexpected function: ${functionName}`);
+    });
+    const publicClient = {
+      getChainId: vi.fn(async () => 4_663),
+      getBlockNumber: vi.fn(async () => 54_321n),
+      readContract,
+    } as unknown as PublicClient;
+    const reader = new UniswapV3PositionReader({
+      rpcUrl: 'https://rpc.example',
+      expectedChainId: 4_663,
+      publicClient,
+    });
+
+    await expect(reader.discover(owner)).resolves.toEqual({
+      blockNumber: 54_321n,
+      tokenIds: ['42', '77'],
+    });
+    expect(readContract).toHaveBeenCalledTimes(3);
+    for (const [parameters] of readContract.mock.calls) {
+      expect(parameters).toEqual(expect.objectContaining({ blockNumber: 54_321n }));
+    }
+  });
+
   it('reads a Robinhood Chain V3 NFT position at one fixed block', async () => {
     const readContract = vi.fn(async ({ functionName, address }: { functionName: string; address: string }) => {
       if (functionName === 'ownerOf') return owner;

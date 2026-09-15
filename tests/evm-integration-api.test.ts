@@ -145,7 +145,7 @@ describe('EVM RPC integration API', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       ok: true,
-      connectivity: { rpc: 'ok', uniswapV3: 'ok' },
+      connectivity: { rpc: 'ok', uniswapV3: 'ok', uniswapV4: 'ok' },
       chainId: 4_663,
     });
   });

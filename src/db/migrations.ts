@@ -109,6 +109,32 @@ CREATE INDEX integration_markets_canonical_idx
 ALTER TABLE rules ADD COLUMN labels_json TEXT NOT NULL DEFAULT '{}';
 `,
   },
+  {
+    name: '0003_uniswap_v4_ownership_index',
+    sql: `
+CREATE TABLE uniswap_v4_scan_checkpoints (
+  integration_id TEXT NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+  wallet_address TEXT NOT NULL,
+  position_manager_address TEXT NOT NULL,
+  last_scanned_block TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (integration_id, wallet_address, position_manager_address)
+);
+CREATE TABLE uniswap_v4_owned_tokens (
+  integration_id TEXT NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+  wallet_address TEXT NOT NULL,
+  position_manager_address TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  owned INTEGER NOT NULL,
+  last_event_block TEXT NOT NULL,
+  last_event_log_index INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (integration_id, wallet_address, position_manager_address, token_id)
+);
+CREATE INDEX uniswap_v4_owned_tokens_wallet_idx
+  ON uniswap_v4_owned_tokens(integration_id, wallet_address, position_manager_address, owned);
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

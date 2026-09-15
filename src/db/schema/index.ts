@@ -127,6 +127,45 @@ export const priceSamples = sqliteTable(
   ],
 );
 
+export const uniswapV4ScanCheckpoints = sqliteTable(
+  'uniswap_v4_scan_checkpoints',
+  {
+    integrationId: text('integration_id')
+      .notNull()
+      .references(() => integrations.id, { onDelete: 'cascade' }),
+    walletAddress: text('wallet_address').notNull(),
+    positionManagerAddress: text('position_manager_address').notNull(),
+    lastScannedBlock: text('last_scanned_block').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.integrationId, table.walletAddress, table.positionManagerAddress] })],
+);
+
+export const uniswapV4OwnedTokens = sqliteTable(
+  'uniswap_v4_owned_tokens',
+  {
+    integrationId: text('integration_id')
+      .notNull()
+      .references(() => integrations.id, { onDelete: 'cascade' }),
+    walletAddress: text('wallet_address').notNull(),
+    positionManagerAddress: text('position_manager_address').notNull(),
+    tokenId: text('token_id').notNull(),
+    owned: integer('owned', { mode: 'boolean' }).notNull(),
+    lastEventBlock: text('last_event_block').notNull(),
+    lastEventLogIndex: integer('last_event_log_index').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.integrationId, table.walletAddress, table.positionManagerAddress, table.tokenId] }),
+    index('uniswap_v4_owned_tokens_wallet_idx').on(
+      table.integrationId,
+      table.walletAddress,
+      table.positionManagerAddress,
+      table.owned,
+    ),
+  ],
+);
+
 export const schemaMigrations = sqliteTable('schema_migrations', {
   name: text('name').primaryKey(),
   checksum: text('checksum').notNull(),

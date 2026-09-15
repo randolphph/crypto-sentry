@@ -11,6 +11,7 @@ import type { IntegrationRepository } from '../../db/repositories/integration-re
 import type { MarketRepository } from '../../db/repositories/market-repository.js';
 import { AaveV3PositionReader, supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
 import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
+import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import {
   BINANCE_DEFAULT_CONFIG,
   INTEGRATION_CATALOG,
@@ -139,6 +140,7 @@ export class IntegrationOperationsService {
           }).read(ZERO_EVM_ADDRESS);
         }
         const uniswapV3 = supportedUniswapV3Deployments.get(config.chainId);
+        const uniswapV4 = supportedUniswapV4Deployments.get(config.chainId);
         if (uniswapV3 !== undefined) {
           const [factoryCode, positionManagerCode] = await Promise.all([
             rpcClient.publicClient.getBytecode({ address: uniswapV3.factoryAddress }),
@@ -148,6 +150,16 @@ export class IntegrationOperationsService {
             throw new Error('Official Uniswap V3 contracts are unavailable through this RPC');
           }
         }
+        if (uniswapV4 !== undefined) {
+          const codes = await Promise.all([
+            rpcClient.publicClient.getBytecode({ address: uniswapV4.poolManagerAddress }),
+            rpcClient.publicClient.getBytecode({ address: uniswapV4.positionManagerAddress }),
+            rpcClient.publicClient.getBytecode({ address: uniswapV4.stateViewAddress }),
+          ]);
+          if (codes.some((code) => code === undefined || code === '0x')) {
+            throw new Error('Official Uniswap V4 contracts are unavailable through this RPC');
+          }
+        }
         return {
           ok: true,
           provider: integration.provider,
@@ -155,6 +167,7 @@ export class IntegrationOperationsService {
             rpc: 'ok',
             ...(supportsAaveV3 ? { aaveV3: 'ok' } : {}),
             ...(uniswapV3 === undefined ? {} : { uniswapV3: 'ok' }),
+            ...(uniswapV4 === undefined ? {} : { uniswapV4: 'ok' }),
           },
           ...probe,
         };

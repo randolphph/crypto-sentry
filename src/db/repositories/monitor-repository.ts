@@ -84,7 +84,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       });
   }
 
-  public listEnabledUniswapV3Monitors() {
+  public listEnabledUniswapMonitors() {
     return this.database
       .select({
         id: monitors.id,

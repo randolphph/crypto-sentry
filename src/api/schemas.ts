@@ -68,13 +68,19 @@ export const marketMonitorConfigSchema = z.object({
 export const aaveMonitorConfigSchema = z.object({
   walletAddress: address,
 }).strict();
-export const lpMonitorConfigSchema = z.object({
+const lpBase = {
   protocol: z.literal('uniswap'),
-  version: z.literal('v3'),
   chainId: z.literal(4_663),
-  tokenId: z.string().regex(/^\d+$/),
   rpcIntegrationId: z.string().min(1),
-}).strict();
+};
+const lpWalletTarget = { walletAddress: address };
+const lpTokenTarget = { tokenId: z.string().regex(/^\d+$/) };
+export const lpMonitorConfigSchema = z.union([
+  z.object({ ...lpBase, version: z.literal('v3'), ...lpWalletTarget }).strict(),
+  z.object({ ...lpBase, version: z.literal('v3'), ...lpTokenTarget }).strict(),
+  z.object({ ...lpBase, version: z.literal('v4'), ...lpWalletTarget }).strict(),
+  z.object({ ...lpBase, version: z.literal('v4'), ...lpTokenTarget }).strict(),
+]);
 
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 

@@ -45,10 +45,11 @@
 - [x] 使用公开 Ethereum RPC 运行显式 Aave 全仓位读取冒烟测试
 - [x] 数据源目录、就绪状态、Alchemy/Infura/QuickNode 标识和 Binance 默认配置 API
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
-- [x] Robinhood Chain Uniswap V3 NFT 仓位适配器、RPC 合约探针与结构化快照 API
+- [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API
+- [x] Robinhood Chain Uniswap V4 PositionManager/PoolManager/StateView 仓位适配器
+- [x] V4 钱包 Transfer 日志分块索引、SQLite 检查点与 ownerOf 对账
 - [ ] Uniswap V3 其他网络与 PancakeSwap V3 LP 适配器
-- [ ] Uniswap V4 PositionManager/StateView 适配器
-- [ ] tick、价格方向、decimals、hooks 与 unsupported 费用测试
+- [ ] LP 当前代币数量、价格方向和完整未领取手续费计算
 
 ### 4. 通知与看板接入
 
@@ -71,5 +72,5 @@
 ## 待部署前确认
 
 - 资产看板是否有后端代理层；若为纯静态站点，需要增加登录代理，不能暴露长期 Token。
-- 首批实际 RPC 服务商、Aave 钱包地址和 LP tokenId；Aave 合约地址由官方 Address Book 管理。
+- 首批实际 RPC 服务商、Aave/Uniswap 钱包地址；Aave 与 Uniswap 合约地址均由后端官方部署目录管理。
 - 告警详情链接的资产看板基础 URL，以及是否发送恢复通知。

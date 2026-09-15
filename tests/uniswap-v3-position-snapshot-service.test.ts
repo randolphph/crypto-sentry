@@ -72,7 +72,7 @@ describe('UniswapV3PositionSnapshotService', () => {
       status: 'ok',
       observedAt,
       dataAgeSeconds: 30,
-      position: {
+      positions: [{
         chainId: 4_663,
         tokenId: '42',
         token0: { symbol: 'USDG', decimals: 6 },
@@ -80,7 +80,7 @@ describe('UniswapV3PositionSnapshotService', () => {
         currentTick: 0,
         liquidity: '1000000',
         inRange: true,
-      },
+      }],
       error: null,
     });
   });

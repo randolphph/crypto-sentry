@@ -21,7 +21,11 @@ import { AaveV3PositionCoordinator } from './core/integrations/aave-v3-position-
 import type { AaveV3PositionReaderFactory } from './core/integrations/aave-v3-position-coordinator.js';
 import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
 import { UniswapV3PositionCoordinator } from './core/integrations/uniswap-v3-position-coordinator.js';
-import type { UniswapV3PositionReaderFactory } from './core/integrations/uniswap-v3-position-coordinator.js';
+import type {
+  UniswapV3PositionReaderFactory,
+  UniswapV4OwnershipIndexerFactory,
+  UniswapV4PositionReaderFactory,
+} from './core/integrations/uniswap-v3-position-coordinator.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
 import { MarketMetricService } from './core/metrics/market-metric-service.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
@@ -36,6 +40,7 @@ import { MonitorRepository } from './db/repositories/monitor-repository.js';
 import { PriceSampleRepository } from './db/repositories/price-sample-repository.js';
 import { RuleRepository } from './db/repositories/rule-repository.js';
 import { RuleExecutionRepository } from './db/repositories/rule-execution-repository.js';
+import { UniswapV4OwnershipRepository } from './db/repositories/uniswap-v4-ownership-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
 
 export interface CreateAppOptions {
@@ -46,6 +51,8 @@ export interface CreateAppOptions {
   marketSampleIntervalMilliseconds?: number;
   aavePositionReaderFactory?: AaveV3PositionReaderFactory;
   uniswapV3PositionReaderFactory?: UniswapV3PositionReaderFactory;
+  uniswapV4PositionReaderFactory?: UniswapV4PositionReaderFactory;
+  uniswapV4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
   pollingMinimumIntervalMilliseconds?: number;
 }
 
@@ -83,6 +90,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     : options.webSocketFactory ?? createNodeMarketWebSocket;
   const integrationOperations = new IntegrationOperationsService(integrations, markets, options.fetch, webSocketFactory);
   const monitors = new MonitorRepository(database.db);
+  const uniswapV4Ownership = new UniswapV4OwnershipRepository(database.db);
   const rules = new RuleRepository(database.db);
   const ruleExecutionStore = new RuleExecutionRepository(database.db);
   const ruleExecution = new RuleExecutionService(ruleExecutionStore);
@@ -111,6 +119,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const uniswapV3PositionCoordinator = new UniswapV3PositionCoordinator(
     integrations,
     monitors,
+    uniswapV4Ownership,
     metricPipeline,
     pollingScheduler,
     {
@@ -118,7 +127,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       ...(options.uniswapV3PositionReaderFactory === undefined
         ? {}
         : { readerFactory: options.uniswapV3PositionReaderFactory }),
-      onError: (error) => app.log.warn({ err: error }, 'Uniswap V3 position scan error'),
+      ...(options.uniswapV4PositionReaderFactory === undefined
+        ? {}
+        : { v4ReaderFactory: options.uniswapV4PositionReaderFactory }),
+      ...(options.uniswapV4OwnershipIndexerFactory === undefined
+        ? {}
+        : { v4OwnershipIndexerFactory: options.uniswapV4OwnershipIndexerFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'Uniswap position scan error'),
     },
   );
   const marketMetricService = options.webSocketFactory === false ? undefined : new MarketMetricService(
