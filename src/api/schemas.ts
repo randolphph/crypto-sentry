@@ -68,22 +68,13 @@ export const marketMonitorConfigSchema = z.object({
 export const aaveMonitorConfigSchema = z.object({
   walletAddress: address,
 }).strict();
-const lpMonitorConfigSchema = z.object({
-  protocol: z.enum(['uniswap', 'pancakeswap']),
-  version: z.enum(['v3', 'v4']),
-  chainId: z.number().int().positive(),
+export const lpMonitorConfigSchema = z.object({
+  protocol: z.literal('uniswap'),
+  version: z.literal('v3'),
+  chainId: z.literal(4_663),
   tokenId: z.string().regex(/^\d+$/),
-  positionManagerAddress: address,
-  stateViewAddress: address.optional(),
   rpcIntegrationId: z.string().min(1),
-}).superRefine((config, context) => {
-  if (config.version === 'v4' && config.stateViewAddress === undefined) {
-    context.addIssue({ code: 'custom', path: ['stateViewAddress'], message: 'Required for Uniswap V4' });
-  }
-  if (config.protocol === 'pancakeswap' && config.version !== 'v3') {
-    context.addIssue({ code: 'custom', path: ['version'], message: 'PancakeSwap only supports V3 in the first release' });
-  }
-});
+}).strict();
 
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 

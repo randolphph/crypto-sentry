@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ConfigEventBus } from '../../core/config-events/config-event-bus.js';
 import type { MetricSnapshotReader } from '../../core/metrics/latest-metric-store.js';
 import { AavePositionSnapshotService } from '../../core/positions/aave-position-snapshot-service.js';
+import { UniswapV3PositionSnapshotService } from '../../core/positions/uniswap-v3-position-snapshot-service.js';
 import { AaveRiskRulePresetService } from '../../core/rules/aave-risk-rule-preset-service.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { RuleRepository } from '../../db/repositories/rule-repository.js';
@@ -18,6 +19,7 @@ export function registerMonitorRoutes(
   rules: RuleRepository,
 ): void {
   const aavePositions = new AavePositionSnapshotService(repository, metrics);
+  const uniswapPositions = new UniswapV3PositionSnapshotService(repository, metrics);
   const aaveRiskRules = new AaveRiskRulePresetService(aavePositions, rules);
   app.get('/api/v1/monitors', { schema: { tags: ['monitors'] } }, async () => ({ items: repository.list() }));
 
@@ -74,6 +76,15 @@ export function registerMonitorRoutes(
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return aavePositions.get(id);
+  });
+
+  app.get('/api/v1/monitors/:id/uniswap-position', { schema: {
+    tags: ['monitors'],
+    summary: 'Get a structured Uniswap V3 LP position snapshot',
+    params: openApiSchema(idParamsSchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return uniswapPositions.get(id);
   });
 
   app.post('/api/v1/monitors/:id/aave-risk-rules', { schema: {

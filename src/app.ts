@@ -20,6 +20,8 @@ import { BinanceMarketDataCoordinator } from './core/integrations/binance-market
 import { AaveV3PositionCoordinator } from './core/integrations/aave-v3-position-coordinator.js';
 import type { AaveV3PositionReaderFactory } from './core/integrations/aave-v3-position-coordinator.js';
 import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
+import { UniswapV3PositionCoordinator } from './core/integrations/uniswap-v3-position-coordinator.js';
+import type { UniswapV3PositionReaderFactory } from './core/integrations/uniswap-v3-position-coordinator.js';
 import { LatestMetricStore } from './core/metrics/latest-metric-store.js';
 import { MarketMetricService } from './core/metrics/market-metric-service.js';
 import { MetricPipeline } from './core/metrics/metric-pipeline.js';
@@ -43,6 +45,7 @@ export interface CreateAppOptions {
   webSocketFactory?: MarketWebSocketFactory | false;
   marketSampleIntervalMilliseconds?: number;
   aavePositionReaderFactory?: AaveV3PositionReaderFactory;
+  uniswapV3PositionReaderFactory?: UniswapV3PositionReaderFactory;
   pollingMinimumIntervalMilliseconds?: number;
 }
 
@@ -105,6 +108,19 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       onError: (error) => app.log.warn({ err: error }, 'Aave V3 position scan error'),
     },
   );
+  const uniswapV3PositionCoordinator = new UniswapV3PositionCoordinator(
+    integrations,
+    monitors,
+    metricPipeline,
+    pollingScheduler,
+    {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.uniswapV3PositionReaderFactory === undefined
+        ? {}
+        : { readerFactory: options.uniswapV3PositionReaderFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'Uniswap V3 position scan error'),
+    },
+  );
   const marketMetricService = options.webSocketFactory === false ? undefined : new MarketMetricService(
     new PriceSampleRepository(database.db),
     metricPipeline,
@@ -138,10 +154,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     if (event.entity === 'monitor' || event.entity === 'integration') {
       aavePositionCoordinator.reconcile();
+      uniswapV3PositionCoordinator.reconcile();
     }
   });
   marketDataCoordinator?.reconcile();
   aavePositionCoordinator.reconcile();
+  uniswapV3PositionCoordinator.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
     database.sqlite.prepare('SELECT 1').get();
@@ -167,6 +185,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     unsubscribeConfigEvents();
     marketDataCoordinator?.close();
     aavePositionCoordinator.close();
+    uniswapV3PositionCoordinator.close();
     await pollingScheduler.close();
     await marketMetricService?.close();
     await metricPipeline.close();

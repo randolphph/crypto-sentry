@@ -45,7 +45,8 @@
 - [x] 使用公开 Ethereum RPC 运行显式 Aave 全仓位读取冒烟测试
 - [x] 数据源目录、就绪状态、Alchemy/Infura/QuickNode 标识和 Binance 默认配置 API
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
-- [ ] Uniswap V3 与 PancakeSwap V3 LP 适配器
+- [x] Robinhood Chain Uniswap V3 NFT 仓位适配器、RPC 合约探针与结构化快照 API
+- [ ] Uniswap V3 其他网络与 PancakeSwap V3 LP 适配器
 - [ ] Uniswap V4 PositionManager/StateView 适配器
 - [ ] tick、价格方向、decimals、hooks 与 unsupported 费用测试
 

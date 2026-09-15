@@ -1,3 +1,5 @@
+import { ROBINHOOD_UNISWAP_V3 } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
+
 export const EVM_RPC_PROVIDERS = ['alchemy', 'infura', 'quicknode', 'custom'] as const;
 
 export type EvmRpcProvider = (typeof EVM_RPC_PROVIDERS)[number];
@@ -31,11 +33,28 @@ export const INTEGRATION_CATALOG = {
       { chainId: 42_161, name: 'Arbitrum', protocols: ['aave_v3'] },
       { chainId: 8_453, name: 'Base', protocols: ['aave_v3'] },
       { chainId: 56, name: 'BNB Chain', protocols: ['aave_v3'] },
+      {
+        chainId: ROBINHOOD_UNISWAP_V3.chainId,
+        name: ROBINHOOD_UNISWAP_V3.chainName,
+        protocols: ['uniswap_v3'],
+        defaultRpcUrl: ROBINHOOD_UNISWAP_V3.rpcUrl,
+        explorerUrl: ROBINHOOD_UNISWAP_V3.explorerUrl,
+      },
     ],
     configDefaults: {
       timeoutMilliseconds: 5_000,
       multicallBatchSizeBytes: 8_192,
     },
+  },
+  uniswap: {
+    deployments: [{
+      chainId: ROBINHOOD_UNISWAP_V3.chainId,
+      chainName: ROBINHOOD_UNISWAP_V3.chainName,
+      version: 'v3',
+      factoryAddress: ROBINHOOD_UNISWAP_V3.factoryAddress,
+      positionManagerAddress: ROBINHOOD_UNISWAP_V3.positionManagerAddress,
+      monitorInput: ['rpcIntegrationId', 'tokenId'],
+    }],
   },
 } as const;
 

@@ -15,6 +15,7 @@
     "start": "node dist/app.js",
     "test": "vitest run",
     "test:aave:live": "node --env-file-if-exists=.env --import tsx src/cli/aave-smoke.ts",
+    "test:uniswap:live": "node --env-file-if-exists=.env --import tsx src/cli/uniswap-v3-smoke.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:shell": "bash -n scripts/*.sh",

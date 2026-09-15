@@ -54,24 +54,56 @@ describe('Integration setup API', () => {
         providers: Array<{ id: string }>;
         networks: Array<{ chainId: number; name: string }>;
       };
+      uniswap: { deployments: Array<{ chainId: number; version: string; positionManagerAddress: string }> };
     }>();
     expect(catalogBody).toMatchObject({
       marketData: { providers: [{ id: 'binance', requiresCredentials: false }] },
       evmRpc: {
         providers: [{ id: 'alchemy' }, { id: 'infura' }, { id: 'quicknode' }, { id: 'custom' }],
       },
+      uniswap: { deployments: [{ chainId: 4_663, version: 'v3' }] },
     });
     expect(catalogBody.evmRpc.networks).toEqual([
       expect.objectContaining({ chainId: 1, name: 'Ethereum' }),
       expect.objectContaining({ chainId: 42_161, name: 'Arbitrum' }),
       expect.objectContaining({ chainId: 8_453, name: 'Base' }),
       expect.objectContaining({ chainId: 56, name: 'BNB Chain' }),
+      expect.objectContaining({ chainId: 4_663, name: 'Robinhood Chain' }),
     ]);
 
     const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
     expect(readiness.json()).toEqual({
       aave: { ready: false, configuredNetworkCount: 0, networks: [] },
       binance: { ready: false, sources: [] },
+      uniswap: { ready: false, configuredNetworkCount: 0, networks: [] },
+    });
+  });
+
+  it('reports Robinhood Chain RPC as ready for Uniswap but not Aave', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/integrations',
+      headers: authorization,
+      payload: {
+        name: 'Robinhood Chain',
+        type: 'evm_rpc',
+        provider: 'custom',
+        config: { chainId: 4_663, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com' },
+      },
+    });
+    const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
+
+    expect(readiness.json()).toMatchObject({
+      aave: { ready: false, configuredNetworkCount: 0 },
+      uniswap: {
+        ready: true,
+        configuredNetworkCount: 1,
+        networks: [{
+          chainId: 4_663,
+          name: 'Robinhood Chain',
+          integrationIds: [created.json<{ id: string }>().id],
+        }],
+      },
     });
   });
 

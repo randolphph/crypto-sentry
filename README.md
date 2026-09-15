@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；Aave V3 已支持按钱包地址自动扫描多链仓位，LP 协议读取和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持 REST/WebSocket 连通测试、市场发现、本地缓存、实时价格、滚动涨跌幅和数据过期检测；Aave V3 已支持按钱包地址自动扫描多链仓位；Uniswap V3 已支持 Robinhood Chain LP NFT 仓位读取。Uniswap V4、其他 LP 网络和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 ## 技术栈
 
@@ -90,7 +90,7 @@ Dashboard 可先读取数据源目录和当前就绪状态，避免在前端硬�
 
 ```text
 GET  /api/v1/integrations/catalog            # 服务商、网络和安全默认值
-GET  /api/v1/integrations/readiness          # Aave/Binance 是否可创建有效 Monitor
+GET  /api/v1/integrations/readiness          # Aave/Binance/Uniswap 是否可创建有效 Monitor
 POST /api/v1/integrations/binance/default    # 幂等创建无需密钥的 Binance 公共行情源
 ```
 
@@ -120,7 +120,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
-`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 不仅调用 `eth_chainId` 与 `eth_blockNumber`，还会在受支持网络上读取 Aave V3 Pool 和 Oracle 合约；只有基础 RPC 和真实 `eth_call` 都成功才返回 `connectivity: { rpc: "ok", aaveV3: "ok" }`。配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，无法读取合约时返回 `INTEGRATION_CONNECTION_FAILED`，避免基础探针成功但监控无法运行的误判。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
+`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 不仅调用 `eth_chainId` 与 `eth_blockNumber`，还会检查该网络已接入协议的真实合约。Aave 网络读取 Pool 和 Oracle；Robinhood Chain 检查 Uniswap V3 Factory 与 NonfungiblePositionManager 字节码。测试成功时 `connectivity` 会按网络返回 `rpc: "ok"`、`aaveV3: "ok"` 或 `uniswapV3: "ok"`。配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，无法读取合约时返回 `INTEGRATION_CONNECTION_FAILED`。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
 
 ## Aave V3 地址监控
 
@@ -177,6 +177,77 @@ Content-Type: application/json
 ```
 
 默认创建 `health_factor <= 1.2` 的 warning（持续 60 秒）和 `health_factor <= 1.05` 的 critical（立即触发），冷却时间为 30 分钟。请求体可覆盖 `warningThreshold`、`criticalThreshold`、两级持续时间、`cooldownSeconds` 和 `notificationIntegrationIds`。接口是幂等的：同一 Monitor 和网络重复调用不会重复创建默认规则。
+
+## Robinhood Chain Uniswap V3 LP 监控
+
+当前首个 LP 垂直切片支持 Robinhood Chain 主网（Chain ID `4663`）上的 Uniswap V3 NFT 仓位。后端内置官方 Factory 与 NonfungiblePositionManager 地址，不接受前端传入合约地址。Robinhood 公共 RPC 可用于本地测试；生产环境建议在 Dashboard 中配置该网络的 Alchemy、QuickNode 或其他专用标准 JSON-RPC。
+
+先创建 RPC 集成：
+
+```http
+POST /api/v1/integrations
+Content-Type: application/json
+
+{
+  "name": "Robinhood Chain RPC",
+  "type": "evm_rpc",
+  "provider": "alchemy",
+  "config": {
+    "chainId": 4663,
+    "rpcUrl": "https://your-robinhood-chain-rpc.example"
+  }
+}
+```
+
+`provider` 也可以使用 `quicknode` 或 `custom`。保存后调用 `POST /api/v1/integrations/:id/test`；成功响应应包含：
+
+```json
+{
+  "ok": true,
+  "connectivity": { "rpc": "ok", "uniswapV3": "ok" },
+  "chainId": 4663,
+  "blockNumber": "..."
+}
+```
+
+随后使用钱包中 Uniswap V3 LP NFT 的 `tokenId` 创建 Monitor：
+
+```http
+POST /api/v1/monitors
+Content-Type: application/json
+
+{
+  "name": "Robinhood Uniswap V3 LP #42",
+  "type": "lp_position",
+  "intervalSeconds": 20,
+  "maxStaleSeconds": 90,
+  "config": {
+    "protocol": "uniswap",
+    "version": "v3",
+    "chainId": 4663,
+    "tokenId": "42",
+    "rpcIntegrationId": "int_..."
+  }
+}
+```
+
+创建后轮询结构化接口：
+
+```text
+GET /api/v1/monitors/:id/uniswap-position
+```
+
+`status` 为 `warming_up`、`ok`、`stale` 或 `error`；`position` 包含 NFT owner、币对地址/符号/decimals、池地址、费率档位、上下界 tick、当前 tick、流动性、是否处于价格区间，以及合约当前记录的 `tokensOwed0/1`。所有合约读取固定在同一个块高。底层指标也可从 `GET /api/v1/monitors/:id/metrics` 获取，主要名称为 `current_tick`、`tick_lower`、`tick_upper`、`liquidity`、`in_range`、`tokens_owed0` 和 `tokens_owed1`。
+
+当前版本按 `tokenId` 监控单个 V3 NFT，不会仅凭钱包地址自动枚举 NFT；钱包级发现需要索引器或受控日志扫描，将作为后续能力。`tokensOwed0/1` 是 PositionManager 当前已记账数值，不等同于把最新 fee growth 计算在内的完整待领取手续费。
+
+有实际 LP tokenId 时可显式运行真实读取测试：
+
+```bash
+UNISWAP_SMOKE_RPC_URL='https://...' \
+UNISWAP_SMOKE_TOKEN_ID='42' \
+npm run test:uniswap:live
+```
 
 ## 质量检查
 

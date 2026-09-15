@@ -42,6 +42,7 @@ describe('EVM RPC integration API', () => {
     const request = rpcRequest(init);
     if (request.method === 'eth_chainId') return rpcResponse(request.id, `0x${actualChainId.toString(16)}`);
     if (request.method === 'eth_blockNumber') return rpcResponse(request.id, '0x64');
+    if (request.method === 'eth_getCode') return rpcResponse(request.id, '0x6000');
     if (request.method === 'eth_call') {
       if (contractCallsFail) return rpcError(request.id, 'intrinsic gas too low');
       const transaction = request.params?.[0] as { data?: string } | undefined;
@@ -74,6 +75,20 @@ describe('EVM RPC integration API', () => {
         type: 'evm_rpc',
         provider: 'alchemy',
         config: { chainId: 1, rpcUrl: 'https://rpc.example/private-key' },
+      },
+    });
+  }
+
+  async function createRobinhoodRpcIntegration() {
+    return app.inject({
+      method: 'POST',
+      url: '/api/v1/integrations',
+      headers: authorization,
+      payload: {
+        name: 'Robinhood Chain',
+        type: 'evm_rpc',
+        provider: 'custom',
+        config: { chainId: 4_663, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com' },
       },
     });
   }
@@ -116,6 +131,23 @@ describe('EVM RPC integration API', () => {
       },
     });
     expect(response.body).toContain('intrinsic gas too low');
+  });
+
+  it('verifies official Uniswap V3 contracts on Robinhood Chain', async () => {
+    actualChainId = 4_663;
+    const created = await createRobinhoodRpcIntegration();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/v1/integrations/${created.json<{ id: string }>().id}/test`,
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      ok: true,
+      connectivity: { rpc: 'ok', uniswapV3: 'ok' },
+      chainId: 4_663,
+    });
   });
 
   it('rejects a different network with the expected and actual chain IDs', async () => {

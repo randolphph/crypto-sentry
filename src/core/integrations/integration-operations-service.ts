@@ -10,6 +10,7 @@ import { binanceIntegrationConfigSchema, rpcIntegrationConfigSchema } from '../.
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MarketRepository } from '../../db/repositories/market-repository.js';
 import { AaveV3PositionReader, supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
+import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import {
   BINANCE_DEFAULT_CONFIG,
   INTEGRATION_CATALOG,
@@ -33,6 +34,7 @@ export class IntegrationOperationsService {
   public readiness() {
     const integrations = this.integrations.listRuntime();
     const rpcNetworks = new Map<number, { chainId: number; name: string; integrationIds: string[] }>();
+    const uniswapNetworks = new Map<number, { chainId: number; name: string; integrationIds: string[] }>();
     const binanceSources: Array<{
       integrationId: string;
       name: string;
@@ -53,6 +55,16 @@ export class IntegrationOperationsService {
           current.integrationIds.push(integration.id);
           rpcNetworks.set(parsed.data.chainId, current);
         }
+        const uniswap = parsed.success ? supportedUniswapV3Deployments.get(parsed.data.chainId) : undefined;
+        if (parsed.success && uniswap !== undefined) {
+          const current = uniswapNetworks.get(parsed.data.chainId) ?? {
+            chainId: parsed.data.chainId,
+            name: uniswap.chainName,
+            integrationIds: [],
+          };
+          current.integrationIds.push(integration.id);
+          uniswapNetworks.set(parsed.data.chainId, current);
+        }
       }
       if (integration.type === 'market_data' && integration.provider === 'binance') {
         binanceSources.push({
@@ -65,6 +77,7 @@ export class IntegrationOperationsService {
     }
 
     const networks = [...rpcNetworks.values()].sort((left, right) => left.chainId - right.chainId);
+    const uniswap = [...uniswapNetworks.values()].sort((left, right) => left.chainId - right.chainId);
     return {
       aave: {
         ready: networks.length > 0,
@@ -74,6 +87,11 @@ export class IntegrationOperationsService {
       binance: {
         ready: binanceSources.some((source) => source.enabled && source.marketCount > 0),
         sources: binanceSources,
+      },
+      uniswap: {
+        ready: uniswap.length > 0,
+        configuredNetworkCount: uniswap.length,
+        networks: uniswap,
       },
     };
   }
@@ -103,12 +121,13 @@ export class IntegrationOperationsService {
     if (integration.type === 'evm_rpc' && isEvmRpcProvider(integration.provider)) {
       const config = rpcIntegrationConfigSchema.parse(integration.config);
       try {
-        const probe = await new EvmRpcClient({
+        const rpcClient = new EvmRpcClient({
           rpcUrl: config.rpcUrl,
           expectedChainId: config.chainId,
           fetch: this.fetchImplementation,
           timeoutMilliseconds: config.timeoutMilliseconds,
-        }).testConnectivity();
+        });
+        const probe = await rpcClient.testConnectivity();
         const supportsAaveV3 = supportedAaveV3Markets.has(config.chainId);
         if (supportsAaveV3) {
           await new AaveV3PositionReader({
@@ -119,12 +138,23 @@ export class IntegrationOperationsService {
             multicallBatchSizeBytes: config.multicallBatchSizeBytes,
           }).read(ZERO_EVM_ADDRESS);
         }
+        const uniswapV3 = supportedUniswapV3Deployments.get(config.chainId);
+        if (uniswapV3 !== undefined) {
+          const [factoryCode, positionManagerCode] = await Promise.all([
+            rpcClient.publicClient.getBytecode({ address: uniswapV3.factoryAddress }),
+            rpcClient.publicClient.getBytecode({ address: uniswapV3.positionManagerAddress }),
+          ]);
+          if (factoryCode === undefined || factoryCode === '0x' || positionManagerCode === undefined || positionManagerCode === '0x') {
+            throw new Error('Official Uniswap V3 contracts are unavailable through this RPC');
+          }
+        }
         return {
           ok: true,
           provider: integration.provider,
           connectivity: {
             rpc: 'ok',
             ...(supportsAaveV3 ? { aaveV3: 'ok' } : {}),
+            ...(uniswapV3 === undefined ? {} : { uniswapV3: 'ok' }),
           },
           ...probe,
         };
