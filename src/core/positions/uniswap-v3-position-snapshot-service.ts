@@ -1,5 +1,9 @@
 import { AppError } from '../../api/errors.js';
-import { lpMonitorConfigSchema } from '../../api/schemas.js';
+import {
+  lpMonitorConfigSchema,
+  uniswapPositionMonitorConfigSchema,
+  uniswapWalletMonitorConfigSchema,
+} from '../../api/schemas.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricSnapshotReader } from '../metrics/latest-metric-store.js';
@@ -30,9 +34,10 @@ function groupByTokenId(metrics: Metric[]): Map<string, Metric[]> {
   for (const metric of metrics) {
     const tokenId = metric.labels?.tokenId;
     if (tokenId === undefined) continue;
-    const tokenMetrics = grouped.get(tokenId) ?? [];
+    const key = `${metric.labels?.version ?? 'v3'}:${tokenId}`;
+    const tokenMetrics = grouped.get(key) ?? [];
     tokenMetrics.push(metric);
-    grouped.set(tokenId, tokenMetrics);
+    grouped.set(key, tokenMetrics);
   }
   return grouped;
 }
@@ -46,12 +51,18 @@ export class UniswapV3PositionSnapshotService {
 
   public get(monitorId: string) {
     const monitor = this.monitors.get(monitorId);
-    if (monitor.type !== 'lp_position') {
+    if (!['lp_position', 'uniswap_position', 'uniswap_wallet'].includes(monitor.type)) {
       throw new AppError(409, 'MONITOR_TYPE_MISMATCH', 'Uniswap snapshots are only available for LP monitors');
     }
-    const config = lpMonitorConfigSchema.parse(monitor.config);
+    const legacy = lpMonitorConfigSchema.safeParse(monitor.config);
+    const positionConfig = uniswapPositionMonitorConfigSchema.safeParse(monitor.config);
+    const walletConfig = uniswapWalletMonitorConfigSchema.safeParse(monitor.config);
+    const config = legacy.success ? legacy.data : positionConfig.success
+      ? positionConfig.data
+      : walletConfig.success ? walletConfig.data : uniswapWalletMonitorConfigSchema.parse(monitor.config);
     const metrics = this.metrics.list(monitorId).filter((metric) => metric.source.startsWith('uniswap'));
-    const scanStatus = byName(metrics, 'scan_status') ?? byName(metrics, 'read_status');
+    const scanStatuses = metrics.filter((metric) => metric.name === 'scan_status' || metric.name === 'read_status');
+    const scanStatus = scanStatuses.sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt))[0];
     const observedAt = scanStatus?.observedAt ?? null;
     const dataAgeSeconds = observedAt === null
       ? null
@@ -62,7 +73,7 @@ export class UniswapV3PositionSnapshotService {
     const groups = groupByTokenId(metrics);
     const positions = [...groups.entries()]
       .filter(([, positionMetrics]) => byName(positionMetrics, 'read_status')?.value === true)
-      .map(([tokenId, positionMetrics]) => this.position(tokenId, positionMetrics))
+      .map(([key, positionMetrics]) => this.position(key.slice(key.indexOf(':') + 1), positionMetrics))
       .sort((left, right) => {
         const leftId = BigInt(left.tokenId);
         const rightId = BigInt(right.tokenId);
@@ -71,8 +82,9 @@ export class UniswapV3PositionSnapshotService {
     const failedPositionCount = [...groups.values()]
       .filter((positionMetrics) => byName(positionMetrics, 'read_status')?.status === 'error')
       .length;
-    const caughtUp = booleanValue(byName(metrics, 'discovery_caught_up')) ?? true;
-    const scanFailed = scanStatus?.status === 'error' || scanStatus?.value === false;
+    const discoveryMetrics = metrics.filter((metric) => metric.name === 'discovery_caught_up');
+    const caughtUp = discoveryMetrics.every((metric) => metric.value === true);
+    const scanFailed = scanStatuses.some((metric) => metric.status === 'error' || metric.value === false);
     const status: UniswapPositionSnapshotStatus =
       scanStatus === undefined ? 'warming_up' :
       isStale ? 'stale' :
@@ -85,8 +97,10 @@ export class UniswapV3PositionSnapshotService {
     return {
       monitorId,
       protocol: 'uniswap' as const,
-      version: config.version,
-      chainId: config.chainId,
+      version: 'version' in config ? config.version : config.versions.length === 1 ? config.versions[0] : null,
+      versions: 'version' in config ? [config.version] : config.versions,
+      chainId: 'chainId' in config ? config.chainId : config.chainIds[0],
+      chainIds: 'chainId' in config ? [config.chainId] : config.chainIds,
       chainName: scanStatus?.labels?.chainName ?? 'Robinhood Chain',
       walletAddress: 'walletAddress' in config ? config.walletAddress : null,
       requestedTokenId: 'tokenId' in config ? config.tokenId : null,

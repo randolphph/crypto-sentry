@@ -35,6 +35,7 @@ import { StatusService } from './core/status/status-service.js';
 import { createDatabase } from './db/client.js';
 import { AlertRepository } from './db/repositories/alert-repository.js';
 import { IntegrationRepository } from './db/repositories/integration-repository.js';
+import { IntegrationNetworkHealthRepository } from './db/repositories/integration-network-health-repository.js';
 import { MarketRepository } from './db/repositories/market-repository.js';
 import { MonitorRepository } from './db/repositories/monitor-repository.js';
 import { PriceSampleRepository } from './db/repositories/price-sample-repository.js';
@@ -72,7 +73,27 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   await app.register(swagger, {
     openapi: {
       info: { title: 'CryptoSentry API', version: '0.1.0' },
-      components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } } },
+      components: {
+        securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer' } },
+        schemas: {
+          StableErrorCode: {
+            type: 'string',
+            enum: [
+              'RPC_ROUTING_CONFIG_INVALID', 'RPC_CHAIN_UNSUPPORTED', 'RPC_CHAIN_ID_MISMATCH',
+              'RPC_PARTIAL_FAILURE', 'MONITOR_TYPE_NOT_READY', 'PROTOCOL_NOT_READY',
+              'RULE_CONDITION_INVALID', 'METRIC_NOT_AVAILABLE',
+            ],
+          },
+          ErrorResponse: {
+            type: 'object', required: ['error'], properties: { error: {
+              type: 'object', required: ['code', 'message'], properties: {
+                code: { $ref: '#/components/schemas/StableErrorCode' }, message: { type: 'string' },
+                fields: { type: 'object', additionalProperties: { type: 'string' } },
+              },
+            } },
+          },
+        },
+      },
       security: [{ bearerAuth: [] }],
     },
   });
@@ -84,12 +105,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const encryption = new EncryptionService(config.masterEncryptionKey);
   const events = new ConfigEventBus();
   const integrations = new IntegrationRepository(database.db, encryption);
+  const integrationNetworkHealth = new IntegrationNetworkHealthRepository(database.db);
   const markets = new MarketRepository(database.db);
   const webSocketFactory = options.webSocketFactory === false
     ? createNodeMarketWebSocket
     : options.webSocketFactory ?? createNodeMarketWebSocket;
-  const integrationOperations = new IntegrationOperationsService(integrations, markets, options.fetch, webSocketFactory);
-  const monitors = new MonitorRepository(database.db);
+  const integrationOperations = new IntegrationOperationsService(integrations, markets, integrationNetworkHealth, options.fetch, webSocketFactory);
+  const monitors = new MonitorRepository(database.db, integrations);
   const uniswapV4Ownership = new UniswapV4OwnershipRepository(database.db);
   const rules = new RuleRepository(database.db);
   const ruleExecutionStore = new RuleExecutionRepository(database.db);

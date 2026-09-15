@@ -29,15 +29,22 @@ export const INTEGRATION_CATALOG = {
       { id: 'quicknode', name: 'QuickNode' },
       { id: 'custom', name: 'Custom RPC' },
     ],
+    routingModes: [
+      { id: 'fixed', name: '单链' },
+      { id: 'url_template', name: 'URL 模板' },
+      { id: 'header', name: 'Header 选链' },
+      { id: 'query', name: 'Query 选链' },
+    ],
     networks: [
-      { chainId: 1, name: 'Ethereum', protocols: ['aave_v3'] },
-      { chainId: 42_161, name: 'Arbitrum', protocols: ['aave_v3'] },
-      { chainId: 8_453, name: 'Base', protocols: ['aave_v3'] },
-      { chainId: 56, name: 'BNB Chain', protocols: ['aave_v3'] },
+      { chainId: 1, name: 'Ethereum', productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'planned', uniswapV4: 'planned' } },
+      { chainId: 42_161, name: 'Arbitrum', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
+      { chainId: 8_453, name: 'Base', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
+      { chainId: 56, name: 'BNB Chain', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       {
         chainId: ROBINHOOD_UNISWAP_V3.chainId,
         name: ROBINHOOD_UNISWAP_V3.chainName,
-        protocols: ['uniswap_v3', 'uniswap_v4'],
+        productEnabled: true,
+        capabilities: { aaveV3: 'unsupported', uniswapV3: 'available', uniswapV4: 'available' },
         defaultRpcUrl: ROBINHOOD_UNISWAP_V3.rpcUrl,
         explorerUrl: ROBINHOOD_UNISWAP_V3.explorerUrl,
       },
@@ -47,6 +54,14 @@ export const INTEGRATION_CATALOG = {
       multicallBatchSizeBytes: 8_192,
     },
   },
+  monitorTypes: [
+    { id: 'market', status: 'available' },
+    { id: 'aave_account', status: 'available', chainIds: [1] },
+    { id: 'aave_pool', status: 'planned', chainIds: [1] },
+    { id: 'uniswap_position', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
+    { id: 'uniswap_wallet', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
+    { id: 'uniswap_pool', status: 'planned', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+  ],
   uniswap: {
     deployments: [{
       chainId: ROBINHOOD_UNISWAP_V3.chainId,
@@ -69,6 +84,10 @@ export const INTEGRATION_CATALOG = {
     }],
   },
 } as const;
+
+export function evmNetworkName(chainId: number): string {
+  return INTEGRATION_CATALOG.evmRpc.networks.find((network) => network.chainId === chainId)?.name ?? `Chain ${chainId}`;
+}
 
 export function isEvmRpcProvider(value: string): value is EvmRpcProvider {
   return (EVM_RPC_PROVIDERS as readonly string[]).includes(value);

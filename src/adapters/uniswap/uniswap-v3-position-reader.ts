@@ -145,6 +145,7 @@ export interface UniswapV3PositionReaderOptions {
   rpcUrl: string;
   expectedChainId: number;
   fetch?: typeof globalThis.fetch;
+  headers?: Record<string, string>;
   timeoutMilliseconds?: number;
   publicClient?: PublicClient;
 }

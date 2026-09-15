@@ -13,6 +13,8 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 
 当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情和滚动指标；Aave V3 已支持按钱包地址自动扫描多链仓位；Uniswap V3/V4 已支持在 Robinhood Chain 上按钱包自动发现并监控 LP NFT。其他 LP 网络和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
+Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
+
 ## 技术栈
 
 - Node.js 24 LTS、TypeScript、Fastify
@@ -94,7 +96,7 @@ GET  /api/v1/integrations/readiness          # Aave/Binance/Uniswap 是否可创
 POST /api/v1/integrations/binance/default    # 幂等创建无需密钥的 Binance 公共行情源
 ```
 
-`evm_rpc` 的 `provider` 支持 `alchemy`、`infura`、`quicknode` 和 `custom`，四者均使用标准 JSON-RPC，并可进入相同的 Aave 扫描、重试、故障转移和熔断链路。RPC URL 在查询响应中保持脱敏。
+`evm_rpc` 的 `provider` 支持 `alchemy`、`infura`、`quicknode` 和 `custom`。一个 Integration 可通过 fixed、URL 模板、Header 或 Query 路由多个 chainId；RPC URL 与全部静态 Header 值在查询响应中保持脱敏。旧单链配置继续兼容。
 
 Binance `market_data` 集成还提供：
 
@@ -120,7 +122,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
-`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 不仅调用 `eth_chainId` 与 `eth_blockNumber`，还会检查该网络已接入协议的真实合约。Aave 网络读取 Pool 和 Oracle；Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。测试成功时 `connectivity` 会按网络返回 `rpc: "ok"`、`aaveV3: "ok"`、`uniswapV3: "ok"` 或 `uniswapV4: "ok"`。配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，无法读取合约时返回 `INTEGRATION_CONNECTION_FAILED`。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
+`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 会逐个测试全部 `chainIds`：先调用 `eth_chainId` 与 `eth_blockNumber`，再检查该网络当前已实现协议的真实合约。Ethereum 读取 Aave Pool 和 Oracle；Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。响应使用 `networks[]` 保留每条链的独立结果；测试流程完成返回 HTTP 200，只有全部链成功时顶层 `ok` 才为 true。配置网络不一致使用 `RPC_CHAIN_ID_MISMATCH`，连接或能力失败使用不含敏感 URL 的稳定错误码。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
 
 ## Aave V3 地址监控
 
@@ -204,9 +206,13 @@ Content-Type: application/json
 ```json
 {
   "ok": true,
-  "connectivity": { "rpc": "ok", "uniswapV3": "ok", "uniswapV4": "ok" },
-  "chainId": 4663,
-  "blockNumber": "..."
+  "networks": [{
+    "connectivity": { "rpc": "ok", "uniswapV3": "ok", "uniswapV4": "ok" },
+    "chainId": 4663,
+    "blockNumber": "...",
+    "ok": true,
+    "error": null
+  }]
 }
 ```
 

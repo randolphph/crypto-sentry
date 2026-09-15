@@ -19,6 +19,7 @@ export interface MonitorRuntimeStateStore {
 }
 
 export interface MetricConsumer {
+  consumeUnknownMetrics?: boolean;
   consume(metric: Metric): Promise<void>;
 }
 
@@ -109,14 +110,13 @@ export class MetricPipeline {
     }
 
     this.monitorStates.updateRuntimeState(metric.monitorId, aggregateMonitorState(this.latestMetrics.list(metric.monitorId)));
-    if (!isActionableMetric(metric)) {
-      return { accepted: true, forwardedToConsumers: false, consumerErrors: [] };
-    }
-
-    const consumerResults = await Promise.allSettled(this.consumers.map(async (consumer) => consumer.consume(metric)));
+    const consumers = isActionableMetric(metric)
+      ? this.consumers
+      : this.consumers.filter((consumer) => consumer.consumeUnknownMetrics === true);
+    const consumerResults = await Promise.allSettled(consumers.map(async (consumer) => consumer.consume(metric)));
     const consumerErrors = consumerResults
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => errorMessage(result.reason));
-    return { accepted: true, forwardedToConsumers: this.consumers.length > 0, consumerErrors };
+    return { accepted: true, forwardedToConsumers: consumers.length > 0, consumerErrors };
   }
 }

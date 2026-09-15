@@ -5,6 +5,7 @@ export interface EvmRpcClientOptions {
   rpcUrl: string;
   expectedChainId: number;
   fetch?: typeof globalThis.fetch;
+  headers?: Record<string, string>;
   timeoutMilliseconds?: number;
 }
 
@@ -36,6 +37,7 @@ export function createEvmPublicClient(options: EvmRpcClientOptions): PublicClien
       retryCount: 0,
       timeout: options.timeoutMilliseconds ?? 5_000,
       ...(options.fetch === undefined ? {} : { fetchFn: options.fetch }),
+      ...(options.headers === undefined ? {} : { fetchOptions: { headers: options.headers } }),
     }),
   });
 }

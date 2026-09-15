@@ -58,6 +58,7 @@ export const rules = sqliteTable(
       .notNull()
       .references(() => monitors.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
+    combinator: text('combinator').notNull().default('and'),
     metric: text('metric').notNull(),
     labelsJson: text('labels_json').notNull().default('{}'),
     operator: text('operator').notNull(),
@@ -73,6 +74,45 @@ export const rules = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [index('rules_monitor_id_idx').on(table.monitorId)],
+);
+
+export const ruleConditions = sqliteTable(
+  'rule_conditions',
+  {
+    id: text('id').primaryKey(),
+    ruleId: text('rule_id')
+      .notNull()
+      .references(() => rules.id, { onDelete: 'cascade' }),
+    position: integer('position').notNull(),
+    metric: text('metric').notNull(),
+    labelsJson: text('labels_json').notNull().default('{}'),
+    operator: text('operator').notNull(),
+    threshold: text('threshold').notNull(),
+    windowSeconds: integer('window_seconds'),
+    hysteresis: text('hysteresis').notNull().default('0'),
+  },
+  (table) => [
+    index('rule_conditions_rule_idx').on(table.ruleId, table.position),
+    index('rule_conditions_metric_idx').on(table.metric, table.ruleId),
+  ],
+);
+
+export const integrationNetworkHealth = sqliteTable(
+  'integration_network_health',
+  {
+    integrationId: text('integration_id')
+      .notNull()
+      .references(() => integrations.id, { onDelete: 'cascade' }),
+    chainId: integer('chain_id').notNull(),
+    rpcStatus: text('rpc_status').notNull(),
+    aaveV3Status: text('aave_v3_status').notNull().default('unknown'),
+    uniswapV3Status: text('uniswap_v3_status').notNull().default('unknown'),
+    uniswapV4Status: text('uniswap_v4_status').notNull().default('unknown'),
+    blockNumber: text('block_number'),
+    errorCode: text('error_code'),
+    testedAt: text('tested_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.integrationId, table.chainId] })],
 );
 
 export const ruleStates = sqliteTable('rule_states', {

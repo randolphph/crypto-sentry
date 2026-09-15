@@ -45,7 +45,7 @@ function numericCondition(value: Decimal, threshold: Decimal, operator: RuleOper
   }
 }
 
-function conditionMatches(value: string | boolean, threshold: string, operator: RuleOperator): boolean {
+export function conditionMatches(value: string | boolean, threshold: string, operator: RuleOperator): boolean {
   const valueBoolean = parseBoolean(value);
   const thresholdBoolean = parseBoolean(threshold);
   if (valueBoolean !== undefined || thresholdBoolean !== undefined) {
@@ -57,7 +57,7 @@ function conditionMatches(value: string | boolean, threshold: string, operator: 
   return numericCondition(new Decimal(String(value)), new Decimal(threshold), operator);
 }
 
-function hasRecovered(value: string | boolean, rule: EvaluatedRule): boolean {
+export function hasRecovered(value: string | boolean, rule: EvaluatedRule): boolean {
   const valueBoolean = parseBoolean(value);
   const thresholdBoolean = parseBoolean(rule.threshold);
   if (valueBoolean !== undefined || thresholdBoolean !== undefined) {
@@ -79,6 +79,46 @@ function hasRecovered(value: string | boolean, rule: EvaluatedRule): boolean {
     case 'neq':
       return numericValue.minus(threshold).abs().lte(hysteresis);
   }
+}
+
+export type TriState = true | false | 'unknown';
+
+export function combineConditionResults(combinator: 'and' | 'or', results: TriState[]): TriState {
+  if (combinator === 'and') {
+    if (results.includes(false)) return false;
+    return results.includes('unknown') ? 'unknown' : true;
+  }
+  if (results.includes(true)) return true;
+  return results.includes('unknown') ? 'unknown' : false;
+}
+
+export function evaluateRuleTruth(
+  rule: Pick<EvaluatedRule, 'durationSeconds' | 'cooldownSeconds'>,
+  currentState: RuleRuntimeState,
+  truth: TriState,
+  value: string,
+  now: Date = new Date(),
+): RuleEvaluation {
+  if (truth === 'unknown') return { action: 'none', state: currentState };
+  const baseState = { ...currentState, lastValue: value };
+  if (currentState.state === 'TRIGGERED') {
+    if (!truth) {
+      return { action: 'recover', state: { state: 'ARMED', conditionSince: null, lastValue: value, lastAlertAt: currentState.lastAlertAt } };
+    }
+    const lastAlertMs = currentState.lastAlertAt === null ? 0 : Date.parse(currentState.lastAlertAt);
+    if (now.getTime() - lastAlertMs >= rule.cooldownSeconds * 1000) {
+      const timestamp = now.toISOString();
+      return { action: 'repeat', state: { ...baseState, lastAlertAt: timestamp } };
+    }
+    return { action: 'none', state: baseState };
+  }
+  if (!truth) return { action: 'none', state: { ...baseState, conditionSince: null } };
+  const conditionSince = currentState.conditionSince ?? now.toISOString();
+  if (now.getTime() - Date.parse(conditionSince) < rule.durationSeconds * 1000) {
+    return { action: 'none', state: { ...baseState, conditionSince } };
+  }
+  const timestamp = now.toISOString();
+  return { action: 'trigger', state: { state: 'TRIGGERED', conditionSince, lastValue: value, lastAlertAt: timestamp } };
 }
 
 export function evaluateRule(

@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 
 import { EVM_RPC_PROVIDERS } from '../core/integrations/integration-catalog.js';
+import { rpcIntegrationConfigSchema } from '../core/integrations/evm-rpc-config.js';
+export { rpcIntegrationConfigSchema } from '../core/integrations/evm-rpc-config.js';
 
 const configRecord = z.record(z.string(), z.unknown());
 const enabled = z.boolean();
@@ -43,12 +45,6 @@ export const binanceIntegrationConfigSchema = z.object({
   ...config,
   futuresWebsocketUrl: normalizeBinanceFuturesWebsocketUrl(config.futuresWebsocketUrl),
 }));
-export const rpcIntegrationConfigSchema = z.object({
-  chainId: z.number().int().positive(),
-  rpcUrl: z.url(),
-  timeoutMilliseconds: z.number().int().min(1_000).max(60_000).default(5_000),
-  multicallBatchSizeBytes: z.number().int().min(1_024).max(100_000).default(8_192),
-});
 export const evmRpcProviderSchema = z.enum(EVM_RPC_PROVIDERS);
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
 export const marketMonitorConfigSchema = z.object({
@@ -68,6 +64,15 @@ export const marketMonitorConfigSchema = z.object({
 export const aaveMonitorConfigSchema = z.object({
   walletAddress: address,
 }).strict();
+export const aaveAccountMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainId: z.literal(1),
+  walletAddress: address,
+}).strict();
+export const aavePoolMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainId: z.literal(1),
+}).strict();
 const lpBase = {
   protocol: z.literal('uniswap'),
   chainId: z.literal(4_663),
@@ -81,6 +86,37 @@ export const lpMonitorConfigSchema = z.union([
   z.object({ ...lpBase, version: z.literal('v4'), ...lpWalletTarget }).strict(),
   z.object({ ...lpBase, version: z.literal('v4'), ...lpTokenTarget }).strict(),
 ]);
+export const uniswapPositionMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainId: z.number().int().positive(),
+  version: z.enum(['v3', 'v4']),
+  tokenId: z.string().regex(/^\d+$/),
+}).strict();
+export const uniswapWalletMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainIds: z.array(z.number().int().positive()).min(1).transform((values) => [...new Set(values)]),
+  versions: z.array(z.enum(['v3', 'v4'])).min(1).transform((values) => [...new Set(values)]),
+  walletAddress: address,
+}).strict();
+export const uniswapPoolMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainId: z.number().int().positive(),
+  version: z.enum(['v3', 'v4']),
+  poolAddress: address.optional(),
+  poolId: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
+}).strict();
+
+export const monitorTypeSchema = z.enum([
+  'market',
+  'aave_account',
+  'aave_pool',
+  'uniswap_position',
+  'uniswap_pool',
+  'uniswap_wallet',
+  'aave_position',
+  'lp_position',
+]).describe('Monitor type. aave_position and lp_position are legacy/deprecated but remain readable and runnable.');
+export type MonitorType = z.infer<typeof monitorTypeSchema>;
 
 export const idParamsSchema = z.object({ id: z.string().min(1) });
 
@@ -122,20 +158,32 @@ export const integrationPatchSchema = z
 
 const monitorBaseSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  type: z.enum(['market', 'aave_position', 'lp_position']),
+  type: monitorTypeSchema,
   enabled: enabled.default(true),
   intervalSeconds: z.number().int().min(5).max(86_400).default(20),
   maxStaleSeconds: z.number().int().min(5).max(86_400).default(90),
   config: configRecord,
 });
 
-export function validateMonitorConfig(type: 'market' | 'aave_position' | 'lp_position', config: Record<string, unknown>): void {
-  const expected = type === 'market' ? marketMonitorConfigSchema : type === 'aave_position' ? aaveMonitorConfigSchema : lpMonitorConfigSchema;
-  expected.parse(config);
+export function monitorConfigSchema(type: MonitorType): z.ZodType {
+  switch (type) {
+    case 'market': return marketMonitorConfigSchema;
+    case 'aave_account': return aaveAccountMonitorConfigSchema;
+    case 'aave_pool': return aavePoolMonitorConfigSchema;
+    case 'uniswap_position': return uniswapPositionMonitorConfigSchema;
+    case 'uniswap_wallet': return uniswapWalletMonitorConfigSchema;
+    case 'uniswap_pool': return uniswapPoolMonitorConfigSchema;
+    case 'aave_position': return aaveMonitorConfigSchema;
+    case 'lp_position': return lpMonitorConfigSchema;
+  }
+}
+
+export function validateMonitorConfig(type: MonitorType, config: Record<string, unknown>): void {
+  monitorConfigSchema(type).parse(config);
 }
 
 export const monitorCreateSchema = monitorBaseSchema.superRefine((value, context) => {
-  const expected = value.type === 'market' ? marketMonitorConfigSchema : value.type === 'aave_position' ? aaveMonitorConfigSchema : lpMonitorConfigSchema;
+  const expected = monitorConfigSchema(value.type);
   const parsedConfig = expected.safeParse(value.config);
   if (!parsedConfig.success) {
     for (const issue of parsedConfig.error.issues) {
@@ -149,20 +197,52 @@ export const monitorPatchSchema = monitorBaseSchema
   .partial()
   .refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 
-const ruleBaseSchema = z.object({
-  monitorId: z.string().min(1),
-  name: z.string().trim().min(1).max(120),
+export const ruleConditionSchema = z.object({
   metric: z.string().trim().min(1).max(120),
   labels: metricLabelsSchema.default({}),
   operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']),
   threshold: thresholdString,
   windowSeconds: z.number().int().min(1).max(86_400).optional(),
+  hysteresis: positiveDecimalString.default('0'),
+}).superRefine((value, context) => {
+  if ((value.threshold === 'true' || value.threshold === 'false') && !['eq', 'neq'].includes(value.operator)) {
+    context.addIssue({ code: 'custom', path: ['operator'], message: 'Boolean thresholds only support eq and neq' });
+  }
+  if (value.metric === 'price_change_percent' && value.windowSeconds === undefined) {
+    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'price_change_percent requires windowSeconds' });
+  }
+  if (value.metric === 'price_change_percent' && (value.windowSeconds ?? 0) > 1_800) {
+    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'Price change windows cannot exceed the 30 minute sample retention' });
+  }
+});
+
+const ruleGroupMetadataSchema = z.object({
+  monitorId: z.string().min(1),
+  name: z.string().trim().min(1).max(120),
   durationSeconds: z.number().int().min(0).max(86_400).default(0),
   cooldownSeconds: z.number().int().min(0).max(604_800).default(1800),
-  hysteresis: positiveDecimalString.default('0'),
   severity: z.enum(['info', 'warning', 'critical', 'emergency']),
   notificationIntegrationIds: z.array(z.string().min(1)).default([]),
   enabled: enabled.default(true),
+});
+
+export const ruleGroupCreateSchema = ruleGroupMetadataSchema.extend({
+  combinator: z.enum(['and', 'or']).default('and'),
+  conditions: z.array(ruleConditionSchema).min(1).max(20),
+});
+
+const legacyRuleCreateSchema = ruleGroupMetadataSchema.extend({
+  metric: z.string().trim().min(1).max(120),
+  labels: metricLabelsSchema.default({}),
+  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']),
+  threshold: thresholdString,
+  windowSeconds: z.number().int().min(1).max(86_400).optional(),
+  hysteresis: positiveDecimalString.default('0'),
+}).superRefine((value, context) => {
+  const parsed = ruleConditionSchema.safeParse(value);
+  if (!parsed.success) for (const issue of parsed.error.issues) {
+    context.addIssue({ code: 'custom', path: issue.path, message: issue.message });
+  }
 });
 
 export const aaveRiskRulePresetSchema = z.object({
@@ -182,22 +262,38 @@ export const aaveRiskRulePresetSchema = z.object({
   }
 });
 
-export const ruleCreateSchema = ruleBaseSchema.superRefine((value, context) => {
-  if ((value.threshold === 'true' || value.threshold === 'false') && !['eq', 'neq'].includes(value.operator)) {
-    context.addIssue({ code: 'custom', path: ['operator'], message: 'Boolean thresholds only support eq and neq' });
+export const ruleCreateSchema = z.union([ruleGroupCreateSchema, legacyRuleCreateSchema]).transform((value) => (
+  'conditions' in value ? value : {
+    monitorId: value.monitorId,
+    name: value.name,
+    combinator: 'and' as const,
+    conditions: [{
+      metric: value.metric,
+      labels: value.labels,
+      operator: value.operator,
+      threshold: value.threshold,
+      ...(value.windowSeconds === undefined ? {} : { windowSeconds: value.windowSeconds }),
+      hysteresis: value.hysteresis,
+    }],
+    durationSeconds: value.durationSeconds,
+    cooldownSeconds: value.cooldownSeconds,
+    severity: value.severity,
+    notificationIntegrationIds: value.notificationIntegrationIds,
+    enabled: value.enabled,
   }
-  if (value.metric === 'price_change_percent' && value.windowSeconds === undefined) {
-    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'Price change rules require a window' });
-  }
-  if (value.metric === 'price_change_percent' && (value.windowSeconds ?? 0) > 1_800) {
-    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'Price change windows cannot exceed the 30 minute sample retention' });
-  }
-});
+));
 
-export const rulePatchSchema = ruleBaseSchema
-  .omit({ monitorId: true })
-  .partial()
-  .refine((value) => Object.keys(value).length > 0, 'At least one field is required');
+const rulePatchMetadataSchema = ruleGroupMetadataSchema.omit({ monitorId: true }).partial();
+export const rulePatchSchema = rulePatchMetadataSchema.extend({
+  combinator: z.enum(['and', 'or']).optional(),
+  conditions: z.array(ruleConditionSchema).min(1).max(20).optional(),
+  metric: z.string().trim().min(1).max(120).optional(),
+  labels: metricLabelsSchema.optional(),
+  operator: z.enum(['gt', 'gte', 'lt', 'lte', 'eq', 'neq']).optional(),
+  threshold: thresholdString.optional(),
+  windowSeconds: z.number().int().min(1).max(86_400).optional(),
+  hysteresis: positiveDecimalString.optional(),
+}).refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 
 export const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
@@ -213,6 +309,7 @@ export type IntegrationCreate = z.infer<typeof integrationCreateSchema>;
 export type IntegrationPatch = z.infer<typeof integrationPatchSchema>;
 export type MonitorCreate = z.infer<typeof monitorCreateSchema>;
 export type MonitorPatch = z.infer<typeof monitorPatchSchema>;
-export type RuleCreate = z.infer<typeof ruleCreateSchema>;
-export type RulePatch = z.infer<typeof rulePatchSchema>;
+export type RuleCreate = z.input<typeof ruleCreateSchema>;
+export type NormalizedRuleCreate = z.output<typeof ruleCreateSchema>;
+export type RulePatch = z.input<typeof rulePatchSchema>;
 export type AaveRiskRulePreset = z.infer<typeof aaveRiskRulePresetSchema>;

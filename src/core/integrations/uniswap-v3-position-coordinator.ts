@@ -8,6 +8,7 @@ import type { UniswapV4OwnershipSyncResult } from '../../adapters/uniswap/uniswa
 import { UniswapV4PositionReader } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import type { UniswapV4Position } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { rpcIntegrationConfigSchema } from '../../api/schemas.js';
+import { resolveEvmRpcRequest } from './evm-rpc-config.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { UniswapV4OwnershipRepository } from '../../db/repositories/uniswap-v4-ownership-repository.js';
@@ -17,6 +18,7 @@ import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
 
 type UniswapPosition = UniswapV3Position | UniswapV4Position;
 type UniswapMonitor = ReturnType<MonitorRepository['listEnabledUniswapMonitors']>[number];
+type UniswapVariant = UniswapMonitor['variants'][number];
 
 export interface UniswapV3PositionReaderPort {
   discover(walletAddress: Address, signal?: AbortSignal): Promise<UniswapV3OwnedPositions>;
@@ -24,7 +26,7 @@ export interface UniswapV3PositionReaderPort {
 }
 
 export interface UniswapV3PositionReaderFactory {
-  create(options: { rpcUrl: string; expectedChainId: number; timeoutMilliseconds: number }): UniswapV3PositionReaderPort;
+  create(options: { rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds: number }): UniswapV3PositionReaderPort;
 }
 
 export interface UniswapV4PositionReaderPort {
@@ -32,7 +34,7 @@ export interface UniswapV4PositionReaderPort {
 }
 
 export interface UniswapV4PositionReaderFactory {
-  create(options: { rpcUrl: string; expectedChainId: number; timeoutMilliseconds: number }): UniswapV4PositionReaderPort;
+  create(options: { rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds: number }): UniswapV4PositionReaderPort;
 }
 
 export interface UniswapV4OwnershipIndexerPort {
@@ -45,6 +47,7 @@ export interface UniswapV4OwnershipIndexerFactory {
     expectedChainId: number;
     integrationId: string;
     timeoutMilliseconds: number;
+    headers?: Record<string, string>;
   }): UniswapV4OwnershipIndexerPort;
 }
 
@@ -55,10 +58,6 @@ export interface UniswapV3PositionCoordinatorOptions {
   v4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
   now?: () => Date;
   onError?: (error: Error) => void;
-}
-
-function toError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
 }
 
 function metric(
@@ -161,46 +160,50 @@ export class UniswapV3PositionCoordinator {
   }
 
   private async scan(monitor: UniswapMonitor, signal: AbortSignal): Promise<void> {
+    this.metricPipeline.forgetMonitor(monitor.monitorId);
+    await Promise.all(monitor.variants.map(async (variant) => this.scanVariant(monitor, variant, signal)));
+  }
+
+  private async scanVariant(monitor: UniswapMonitor, variant: UniswapVariant, signal: AbortSignal): Promise<void> {
     const timestamp = this.now().toISOString();
     const target = 'walletAddress' in monitor ? monitor.walletAddress : monitor.tokenId;
     const baseLabels = {
-      chainId: String(monitor.chainId),
+      chainId: String(variant.chainId),
       chainName: 'Robinhood Chain',
-      protocol: monitor.protocol,
-      version: monitor.version,
+      protocol: 'uniswap',
+      version: variant.version,
       ...('walletAddress' in monitor ? { walletAddress: getAddress(monitor.walletAddress) } : {}),
     };
     try {
       const integration = this.integrations.getRuntime(monitor.rpcIntegrationId);
       const rpc = rpcIntegrationConfigSchema.parse(integration.config);
       if (!integration.enabled || integration.type !== 'evm_rpc') throw new Error('Configured RPC integration is unavailable');
-      if (rpc.chainId !== monitor.chainId) {
-        throw new Error(`EVM RPC chain ID mismatch: expected ${monitor.chainId}, received ${rpc.chainId}`);
-      }
+      const resolved = resolveEvmRpcRequest(rpc, variant.chainId);
 
-      const discovery = await this.discover(monitor, rpc.rpcUrl, rpc.timeoutMilliseconds, signal);
+      const discovery = await this.discover(monitor, variant, resolved.rpcUrl, resolved.headers, rpc.timeoutMilliseconds, signal);
       const positions: UniswapPosition[] = [];
       const failures: string[] = [];
       for (const tokenId of discovery.tokenIds) {
         signal.throwIfAborted();
         try {
           const position = await this.readPosition(
-            monitor.version,
+            variant.version,
             tokenId,
-            rpc.rpcUrl,
+            resolved.rpcUrl,
+            resolved.headers,
+            variant.chainId,
             rpc.timeoutMilliseconds,
             signal,
             discovery.blockNumber,
           );
           if ('walletAddress' in monitor && position.owner.toLowerCase() !== monitor.walletAddress.toLowerCase()) continue;
           positions.push(position);
-        } catch (error) {
+        } catch {
           failures.push(tokenId);
-          this.onError(toError(error));
+          this.onError(new Error(`Uniswap ${variant.version} position read failed on chain ${variant.chainId}`));
         }
       }
       signal.throwIfAborted();
-      this.metricPipeline.forgetMonitor(monitor.monitorId);
       const scanStatus = failures.length > 0 ? 'error' : discovery.caughtUp ? 'ok' : 'warming_up';
       await this.metricPipeline.ingest(metric(
         monitor.monitorId,
@@ -257,10 +260,9 @@ export class UniswapV3PositionCoordinator {
           { status: 'error', labels: { ...baseLabels, tokenId } },
         ));
       }
-    } catch (error) {
+    } catch {
       if (signal.aborted) return;
-      const failure = toError(error);
-      this.onError(failure);
+      this.onError(new Error(`Uniswap ${variant.version} scan failed on chain ${variant.chainId}`));
       const previousLabels = this.metricPipeline.list(monitor.monitorId)
         .find((candidate) => candidate.source === 'uniswap' && candidate.name === 'scan_status')
         ?.labels;
@@ -277,7 +279,9 @@ export class UniswapV3PositionCoordinator {
 
   private async discover(
     monitor: UniswapMonitor,
+    variant: UniswapVariant,
     rpcUrl: string,
+    headers: Record<string, string>,
     timeoutMilliseconds: number,
     signal: AbortSignal,
   ): Promise<{
@@ -289,17 +293,19 @@ export class UniswapV3PositionCoordinator {
   }> {
     if ('tokenId' in monitor) return { tokenIds: [monitor.tokenId], caughtUp: true };
     const walletAddress = getAddress(monitor.walletAddress);
-    if (monitor.version === 'v3') {
+    if (variant.version === 'v3') {
       const result = await this.readerFactory.create({
         rpcUrl,
-        expectedChainId: monitor.chainId,
+        headers,
+        expectedChainId: variant.chainId,
         timeoutMilliseconds,
       }).discover(walletAddress, signal);
       return { tokenIds: result.tokenIds, blockNumber: result.blockNumber, caughtUp: true };
     }
     const result = await this.v4OwnershipIndexerFactory.create({
       rpcUrl,
-      expectedChainId: monitor.chainId,
+      headers,
+      expectedChainId: variant.chainId,
       integrationId: monitor.rpcIntegrationId,
       timeoutMilliseconds,
     }).sync(walletAddress, signal);
@@ -316,11 +322,13 @@ export class UniswapV3PositionCoordinator {
     version: 'v3' | 'v4',
     tokenId: string,
     rpcUrl: string,
+    headers: Record<string, string>,
+    chainId: number,
     timeoutMilliseconds: number,
     signal: AbortSignal,
     blockNumber?: bigint,
   ): Promise<UniswapPosition> {
-    const options = { rpcUrl, expectedChainId: 4_663, timeoutMilliseconds };
+    const options = { rpcUrl, headers, expectedChainId: chainId, timeoutMilliseconds };
     return version === 'v3'
       ? this.readerFactory.create(options).read(tokenId, signal, blockNumber)
       : this.v4ReaderFactory.create(options).read(tokenId, signal, blockNumber);

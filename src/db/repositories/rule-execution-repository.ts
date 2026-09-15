@@ -8,7 +8,7 @@ import type {
 import type { RuleOperator, RuleRuntimeState, RuleStateName } from '../../core/rules/rule-state-machine.js';
 import { createId } from '../../core/ids.js';
 import type { AppDatabase } from '../client.js';
-import { alerts, ruleStates, rules } from '../schema/index.js';
+import { alerts, ruleConditions, ruleStates, rules } from '../schema/index.js';
 
 function alertTitle(commit: RuleEvaluationCommit): string {
   const prefix = commit.action === 'repeat' ? 'Reminder' : 'Alert';
@@ -26,7 +26,7 @@ function alertMessage(commit: RuleEvaluationCommit): string {
     ...(labels.length === 0 ? [] : [`Labels: ${labels}`]),
     `Metric: ${commit.metric.name}`,
     `Current value: ${String(commit.metric.value)}${commit.metric.unit === undefined ? '' : ` ${commit.metric.unit}`}`,
-    `Condition: ${commit.rule.operator} ${commit.rule.threshold}`,
+    `Condition group: ${commit.rule.combinator.toUpperCase()} (${commit.rule.conditions.length} conditions)`,
     `Observed at: ${commit.metric.observedAt}`,
   ].join('\n');
 }
@@ -35,24 +35,37 @@ export class RuleExecutionRepository implements RuleExecutionStore {
   public constructor(private readonly database: AppDatabase['db']) {}
 
   public findEnabledRules(monitorId: string, metricName: string): ExecutableRule[] {
-    return this.database
-      .select()
+    const matchingRuleIds = this.database
+      .select({ id: rules.id })
       .from(rules)
-      .where(and(eq(rules.monitorId, monitorId), eq(rules.metric, metricName), eq(rules.enabled, true)))
+      .innerJoin(ruleConditions, eq(ruleConditions.ruleId, rules.id))
+      .where(and(eq(rules.monitorId, monitorId), eq(ruleConditions.metric, metricName), eq(rules.enabled, true)))
       .orderBy(asc(rules.createdAt), asc(rules.id))
-      .all()
+      .all();
+    const uniqueIds = [...new Set(matchingRuleIds.map(({ id }) => id))];
+    return uniqueIds
+      .map((id) => this.database.select().from(rules).where(eq(rules.id, id)).get())
+      .filter((row): row is NonNullable<typeof row> => row !== undefined)
       .map((row) => ({
         id: row.id,
         monitorId: row.monitorId,
         name: row.name,
+        combinator: row.combinator as 'and' | 'or',
+        conditions: this.database.select().from(ruleConditions).where(eq(ruleConditions.ruleId, row.id))
+          .orderBy(asc(ruleConditions.position)).all().map((condition, index, all) => ({
+            id: condition.id,
+            metric: all.length === 1 && index === 0 ? row.metric : condition.metric,
+            labels: JSON.parse(all.length === 1 && index === 0 ? row.labelsJson : condition.labelsJson) as Record<string, string>,
+            windowSeconds: all.length === 1 && index === 0 ? row.windowSeconds : condition.windowSeconds,
+            operator: (all.length === 1 && index === 0 ? row.operator : condition.operator) as RuleOperator,
+            threshold: all.length === 1 && index === 0 ? row.threshold : condition.threshold,
+            hysteresis: all.length === 1 && index === 0 ? row.hysteresis : condition.hysteresis,
+          })),
         metric: row.metric,
-        labels: JSON.parse(row.labelsJson) as Record<string, string>,
-        windowSeconds: row.windowSeconds,
         operator: row.operator as RuleOperator,
         threshold: row.threshold,
         durationSeconds: row.durationSeconds,
         cooldownSeconds: row.cooldownSeconds,
-        hysteresis: row.hysteresis,
         severity: row.severity,
         notificationIntegrationIds: JSON.parse(row.notificationIntegrationIdsJson) as string[],
       }));

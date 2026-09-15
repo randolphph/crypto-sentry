@@ -4,6 +4,7 @@ import type { AaveV3Position } from '../../adapters/aave/aave-v3-position-reader
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import { isEvmRpcProvider } from './integration-catalog.js';
+import { resolveEvmRpcRequest } from './evm-rpc-config.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricPipeline } from '../metrics/metric-pipeline.js';
 import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
@@ -18,6 +19,7 @@ export interface AaveV3PositionReaderFactory {
     expectedChainId: number;
     timeoutMilliseconds: number;
     multicallBatchSizeBytes: number;
+    headers?: Record<string, string>;
   }): AaveV3PositionReaderPort;
 }
 
@@ -39,6 +41,7 @@ interface RpcEndpoint {
   chainId: number;
   timeoutMilliseconds: number;
   multicallBatchSizeBytes: number;
+  headers: Record<string, string>;
 }
 
 interface ChainScanResult {
@@ -142,7 +145,7 @@ export class AaveV3PositionCoordinator {
       this.scheduler.upsert({
         id: this.taskId(monitor.monitorId),
         intervalMilliseconds: monitor.intervalSeconds * 1_000,
-        run: async (signal) => this.scan(monitor.monitorId, monitor.walletAddress, signal),
+        run: async (signal) => this.scan(monitor, signal),
       });
       this.scheduler.upsert({
         id: this.staleTaskId(monitor.monitorId),
@@ -174,21 +177,33 @@ export class AaveV3PositionCoordinator {
     return `aave-v3-stale:${monitorId}`;
   }
 
-  private rpcEndpoints(): Map<number, RpcEndpoint[]> {
+  private rpcEndpoints(monitor: ReturnType<MonitorRepository['listEnabledAaveMonitors']>[number]): Map<number, RpcEndpoint[]> {
     const endpoints = new Map<number, RpcEndpoint[]>();
     for (const integration of this.integrations.listRuntime()) {
       if (!integration.enabled || integration.type !== 'evm_rpc' || !isEvmRpcProvider(integration.provider)) continue;
       const parsed = rpcIntegrationConfigSchema.safeParse(integration.config);
-      if (!parsed.success || !supportedAaveV3Markets.has(parsed.data.chainId)) continue;
-      const chainEndpoints = endpoints.get(parsed.data.chainId) ?? [];
-      chainEndpoints.push({ id: integration.id, ...parsed.data });
-      endpoints.set(parsed.data.chainId, chainEndpoints);
+      if (!parsed.success || (!monitor.legacy && integration.id !== monitor.rpcIntegrationId)) continue;
+      for (const chainId of parsed.data.chainIds) {
+        if (!supportedAaveV3Markets.has(chainId) || (!monitor.legacy && chainId !== monitor.chainId)) continue;
+        const resolved = resolveEvmRpcRequest(parsed.data, chainId);
+        const chainEndpoints = endpoints.get(chainId) ?? [];
+        chainEndpoints.push({
+          id: `${integration.id}:${chainId}`,
+          rpcUrl: resolved.rpcUrl,
+          headers: resolved.headers,
+          chainId,
+          timeoutMilliseconds: parsed.data.timeoutMilliseconds,
+          multicallBatchSizeBytes: parsed.data.multicallBatchSizeBytes,
+        });
+        endpoints.set(chainId, chainEndpoints);
+      }
     }
     return endpoints;
   }
 
-  private async scan(monitorId: string, walletAddress: string, signal: AbortSignal): Promise<void> {
-    const endpoints = this.rpcEndpoints();
+  private async scan(monitor: ReturnType<MonitorRepository['listEnabledAaveMonitors']>[number], signal: AbortSignal): Promise<void> {
+    const { monitorId, walletAddress } = monitor;
+    const endpoints = this.rpcEndpoints(monitor);
     const timestamp = this.now().toISOString();
     this.metricPipeline.forgetMonitor(monitorId);
     if (endpoints.size === 0) {
@@ -274,6 +289,7 @@ export class AaveV3PositionCoordinator {
         expectedChainId: endpoint.chainId,
         timeoutMilliseconds: endpoint.timeoutMilliseconds,
         multicallBatchSizeBytes: endpoint.multicallBatchSizeBytes,
+        headers: endpoint.headers,
       });
       try {
         const position = await this.readWithRetry(reader, walletAddress, signal);

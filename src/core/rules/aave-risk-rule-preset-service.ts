@@ -60,7 +60,7 @@ export class AaveRiskRulePresetService {
             name: existing.name,
             chainId: network.chainId,
             severity: definition.severity,
-            threshold: existing.threshold,
+            threshold: existing.conditions[0]?.threshold ?? existing.threshold,
             created: false,
           });
           continue;
@@ -68,13 +68,16 @@ export class AaveRiskRulePresetService {
         const created = this.rules.create({
           monitorId,
           name,
-          metric: 'health_factor',
-          labels: { chainId: String(network.chainId) },
-          operator: 'lte',
-          threshold: definition.threshold,
+          combinator: 'and',
+          conditions: [{
+            metric: 'health_factor',
+            labels: { chainId: String(network.chainId) },
+            operator: 'lte',
+            threshold: definition.threshold,
+            hysteresis: definition.hysteresis,
+          }],
           durationSeconds: definition.durationSeconds,
           cooldownSeconds: preset.cooldownSeconds,
-          hysteresis: definition.hysteresis,
           severity: definition.severity,
           notificationIntegrationIds: preset.notificationIntegrationIds,
           enabled: true,
@@ -84,7 +87,7 @@ export class AaveRiskRulePresetService {
           name: created.name,
           chainId: network.chainId,
           severity: definition.severity,
-          threshold: created.threshold,
+          threshold: created.conditions[0]?.threshold ?? created.threshold,
           created: true,
         });
       }

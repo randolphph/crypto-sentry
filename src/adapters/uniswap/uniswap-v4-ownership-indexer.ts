@@ -20,6 +20,7 @@ export interface UniswapV4OwnershipIndexerOptions {
   integrationId: string;
   repository: UniswapV4OwnershipRepository;
   fetch?: typeof globalThis.fetch;
+  headers?: Record<string, string>;
   timeoutMilliseconds?: number;
   publicClient?: PublicClient;
   confirmations?: number;

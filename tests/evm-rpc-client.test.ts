@@ -35,6 +35,23 @@ describe('EvmRpcClient', () => {
     expect(methods).toEqual(['eth_chainId', 'eth_blockNumber']);
   });
 
+  it('adds routed authentication and chain-selection headers to every request', async () => {
+    const headers: Array<Headers> = [];
+    const client = new EvmRpcClient({
+      rpcUrl: 'https://gateway.example/rpc', expectedChainId: 1,
+      headers: { Authorization: 'Bearer secret', 'X-Chain-Id': '1' },
+      fetch: async (_input, init) => {
+        headers.push(new Headers(init?.headers));
+        const request = rpcRequest(init);
+        return rpcResponse(request.id, request.method === 'eth_chainId' ? '0x1' : '0x64');
+      },
+    });
+    await client.testConnectivity();
+    expect(headers).toHaveLength(2);
+    expect(headers.every((value) => value.get('authorization') === 'Bearer secret')).toBe(true);
+    expect(headers.every((value) => value.get('x-chain-id') === '1')).toBe(true);
+  });
+
   it('reports chain mismatches explicitly and sanitizes transport failures', async () => {
     const mismatch = new EvmRpcClient({
       rpcUrl: 'https://rpc.example/private-key',

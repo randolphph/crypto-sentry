@@ -50,10 +50,11 @@ export function maskSensitiveConfig(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(maskSensitiveConfig);
   if (value === null || typeof value !== 'object') return value;
 
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [
-      key,
-      SENSITIVE_KEY_PATTERN.test(key) ? '********' : maskSensitiveConfig(entry),
-    ]),
-  );
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    if (key === 'headers' && entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+      const headers = entry as Record<string, unknown>;
+      return [key, Object.fromEntries(Object.keys(headers).map((headerName) => [headerName, '********']))];
+    }
+    return [key, SENSITIVE_KEY_PATTERN.test(key) ? '********' : maskSensitiveConfig(entry)];
+  }));
 }

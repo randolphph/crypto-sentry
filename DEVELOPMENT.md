@@ -44,6 +44,11 @@
 - [x] Aave 固定区块读取、Multicall 分批、重试/故障转移/熔断和 stale watchdog
 - [x] 使用公开 Ethereum RPC 运行显式 Aave 全仓位读取冒烟测试
 - [x] 数据源目录、就绪状态、Alchemy/Infura/QuickNode 标识和 Binance 默认配置 API
+- [x] 单个 EVM RPC Integration 多 chainId 与 fixed/URL/Header/Query 路由
+- [x] 逐链真实能力测试、持久化能力状态和细粒度 Readiness
+- [x] 显式 Monitor 类型、新 Aave/Uniswap 配置与 legacy 类型兼容
+- [x] AND/OR Rule Group、条件表迁移、三态执行与状态持久化
+- [x] market/Aave/Uniswap 统一结构化 Snapshot API
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
 - [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API
 - [x] Robinhood Chain Uniswap V4 PositionManager/PoolManager/StateView 仓位适配器

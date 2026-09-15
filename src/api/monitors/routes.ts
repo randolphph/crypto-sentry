@@ -4,6 +4,7 @@ import type { ConfigEventBus } from '../../core/config-events/config-event-bus.j
 import type { MetricSnapshotReader } from '../../core/metrics/latest-metric-store.js';
 import { AavePositionSnapshotService } from '../../core/positions/aave-position-snapshot-service.js';
 import { UniswapV3PositionSnapshotService } from '../../core/positions/uniswap-v3-position-snapshot-service.js';
+import { MonitorSnapshotService } from '../../core/positions/monitor-snapshot-service.js';
 import { AaveRiskRulePresetService } from '../../core/rules/aave-risk-rule-preset-service.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { RuleRepository } from '../../db/repositories/rule-repository.js';
@@ -21,6 +22,7 @@ export function registerMonitorRoutes(
   const aavePositions = new AavePositionSnapshotService(repository, metrics);
   const uniswapPositions = new UniswapV3PositionSnapshotService(repository, metrics);
   const aaveRiskRules = new AaveRiskRulePresetService(aavePositions, rules);
+  const snapshots = new MonitorSnapshotService(repository, metrics);
   app.get('/api/v1/monitors', { schema: { tags: ['monitors'] } }, async () => ({ items: repository.list() }));
 
   app.post('/api/v1/monitors', { schema: {
@@ -67,6 +69,15 @@ export function registerMonitorRoutes(
     const { id } = idParamsSchema.parse(request.params);
     repository.get(id);
     return { items: metrics.list(id) };
+  });
+
+  app.get('/api/v1/monitors/:id/snapshot', { schema: {
+    tags: ['monitors'],
+    summary: 'Get the normalized current snapshot for any monitor type',
+    params: openApiSchema(idParamsSchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return snapshots.get(id);
   });
 
   app.get('/api/v1/monitors/:id/positions', { schema: {

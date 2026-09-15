@@ -163,6 +163,7 @@ export interface AaveV3PositionReaderOptions {
   rpcUrl: string;
   expectedChainId: number;
   fetch?: typeof globalThis.fetch;
+  headers?: Record<string, string>;
   timeoutMilliseconds?: number;
   multicallBatchSizeBytes?: number;
   publicClient?: PublicClient;

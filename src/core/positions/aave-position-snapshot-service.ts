@@ -1,5 +1,5 @@
 import { AppError } from '../../api/errors.js';
-import { aaveMonitorConfigSchema } from '../../api/schemas.js';
+import { aaveAccountMonitorConfigSchema, aaveMonitorConfigSchema } from '../../api/schemas.js';
 import { Decimal } from 'decimal.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { Metric } from '../metrics/metric.js';
@@ -119,10 +119,12 @@ export class AavePositionSnapshotService {
 
   public get(monitorId: string): AavePositionSnapshot {
     const monitor = this.monitors.get(monitorId);
-    if (monitor.type !== 'aave_position') {
+    if (monitor.type !== 'aave_position' && monitor.type !== 'aave_account') {
       throw new AppError(409, 'MONITOR_TYPE_MISMATCH', 'Position snapshots are only available for Aave monitors');
     }
-    const config = aaveMonitorConfigSchema.parse(monitor.config);
+    const config = monitor.type === 'aave_account'
+      ? aaveAccountMonitorConfigSchema.parse(monitor.config)
+      : aaveMonitorConfigSchema.parse(monitor.config);
     const metrics = this.metrics.list(monitorId).filter((metric) => metric.source === 'aave_v3');
     const observedAt = latestObservation(metrics);
     const dataAgeSeconds = observedAt === null

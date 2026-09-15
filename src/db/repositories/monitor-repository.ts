@@ -3,18 +3,43 @@ import { and, asc, eq } from 'drizzle-orm';
 import { AppError } from '../../api/errors.js';
 import {
   aaveMonitorConfigSchema,
+  aaveAccountMonitorConfigSchema,
   lpMonitorConfigSchema,
   marketMonitorConfigSchema,
   validateMonitorConfig,
+  monitorConfigSchema,
+  uniswapPositionMonitorConfigSchema,
+  uniswapWalletMonitorConfigSchema,
 } from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
 import type { AppDatabase } from '../client.js';
 import { integrations, monitors, rules } from '../schema/index.js';
+import { ruleConditions } from '../schema/index.js';
+import type { IntegrationRepository } from './integration-repository.js';
+import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
+
+export type AaveRuntimeMonitor = {
+  monitorId: string;
+  intervalSeconds: number;
+  maxStaleSeconds: number;
+  walletAddress: string;
+} & ({ legacy: true } | { legacy: false; rpcIntegrationId: string; chainId: 1 });
+
+export type UniswapRuntimeMonitor = {
+  monitorId: string;
+  intervalSeconds: number;
+  maxStaleSeconds: number;
+  rpcIntegrationId: string;
+  variants: Array<{ chainId: number; version: 'v3' | 'v4' }>;
+} & ({ walletAddress: string } | { tokenId: string });
 
 export class MonitorRepository implements MonitorRuntimeStateStore {
-  public constructor(private readonly database: AppDatabase['db']) {}
+  public constructor(
+    private readonly database: AppDatabase['db'],
+    private readonly integrationRepository?: IntegrationRepository,
+  ) {}
 
   public list() {
     return this.database.select().from(monitors).orderBy(asc(monitors.createdAt)).all().map(this.present);
@@ -37,9 +62,10 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   public listEnabledMarketSubscriptions() {
     const windowsByMonitor = new Map<string, number[]>();
     for (const rule of this.database
-      .select({ monitorId: rules.monitorId, windowSeconds: rules.windowSeconds })
-      .from(rules)
-      .where(and(eq(rules.enabled, true), eq(rules.metric, 'price_change_percent')))
+      .select({ monitorId: rules.monitorId, windowSeconds: ruleConditions.windowSeconds })
+      .from(ruleConditions)
+      .innerJoin(rules, eq(ruleConditions.ruleId, rules.id))
+      .where(and(eq(rules.enabled, true), eq(ruleConditions.metric, 'price_change_percent')))
       .all()) {
       if (rule.windowSeconds === null) continue;
       const windows = windowsByMonitor.get(rule.monitorId) ?? [];
@@ -62,7 +88,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       });
   }
 
-  public listEnabledAaveMonitors() {
+  public listEnabledAaveMonitors(): AaveRuntimeMonitor[] {
     return this.database
       .select({
         id: monitors.id,
@@ -71,20 +97,29 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
         maxStaleSeconds: monitors.maxStaleSeconds,
       })
       .from(monitors)
-      .where(and(eq(monitors.enabled, true), eq(monitors.type, 'aave_position')))
+      .where(eq(monitors.enabled, true))
       .all()
-      .flatMap((row) => {
-        const config = aaveMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
-        return config.success ? [{
+      .flatMap<AaveRuntimeMonitor>((row) => {
+        const raw: unknown = JSON.parse(row.configJson);
+        const legacy = aaveMonitorConfigSchema.safeParse(raw);
+        const current = aaveAccountMonitorConfigSchema.safeParse(raw);
+        return legacy.success ? [{
           monitorId: row.id,
           intervalSeconds: row.intervalSeconds,
           maxStaleSeconds: row.maxStaleSeconds,
-          ...config.data,
+          ...legacy.data,
+          legacy: true as const,
+        }] : current.success ? [{
+          monitorId: row.id,
+          intervalSeconds: row.intervalSeconds,
+          maxStaleSeconds: row.maxStaleSeconds,
+          ...current.data,
+          legacy: false as const,
         }] : [];
       });
   }
 
-  public listEnabledUniswapMonitors() {
+  public listEnabledUniswapMonitors(): UniswapRuntimeMonitor[] {
     return this.database
       .select({
         id: monitors.id,
@@ -93,15 +128,34 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
         maxStaleSeconds: monitors.maxStaleSeconds,
       })
       .from(monitors)
-      .where(and(eq(monitors.enabled, true), eq(monitors.type, 'lp_position')))
+      .where(eq(monitors.enabled, true))
       .all()
-      .flatMap((row) => {
-        const config = lpMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
-        return config.success ? [{
+      .flatMap<UniswapRuntimeMonitor>((row) => {
+        const raw: unknown = JSON.parse(row.configJson);
+        const legacy = lpMonitorConfigSchema.safeParse(raw);
+        const position = uniswapPositionMonitorConfigSchema.safeParse(raw);
+        const wallet = uniswapWalletMonitorConfigSchema.safeParse(raw);
+        return legacy.success ? [{
           monitorId: row.id,
           intervalSeconds: row.intervalSeconds,
           maxStaleSeconds: row.maxStaleSeconds,
-          ...config.data,
+          rpcIntegrationId: legacy.data.rpcIntegrationId,
+          variants: [{ chainId: legacy.data.chainId, version: legacy.data.version }],
+          ...('walletAddress' in legacy.data ? { walletAddress: legacy.data.walletAddress } : { tokenId: legacy.data.tokenId }),
+        }] : position.success ? [{
+          monitorId: row.id,
+          intervalSeconds: row.intervalSeconds,
+          maxStaleSeconds: row.maxStaleSeconds,
+          rpcIntegrationId: position.data.rpcIntegrationId,
+          tokenId: position.data.tokenId,
+          variants: [{ chainId: position.data.chainId, version: position.data.version }],
+        }] : wallet.success ? [{
+          monitorId: row.id,
+          intervalSeconds: row.intervalSeconds,
+          maxStaleSeconds: row.maxStaleSeconds,
+          rpcIntegrationId: wallet.data.rpcIntegrationId,
+          walletAddress: wallet.data.walletAddress,
+          variants: wallet.data.chainIds.flatMap((chainId) => wallet.data.versions.map((version) => ({ chainId, version }))),
         }] : [];
       });
   }
@@ -119,7 +173,15 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   }
 
   public create(input: MonitorCreate) {
+    if (input.type === 'aave_pool' || input.type === 'uniswap_pool') {
+      throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${input.type} is planned but is not runnable yet`);
+    }
+    if ((input.type === 'uniswap_position' && input.config.chainId !== 4_663) ||
+      (input.type === 'uniswap_wallet' && Array.isArray(input.config.chainIds) && input.config.chainIds.some((id) => id !== 4_663))) {
+      throw new AppError(409, 'PROTOCOL_NOT_READY', 'Ethereum Uniswap monitoring is planned but not implemented');
+    }
     this.validateIntegrationReference(input.type, input.config);
+    const normalizedConfig = monitorConfigSchema(input.type).parse(input.config) as Record<string, unknown>;
     const timestamp = new Date().toISOString();
     const row = {
       id: createId('mon'),
@@ -128,7 +190,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       enabled: input.enabled,
       intervalSeconds: input.intervalSeconds,
       maxStaleSeconds: input.maxStaleSeconds,
-      configJson: JSON.stringify(input.config),
+      configJson: JSON.stringify(normalizedConfig),
       lastStatus: 'warming_up',
       lastDataAt: null,
       lastError: null,
@@ -142,14 +204,20 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   public update(id: string, input: MonitorPatch) {
     const row = this.database.select().from(monitors).where(eq(monitors.id, id)).get();
     if (row === undefined) throw new AppError(404, 'MONITOR_NOT_FOUND', 'Monitor was not found');
+    if (row.type === 'aave_pool' || row.type === 'uniswap_pool') {
+      throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${row.type} is planned but is not runnable yet`);
+    }
     if (input.config !== undefined) this.validateIntegrationReference(row.type, input.config);
+    const normalizedConfig = input.config === undefined
+      ? undefined
+      : monitorConfigSchema(row.type as MonitorCreate['type']).parse(input.config);
     const updated = {
       ...row,
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
       ...(input.intervalSeconds === undefined ? {} : { intervalSeconds: input.intervalSeconds }),
       ...(input.maxStaleSeconds === undefined ? {} : { maxStaleSeconds: input.maxStaleSeconds }),
-      ...(input.config === undefined ? {} : { configJson: JSON.stringify(input.config) }),
+      ...(normalizedConfig === undefined ? {} : { configJson: JSON.stringify(normalizedConfig) }),
       updatedAt: new Date().toISOString(),
     };
     this.database.update(monitors).set(updated).where(eq(monitors.id, id)).run();
@@ -179,6 +247,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       }
       return;
     }
+    if (monitorType === 'aave_pool' || monitorType === 'uniswap_pool') return;
     const referenceKey = monitorType === 'market' ? 'integrationId' : 'rpcIntegrationId';
     const integrationId = config[referenceKey];
     if (typeof integrationId !== 'string') {
@@ -190,6 +259,20 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       throw new AppError(400, 'INVALID_MONITOR_CONFIG', `config.${referenceKey} must reference an enabled ${expectedType} integration`, {
         [referenceKey]: 'Integration was not found or has the wrong type',
       });
+    }
+    if (expectedType === 'evm_rpc') {
+      if (this.integrationRepository === undefined) return;
+      const runtime = this.integrationRepository.getRuntime(integrationId);
+      const rpc = normalizeEvmRpcConfig(runtime.config);
+      const selectedChainIds = monitorType === 'uniswap_wallet'
+        ? (config.chainIds as number[])
+        : [config.chainId as number];
+      const unsupported = selectedChainIds.find((chainId) => !rpc.chainIds.includes(chainId));
+      if (unsupported !== undefined) {
+        throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'The selected RPC integration does not support every monitor chain', {
+          chainId: `Chain ${unsupported} is not configured on integration ${integrationId}`,
+        });
+      }
     }
   }
 }

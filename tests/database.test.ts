@@ -31,14 +31,16 @@ describe('SQLite persistence', () => {
     });
     expect(firstDatabase.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
     expect(firstDatabase.sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(firstDatabase.sqlite.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 4 });
+    expect(firstDatabase.sqlite.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 5 });
     firstDatabase.close();
 
     expect(readFileSync(databasePath).includes(Buffer.from('database-secret'))).toBe(false);
 
     const reopenedDatabase = createDatabase(databasePath);
     const reopenedRepository = new IntegrationRepository(reopenedDatabase.db, encryption);
-    expect(reopenedRepository.get(integration.id).config).toEqual({ chainId: 1, rpcUrl: '********' });
+    expect(reopenedRepository.get(integration.id).config).toMatchObject({
+      chainIds: [1], routing: { mode: 'fixed' }, rpcUrl: '********',
+    });
     reopenedDatabase.close();
   });
 });

@@ -4,6 +4,7 @@ import type { ConfigEventBus } from '../../core/config-events/config-event-bus.j
 import type { IntegrationOperationsService } from '../../core/integrations/integration-operations-service.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import { openApiSchema } from '../openapi.js';
+import { AppError } from '../errors.js';
 import { idParamsSchema, integrationCreateSchema, integrationPatchSchema } from '../schemas.js';
 
 export function registerIntegrationRoutes(
@@ -38,7 +39,14 @@ export function registerIntegrationRoutes(
     summary: 'Create an integration',
     body: openApiSchema(integrationCreateSchema),
   } }, async (request, reply) => {
-    const input = integrationCreateSchema.parse(request.body);
+    const parsed = integrationCreateSchema.safeParse(request.body);
+    if (!parsed.success && typeof request.body === 'object' && request.body !== null &&
+      'type' in request.body && request.body.type === 'evm_rpc') {
+      throw new AppError(400, 'RPC_ROUTING_CONFIG_INVALID', 'EVM RPC routing configuration is invalid', {
+        config: parsed.error.issues.map((issue) => issue.message).join('; '),
+      });
+    }
+    const input = parsed.success ? parsed.data : integrationCreateSchema.parse(request.body);
     const created = repository.create(input);
     events.publish({ entity: 'integration', operation: 'created', id: created.id });
     return reply.status(201).send(created);
@@ -57,6 +65,7 @@ export function registerIntegrationRoutes(
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     const updated = repository.update(id, integrationPatchSchema.parse(request.body));
+    operations.invalidateTestResults(id);
     events.publish({ entity: 'integration', operation: 'updated', id });
     return updated;
   });
@@ -64,6 +73,7 @@ export function registerIntegrationRoutes(
   app.delete('/api/v1/integrations/:id', { schema: { tags: ['integrations'], params: openApiSchema(idParamsSchema) } }, async (request, reply) => {
     const { id } = idParamsSchema.parse(request.params);
     repository.delete(id);
+    operations.invalidateTestResults(id);
     events.publish({ entity: 'integration', operation: 'deleted', id });
     return reply.status(204).send();
   });

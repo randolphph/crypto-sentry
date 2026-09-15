@@ -4,6 +4,7 @@ import { integrationCreateSchema } from '../../api/schemas.js';
 import type { IntegrationCreate, IntegrationPatch } from '../../api/schemas.js';
 import { AppError } from '../../api/errors.js';
 import { createId } from '../../core/ids.js';
+import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
 import type { EncryptionService } from '../../security/encryption/encryption-service.js';
 import { maskSensitiveConfig } from '../../security/encryption/encryption-service.js';
 import type { AppDatabase } from '../client.js';
@@ -23,6 +24,15 @@ function mergeConfig(current: Record<string, unknown>, patch: Record<string, unk
   return merged;
 }
 
+function normalizeConfig(type: string, config: Record<string, unknown>): Record<string, unknown> {
+  if (type !== 'evm_rpc') return config;
+  try {
+    return normalizeEvmRpcConfig(config);
+  } catch {
+    throw new AppError(400, 'RPC_ROUTING_CONFIG_INVALID', 'EVM RPC routing configuration is invalid');
+  }
+}
+
 export class IntegrationRepository {
   public constructor(
     private readonly database: AppDatabase['db'],
@@ -38,7 +48,7 @@ export class IntegrationRepository {
       const { configCiphertext: _, ...runtimeRow } = row;
       return {
         ...runtimeRow,
-        config: this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext),
+        config: normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext)),
       };
     });
   }
@@ -59,7 +69,7 @@ export class IntegrationRepository {
     const { configCiphertext: _, ...runtimeRow } = row;
     return {
       ...runtimeRow,
-      config: this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext),
+      config: normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext)),
     };
   }
 
@@ -71,7 +81,7 @@ export class IntegrationRepository {
       type: input.type,
       provider: input.provider,
       enabled: input.enabled,
-      configCiphertext: this.encryption.encryptJson(input.config),
+      configCiphertext: this.encryption.encryptJson(normalizeConfig(input.type, input.config)),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -82,8 +92,8 @@ export class IntegrationRepository {
   public update(id: string, input: IntegrationPatch) {
     const row = this.database.select().from(integrations).where(eq(integrations.id, id)).get();
     if (row === undefined) throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Integration was not found');
-    const currentConfig = this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext);
-    const nextConfig = input.config === undefined ? currentConfig : mergeConfig(currentConfig, input.config);
+    const currentConfig = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext));
+    const nextConfig = normalizeConfig(row.type, input.config === undefined ? currentConfig : mergeConfig(currentConfig, input.config));
     integrationCreateSchema.parse({
       name: input.name ?? row.name,
       type: row.type,
@@ -118,7 +128,7 @@ export class IntegrationRepository {
   }
 
   private present(row: typeof integrations.$inferSelect) {
-    const config = this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext);
+    const config = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext));
     const { configCiphertext: _, ...publicRow } = row;
     return { ...publicRow, config: maskSensitiveConfig(config) };
   }

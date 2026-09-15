@@ -41,10 +41,13 @@ describe('HTTP API foundation', () => {
     const specification = openApi.json<{
       openapi: string;
       paths: Record<string, { post?: { requestBody?: unknown }; get?: { parameters?: unknown } }>;
+      components: { schemas: Record<string, unknown> };
     }>();
     expect(specification.paths).toHaveProperty('/api/v1/monitors');
     expect(specification.paths['/api/v1/monitors']?.post?.requestBody).toBeDefined();
     expect(specification.paths['/api/v1/alerts']?.get?.parameters).toBeDefined();
+    expect(specification.paths).toHaveProperty('/api/v1/monitors/{id}/snapshot');
+    expect(specification.components.schemas).toHaveProperty('StableErrorCode');
   });
 
   it('creates, encrypts, masks, updates, and deletes an integration', async () => {
@@ -61,7 +64,7 @@ describe('HTTP API foundation', () => {
     });
     expect(createResponse.statusCode).toBe(201);
     const created = createResponse.json<{ id: string; config: Record<string, unknown> }>();
-    expect(created.config).toEqual({ chainId: 1, rpcUrl: '********' });
+    expect(created.config).toMatchObject({ chainIds: [1], routing: { mode: 'fixed' }, rpcUrl: '********' });
     expect(createResponse.body).not.toContain('private-key');
 
     const updateResponse = await app.inject({

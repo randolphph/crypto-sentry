@@ -52,8 +52,10 @@ describe('Integration setup API', () => {
       marketData: { providers: Array<{ id: string; requiresCredentials: boolean }> };
       evmRpc: {
         providers: Array<{ id: string }>;
-        networks: Array<{ chainId: number; name: string }>;
+        routingModes: Array<{ id: string }>;
+        networks: Array<{ chainId: number; name: string; productEnabled: boolean; capabilities: Record<string, string> }>;
       };
+      monitorTypes: Array<{ id: string; status: string; chainIds?: number[]; versions?: string[] }>;
       uniswap: { deployments: Array<{ chainId: number; version: string; positionManagerAddress: string }> };
     }>();
     expect(catalogBody).toMatchObject({
@@ -66,6 +68,17 @@ describe('Integration setup API', () => {
       { chainId: 4_663, version: 'v3' },
       { chainId: 4_663, version: 'v4' },
     ]);
+    expect(catalogBody.evmRpc.routingModes.map(({ id }) => id)).toEqual(['fixed', 'url_template', 'header', 'query']);
+    expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 1)).toMatchObject({
+      productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'planned', uniswapV4: 'planned' },
+    });
+    expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 4_663)).toMatchObject({
+      productEnabled: true, capabilities: { aaveV3: 'unsupported', uniswapV3: 'available', uniswapV4: 'available' },
+    });
+    expect(catalogBody.monitorTypes).toEqual(expect.arrayContaining([
+      { id: 'aave_pool', status: 'planned', chainIds: [1] },
+      { id: 'uniswap_wallet', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
+    ]));
     expect(catalogBody.evmRpc.networks).toEqual([
       expect.objectContaining({ chainId: 1, name: 'Ethereum' }),
       expect.objectContaining({ chainId: 42_161, name: 'Arbitrum' }),
@@ -82,8 +95,8 @@ describe('Integration setup API', () => {
     });
   });
 
-  it('reports Robinhood Chain RPC as ready for Uniswap but not Aave', async () => {
-    const created = await app.inject({
+  it('does not report an untested Robinhood Chain RPC as ready', async () => {
+    await app.inject({
       method: 'POST',
       url: '/api/v1/integrations',
       headers: authorization,
@@ -99,13 +112,9 @@ describe('Integration setup API', () => {
     expect(readiness.json()).toMatchObject({
       aave: { ready: false, configuredNetworkCount: 0 },
       uniswap: {
-        ready: true,
-        configuredNetworkCount: 1,
-        networks: [{
-          chainId: 4_663,
-          name: 'Robinhood Chain',
-          integrationIds: [created.json<{ id: string }>().id],
-        }],
+        ready: false,
+        configuredNetworkCount: 0,
+        networks: [],
       },
     });
   });
@@ -178,15 +187,17 @@ describe('Integration setup API', () => {
       },
     });
     expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({ provider: 'alchemy', config: { chainId: 1, rpcUrl: '********' } });
+    expect(created.json()).toMatchObject({
+      provider: 'alchemy', config: { chainIds: [1], routing: { mode: 'fixed' }, rpcUrl: '********' },
+    });
     expect(created.body).not.toContain('test-credential');
 
     const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
     expect(readiness.json()).toMatchObject({
       aave: {
-        ready: true,
-        configuredNetworkCount: 1,
-        networks: [{ chainId: 1, name: 'Ethereum', integrationIds: [created.json<{ id: string }>().id] }],
+        ready: false,
+        configuredNetworkCount: 0,
+        networks: [],
       },
     });
     expect(readiness.body).not.toContain('test-credential');
