@@ -181,10 +181,17 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
 
   const unsubscribeConfigEvents = events.subscribe((event) => {
     if (event.entity === 'monitor') {
-      if (event.operation === 'deleted') metricPipeline.forgetMonitor(event.id);
+      if (event.operation === 'deleted') {
+        metricPipeline.forgetMonitor(event.id);
+        ruleExecution.invalidateMonitor(event.id);
+      }
+      if (event.operation === 'updated') ruleExecution.invalidateMonitor(event.id);
       if (event.operation === 'updated' && monitors.findRuntimeMonitor(event.id)?.enabled === false) {
         metricPipeline.forgetMonitor(event.id);
       }
+    }
+    if (event.entity === 'rule' && (event.operation === 'updated' || event.operation === 'deleted')) {
+      ruleExecution.invalidateRule(event.id);
     }
     if (event.entity === 'monitor' || event.entity === 'integration' || event.entity === 'rule') {
       marketDataCoordinator?.reconcile();
@@ -226,6 +233,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await pollingScheduler.close();
     await marketMetricService?.close();
     await metricPipeline.close();
+    ruleExecution.close();
     database.close();
   });
 

@@ -173,15 +173,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   }
 
   public create(input: MonitorCreate) {
-    if (input.type === 'aave_pool' || input.type === 'uniswap_pool') {
-      throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${input.type} is planned but is not runnable yet`);
-    }
-    if ((input.type === 'uniswap_position' && input.config.chainId !== 4_663) ||
-      (input.type === 'uniswap_wallet' && Array.isArray(input.config.chainIds) && input.config.chainIds.some((id) => id !== 4_663))) {
-      throw new AppError(409, 'PROTOCOL_NOT_READY', 'Ethereum Uniswap monitoring is planned but not implemented');
-    }
-    this.validateIntegrationReference(input.type, input.config);
-    const normalizedConfig = monitorConfigSchema(input.type).parse(input.config) as Record<string, unknown>;
+    const normalizedConfig = this.validateFinalConfiguration(input.type, input.config);
     const timestamp = new Date().toISOString();
     const row = {
       id: createId('mon'),
@@ -204,20 +196,16 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   public update(id: string, input: MonitorPatch) {
     const row = this.database.select().from(monitors).where(eq(monitors.id, id)).get();
     if (row === undefined) throw new AppError(404, 'MONITOR_NOT_FOUND', 'Monitor was not found');
-    if (row.type === 'aave_pool' || row.type === 'uniswap_pool') {
-      throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${row.type} is planned but is not runnable yet`);
-    }
-    if (input.config !== undefined) this.validateIntegrationReference(row.type, input.config);
-    const normalizedConfig = input.config === undefined
-      ? undefined
-      : monitorConfigSchema(row.type as MonitorCreate['type']).parse(input.config);
+    const currentConfig = JSON.parse(row.configJson) as Record<string, unknown>;
+    const finalConfig = input.config === undefined ? currentConfig : { ...currentConfig, ...input.config };
+    const normalizedConfig = this.validateFinalConfiguration(row.type as MonitorCreate['type'], finalConfig);
     const updated = {
       ...row,
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
       ...(input.intervalSeconds === undefined ? {} : { intervalSeconds: input.intervalSeconds }),
       ...(input.maxStaleSeconds === undefined ? {} : { maxStaleSeconds: input.maxStaleSeconds }),
-      ...(normalizedConfig === undefined ? {} : { configJson: JSON.stringify(normalizedConfig) }),
+      ...(input.config === undefined ? {} : { configJson: JSON.stringify(normalizedConfig) }),
       updatedAt: new Date().toISOString(),
     };
     this.database.update(monitors).set(updated).where(eq(monitors.id, id)).run();
@@ -232,6 +220,22 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   private present(this: void, row: typeof monitors.$inferSelect) {
     const { configJson: _, ...publicRow } = row;
     return { ...publicRow, config: JSON.parse(row.configJson) as Record<string, unknown> };
+  }
+
+  private validateFinalConfiguration(
+    monitorType: MonitorCreate['type'],
+    config: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (monitorType === 'aave_pool' || monitorType === 'uniswap_pool') {
+      throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${monitorType} is planned but is not runnable yet`);
+    }
+    const normalized = monitorConfigSchema(monitorType).parse(config) as Record<string, unknown>;
+    if ((monitorType === 'uniswap_position' && normalized.chainId !== 4_663) ||
+      (monitorType === 'uniswap_wallet' && (normalized.chainIds as number[]).some((chainId) => chainId !== 4_663))) {
+      throw new AppError(409, 'PROTOCOL_NOT_READY', 'Ethereum Uniswap monitoring is planned but not implemented');
+    }
+    this.validateIntegrationReference(monitorType, normalized);
+    return normalized;
   }
 
   private validateIntegrationReference(monitorType: string, config: Record<string, unknown>): void {

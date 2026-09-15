@@ -48,6 +48,9 @@
 - [x] 逐链真实能力测试、持久化能力状态和细粒度 Readiness
 - [x] 显式 Monitor 类型、新 Aave/Uniswap 配置与 legacy 类型兼容
 - [x] AND/OR Rule Group、条件表迁移、三态执行与状态持久化
+- [x] RPC PATCH 路由/Header 替换语义与密文掩码保留
+- [x] Monitor 创建/更新共用 capability 与 RPC chainId 校验
+- [x] Rule condition 按 Monitor `maxStaleSeconds` 失效，unknown 中断 ARMED 持续时间并清理生命周期缓存
 - [x] market/Aave/Uniswap 统一结构化 Snapshot API
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
 - [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API

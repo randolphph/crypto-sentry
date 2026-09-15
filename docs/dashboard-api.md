@@ -106,6 +106,14 @@ DELETE /api/v1/integrations/:id
 
 创建成功为 `201`，修改/查询成功为 `200`，删除成功为 `204` 且无响应体。修改 RPC 配置或启停状态后，原能力测试结果立即失效，必须重新测试。
 
+RPC 的 PATCH 合并规则需要由 Dashboard 明确处理：
+
+- `routing` 一旦出现在请求中就是整体替换；从 Header 切换到 Query、fixed 或 URL template 时，不需要也不能携带旧模式字段。
+- `headers` 一旦出现在请求中也是整体替换；请求中省略的 Header 会被删除。
+- 已存在 Header 的值可提交 `********` 以保留原始密文；新 Header 必须提交真实值。
+- `headers: null` 清空全部静态 Header；完全省略 `headers` 则保持当前集合不变。
+- `rpcUrl: "********"` 保留当前 URL。合并后的完整配置会重新执行严格校验。
+
 脱敏响应示例：
 
 ```json
@@ -245,6 +253,8 @@ DELETE /api/v1/monitors/:id
 
 Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停。
 
+创建和 PATCH 更新使用同一套类型、协议能力和 RPC chainId 校验。PATCH `config` 可以只提交要修改的字段，后端先与当前配置合并，再验证最终配置并一次性写入；验证失败不会修改 Monitor，也不会发布配置变更事件。当前将 Uniswap 配置更新为 Ethereum 仍返回 `409 PROTOCOL_NOT_READY`，引用未覆盖目标链的 RPC 返回 `RPC_CHAIN_UNSUPPORTED`。
+
 ### 当前 available
 
 `market` 配置保持不变：
@@ -344,10 +354,11 @@ GET 始终返回 `combinator` 与 `conditions`。为旧 Dashboard 暂时保留�
 
 - AND：全 true 为 true；任一 false 为 false；无 false 且有 unknown 为 unknown。
 - OR：任一 true 为 true；全 false 为 false；无 true 且有 unknown 为 unknown。
-- 缺失、未预热、stale、error 为 unknown；只有 `data_age_seconds` 的 stale 数值仍可执行。
-- unknown 不触发告警；表达式为 unknown 时不恢复已触发告警，并保持持续时间状态。
+- 缺失、未预热、stale、error、unsupported，以及最后有效更新超过 Monitor `maxStaleSeconds` 的条件都为 unknown；只有 `data_age_seconds` 的 stale 数值仍可执行，但该 Metric 更新本身也必须未过期。
+- unknown 不触发告警，也不恢复已触发告警。`TRIGGERED` 状态会原样保持，等待有效数据恢复后再判断恢复条件。
+- `ARMED` 状态进入 unknown 时会清空 `conditionSince`；重新取得完整有效数据后重新累计 `durationSeconds`，unknown 时间不会计入持续满足时长。
 - `durationSeconds`、`cooldownSeconds` 作用于整个组；hysteresis 分别作用于各 condition 的恢复边界。
-- 修改条件、combinator、duration 或启停状态会重置组运行状态；状态在 SQLite 持久化。
+- 修改 Rule 会清理对应条件缓存；删除 Rule 或 Monitor 也会清理缓存。修改条件、combinator、duration 或启停状态会重置组运行状态；状态在 SQLite 持久化。
 
 ## 7. 统一 Snapshot
 

@@ -10,16 +10,49 @@ import { maskSensitiveConfig } from '../../security/encryption/encryption-servic
 import type { AppDatabase } from '../client.js';
 import { integrations, monitors, rules } from '../schema/index.js';
 
+const MASKED_SECRET = '********';
+
 function mergeConfig(current: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
   const merged = { ...current };
   for (const [key, value] of Object.entries(patch)) {
-    if (value === '********') continue;
+    if (value === MASKED_SECRET) continue;
     const oldValue = current[key];
     merged[key] =
       value !== null && typeof value === 'object' && !Array.isArray(value) &&
       oldValue !== null && typeof oldValue === 'object' && !Array.isArray(oldValue)
         ? mergeConfig(oldValue as Record<string, unknown>, value as Record<string, unknown>)
         : value;
+  }
+  return merged;
+}
+
+function mergeEvmRpcHeaders(current: unknown, patch: unknown): Record<string, unknown> | undefined {
+  if (patch === null) return undefined;
+  if (typeof patch !== 'object' || Array.isArray(patch)) return patch as Record<string, unknown>;
+  const currentHeaders = current !== null && typeof current === 'object' && !Array.isArray(current)
+    ? current as Record<string, unknown>
+    : {};
+  return Object.fromEntries(Object.entries(patch).flatMap(([name, value]) => {
+    if (value !== MASKED_SECRET) return [[name, value]];
+    const existing = currentHeaders[name];
+    return typeof existing === 'string' ? [[name, existing]] : [];
+  }));
+}
+
+function mergeIntegrationConfig(
+  type: string,
+  current: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  if (type !== 'evm_rpc') return mergeConfig(current, patch);
+  const merged = mergeConfig(current, Object.fromEntries(
+    Object.entries(patch).filter(([key]) => key !== 'routing' && key !== 'headers'),
+  ));
+  if ('routing' in patch) merged.routing = patch.routing;
+  if ('headers' in patch) {
+    const headers = mergeEvmRpcHeaders(current.headers, patch.headers);
+    if (headers === undefined) delete merged.headers;
+    else merged.headers = headers;
   }
   return merged;
 }
@@ -93,7 +126,10 @@ export class IntegrationRepository {
     const row = this.database.select().from(integrations).where(eq(integrations.id, id)).get();
     if (row === undefined) throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Integration was not found');
     const currentConfig = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext));
-    const nextConfig = normalizeConfig(row.type, input.config === undefined ? currentConfig : mergeConfig(currentConfig, input.config));
+    const nextConfig = normalizeConfig(
+      row.type,
+      input.config === undefined ? currentConfig : mergeIntegrationConfig(row.type, currentConfig, input.config),
+    );
     integrationCreateSchema.parse({
       name: input.name ?? row.name,
       type: row.type,

@@ -8,7 +8,7 @@ import type {
 import type { RuleOperator, RuleRuntimeState, RuleStateName } from '../../core/rules/rule-state-machine.js';
 import { createId } from '../../core/ids.js';
 import type { AppDatabase } from '../client.js';
-import { alerts, ruleConditions, ruleStates, rules } from '../schema/index.js';
+import { alerts, monitors, ruleConditions, ruleStates, rules } from '../schema/index.js';
 
 function alertTitle(commit: RuleEvaluationCommit): string {
   const prefix = commit.action === 'repeat' ? 'Reminder' : 'Alert';
@@ -46,9 +46,13 @@ export class RuleExecutionRepository implements RuleExecutionStore {
     return uniqueIds
       .map((id) => this.database.select().from(rules).where(eq(rules.id, id)).get())
       .filter((row): row is NonNullable<typeof row> => row !== undefined)
-      .map((row) => ({
+      .map((row) => {
+        const monitor = this.database.select({ maxStaleSeconds: monitors.maxStaleSeconds })
+          .from(monitors).where(eq(monitors.id, row.monitorId)).get();
+        return {
         id: row.id,
         monitorId: row.monitorId,
+        maxStaleSeconds: monitor?.maxStaleSeconds ?? 90,
         name: row.name,
         combinator: row.combinator as 'and' | 'or',
         conditions: this.database.select().from(ruleConditions).where(eq(ruleConditions.ruleId, row.id))
@@ -68,7 +72,8 @@ export class RuleExecutionRepository implements RuleExecutionStore {
         cooldownSeconds: row.cooldownSeconds,
         severity: row.severity,
         notificationIntegrationIds: JSON.parse(row.notificationIntegrationIdsJson) as string[],
-      }));
+        };
+      });
   }
 
   public getState(ruleId: string): RuleRuntimeState {

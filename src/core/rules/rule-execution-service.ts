@@ -23,6 +23,7 @@ export interface ExecutableCondition {
 export interface ExecutableRule {
   id: string;
   monitorId: string;
+  maxStaleSeconds: number;
   name: string;
   combinator: 'and' | 'or';
   conditions: ExecutableCondition[];
@@ -59,9 +60,20 @@ function labelsMatch(condition: ExecutableCondition, metric: Metric): boolean {
     (condition.metric !== 'price_change_percent' || String(condition.windowSeconds) === metric.labels?.windowSeconds);
 }
 
+function metricIsFresh(metric: Metric, evaluatedAt: Date, maxStaleSeconds: number): boolean {
+  const effectiveTimestamp = Math.min(Date.parse(metric.receivedAt), Date.parse(metric.observedAt));
+  return evaluatedAt.getTime() - effectiveTimestamp <= maxStaleSeconds * 1000;
+}
+
+interface CachedConditionMetric {
+  metric: Metric;
+  monitorId: string;
+  ruleId: string;
+}
+
 export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvider {
   public readonly consumeUnknownMetrics = true;
-  private readonly latestByCondition = new Map<string, Metric>();
+  private readonly latestByCondition = new Map<string, CachedConditionMetric>();
   private health: RuntimeComponentHealth = {
     name: 'rule_engine', status: 'healthy', lastSuccessAt: null, lastErrorAt: null, lastError: null,
   };
@@ -73,6 +85,26 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
 
   public getHealth(): RuntimeComponentHealth {
     return { ...this.health };
+  }
+
+  public invalidateRule(ruleId: string): void {
+    for (const [conditionId, cached] of this.latestByCondition) {
+      if (cached.ruleId === ruleId) this.latestByCondition.delete(conditionId);
+    }
+  }
+
+  public invalidateMonitor(monitorId: string): void {
+    for (const [conditionId, cached] of this.latestByCondition) {
+      if (cached.monitorId === monitorId) this.latestByCondition.delete(conditionId);
+    }
+  }
+
+  public close(): void {
+    this.latestByCondition.clear();
+  }
+
+  public cachedConditionCount(): number {
+    return this.latestByCondition.size;
   }
 
   public async consume(metric: Metric): Promise<void> {
@@ -89,11 +121,16 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
       try {
         const matching = rule.conditions.filter((condition) => condition.metric === metric.name && labelsMatch(condition, metric));
         if (matching.length === 0) continue;
-        for (const condition of matching) this.latestByCondition.set(condition.id, metric);
+        for (const condition of matching) {
+          this.latestByCondition.set(condition.id, { metric, monitorId: rule.monitorId, ruleId: rule.id });
+        }
         const state = this.store.getState(rule.id);
+        const evaluatedAt = metric.receivedAt;
+        const evaluationTime = new Date(evaluatedAt);
         const results = rule.conditions.map((condition): TriState => {
-          const latest = this.latestByCondition.get(condition.id);
-          if (latest === undefined || !isActionableMetric(latest)) return 'unknown';
+          const latest = this.latestByCondition.get(condition.id)?.metric;
+          if (latest === undefined || !isActionableMetric(latest) ||
+            !metricIsFresh(latest, evaluationTime, rule.maxStaleSeconds)) return 'unknown';
           return state.state === 'TRIGGERED'
             ? !hasRecovered(latest.value, {
               operator: condition.operator,
@@ -105,8 +142,7 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
             : conditionMatches(latest.value, condition.threshold, condition.operator);
         });
         const truth = combineConditionResults(rule.combinator, results);
-        const evaluatedAt = metric.receivedAt;
-        const evaluation = evaluateRuleTruth(rule, state, truth, String(metric.value), new Date(evaluatedAt));
+        const evaluation = evaluateRuleTruth(rule, state, truth, String(metric.value), evaluationTime);
         this.store.commitEvaluation({ rule, state: evaluation.state, action: evaluation.action, metric, evaluatedAt });
       } catch (error) {
         failures.push(describeError(rule, error));

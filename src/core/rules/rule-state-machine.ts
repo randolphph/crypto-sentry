@@ -99,7 +99,11 @@ export function evaluateRuleTruth(
   value: string,
   now: Date = new Date(),
 ): RuleEvaluation {
-  if (truth === 'unknown') return { action: 'none', state: currentState };
+  if (truth === 'unknown') {
+    return currentState.state === 'ARMED' && currentState.conditionSince !== null
+      ? { action: 'none', state: { ...currentState, conditionSince: null } }
+      : { action: 'none', state: currentState };
+  }
   const baseState = { ...currentState, lastValue: value };
   if (currentState.state === 'TRIGGERED') {
     if (!truth) {

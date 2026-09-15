@@ -12,10 +12,10 @@ describe('Rule Group three-state semantics', () => {
     expect(combineConditionResults('or', [true, 'unknown'])).toBe(true);
   });
 
-  it('does not trigger or recover a group while its value is unknown', () => {
+  it('resets armed duration but does not recover a triggered group while its value is unknown', () => {
     const armed = { state: 'ARMED' as const, conditionSince: '2026-09-15T00:00:00.000Z', lastValue: '1', lastAlertAt: null };
     expect(evaluateRuleTruth({ durationSeconds: 60, cooldownSeconds: 300 }, armed, 'unknown', '2')).toEqual({
-      action: 'none', state: armed,
+      action: 'none', state: { ...armed, conditionSince: null },
     });
     const triggered = { state: 'TRIGGERED' as const, conditionSince: '2026-09-15T00:00:00.000Z', lastValue: '1', lastAlertAt: '2026-09-15T00:01:00.000Z' };
     expect(evaluateRuleTruth({ durationSeconds: 60, cooldownSeconds: 300 }, triggered, 'unknown', '2')).toEqual({

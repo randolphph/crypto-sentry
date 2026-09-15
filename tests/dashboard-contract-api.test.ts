@@ -140,4 +140,59 @@ describe('Dashboard next-version API contract', () => {
     expect(wrongRpc.statusCode).toBe(400);
     expect(wrongRpc.json()).toMatchObject({ error: { code: 'RPC_CHAIN_UNSUPPORTED' } });
   });
+
+  it('applies the same Uniswap capability checks to monitor updates without changing rejected configs', async () => {
+    const robinhood = await rpc('Robinhood update', 4_663, 'https://robinhood-update.example');
+    const ethereum = await rpc('Ethereum update', 1, 'https://ethereum-update.example');
+    const position = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
+      name: 'Robinhood position', type: 'uniswap_position', enabled: false,
+      config: { rpcIntegrationId: robinhood, chainId: 4_663, version: 'v3', tokenId: '11' },
+    } });
+    const positionId = position.json<{ id: string }>().id;
+
+    const ethereumPatch = await app.inject({
+      method: 'PATCH', url: `/api/v1/monitors/${positionId}`, headers: authorization,
+      payload: { config: { chainId: 1 } },
+    });
+    expect(ethereumPatch.statusCode).toBe(409);
+    expect(ethereumPatch.json()).toMatchObject({ error: { code: 'PROTOCOL_NOT_READY' } });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/monitors/${positionId}`, headers: authorization })).json())
+      .toMatchObject({ config: { rpcIntegrationId: robinhood, chainId: 4_663, version: 'v3', tokenId: '11' } });
+
+    const unsupportedRpcPatch = await app.inject({
+      method: 'PATCH', url: `/api/v1/monitors/${positionId}`, headers: authorization,
+      payload: { config: { rpcIntegrationId: ethereum } },
+    });
+    expect(unsupportedRpcPatch.statusCode).toBe(400);
+    expect(unsupportedRpcPatch.json()).toMatchObject({ error: { code: 'RPC_CHAIN_UNSUPPORTED' } });
+
+    const legalPatch = await app.inject({
+      method: 'PATCH', url: `/api/v1/monitors/${positionId}`, headers: authorization,
+      payload: { name: 'Renamed position', enabled: true, intervalSeconds: 15, config: { version: 'v4' } },
+    });
+    expect(legalPatch.statusCode).toBe(200);
+    expect(legalPatch.json()).toMatchObject({
+      name: 'Renamed position', enabled: true, intervalSeconds: 15,
+      config: { rpcIntegrationId: robinhood, chainId: 4_663, version: 'v4', tokenId: '11' },
+    });
+  });
+
+  it('rejects a wallet update containing Ethereum and preserves the Robinhood-only config', async () => {
+    const robinhood = await rpc('Robinhood wallet update', 4_663, 'https://robinhood-wallet-update.example');
+    const created = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
+      name: 'Robinhood wallet update', type: 'uniswap_wallet', enabled: false,
+      config: { rpcIntegrationId: robinhood, chainIds: [4_663], versions: ['v3', 'v4'], walletAddress },
+    } });
+    const monitorId = created.json<{ id: string }>().id;
+
+    const rejected = await app.inject({
+      method: 'PATCH', url: `/api/v1/monitors/${monitorId}`, headers: authorization,
+      payload: { config: { chainIds: [4_663, 1] } },
+    });
+
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json()).toMatchObject({ error: { code: 'PROTOCOL_NOT_READY' } });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/monitors/${monitorId}`, headers: authorization })).json())
+      .toMatchObject({ config: { chainIds: [4_663], versions: ['v3', 'v4'] } });
+  });
 });

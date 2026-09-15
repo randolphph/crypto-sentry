@@ -94,6 +94,31 @@ function priceMetric(monitorId: string, value: string, time: string) {
 }
 
 describe('RuleExecutionService', () => {
+  it('clears condition caches for rule updates, rule deletion, monitor deletion, and shutdown', async () => {
+    const fixture = createFixture();
+    const rule = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id));
+    const execution = new RuleExecutionService(new RuleExecutionRepository(fixture.database.db));
+    const metric = priceMetric(fixture.monitor.id, '100', '2026-09-16T00:00:00.000Z');
+
+    await execution.consume(metric);
+    expect(execution.cachedConditionCount()).toBe(1);
+    execution.invalidateRule(rule.id);
+    expect(execution.cachedConditionCount()).toBe(0);
+
+    await execution.consume(metric);
+    execution.invalidateRule(rule.id);
+    expect(execution.cachedConditionCount()).toBe(0);
+
+    await execution.consume(metric);
+    execution.invalidateMonitor(fixture.monitor.id);
+    expect(execution.cachedConditionCount()).toBe(0);
+
+    await execution.consume(metric);
+    execution.close();
+    expect(execution.cachedConditionCount()).toBe(0);
+    fixture.database.close();
+  });
+
   it('persists triggers, suppresses cooldown duplicates, repeats, recovers, and re-arms', async () => {
     const fixture = createFixture();
     const rule = fixture.ruleConfigs.create(ruleInput(fixture.monitor.id));
