@@ -110,7 +110,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
-`evm_rpc/custom` 集成的 `POST /api/v1/integrations/:id/test` 会通过 viem 调用 `eth_chainId` 与 `eth_blockNumber`：配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，传输错误不会把带密钥的 RPC URL 暴露给 API。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
+`evm_rpc/custom` 集成的 `POST /api/v1/integrations/:id/test` 会通过 viem 调用 `eth_chainId` 与 `eth_blockNumber`：配置网络不一致时返回 `RPC_CHAIN_ID_MISMATCH`，传输错误不会把带密钥的 RPC URL 暴露给 API。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
 
 ## Aave V3 地址监控
 
@@ -143,6 +143,19 @@ GET /api/v1/monitors/:id/positions
 - 扫描级：`rpc_status`、`position_chain_count`、`position_asset_count`
 
 每个链和资产通过 Metric labels 区分。读取完全只读，不需要私钥、助记词或钱包签名；单链读取失败会进入 `error`，不会把失败伪装成零仓位。
+
+每轮 Aave 扫描先取得最新区块号，账户汇总、Oracle 和所有资产读取均固定在同一块高，结构化仓位中的 `blockNumber` 可供网页展示和排障。Multicall 按配置的 calldata 字节数自动分批。单个 RPC 最多尝试两次并进行指数退避，同链多个 RPC 会自动故障转移；连续三轮失败后打开 60 秒熔断器。独立 freshness watchdog 会在最后成功数据超过 `maxStaleSeconds` 时产生 `data_age_seconds` stale 指标。
+
+真实 RPC 冒烟测试默认不会加入普通测试套件。部署环境配置好测试参数后可显式运行：
+
+```bash
+AAVE_SMOKE_RPC_URL='https://...' \
+AAVE_SMOKE_CHAIN_ID=1 \
+AAVE_SMOKE_WALLET_ADDRESS='0x...' \
+pnpm test:aave:live
+```
+
+命令输出固定块高的结构化仓位，但错误输出不会打印 RPC URL。
 
 规则支持可选的 `labels` 精确匹配。例如 `{"chainId":"1"}` 只消费 Ethereum 指标，不会被其他网络的同名 `health_factor` 更新或恢复。完成首次 Aave 扫描后，可一键为每个已发现网络创建默认健康因子规则：
 

@@ -21,6 +21,7 @@ export interface AaveAssetSnapshot {
 export interface AaveChainPositionSnapshot {
   chainId: number;
   chainName: string;
+  blockNumber: string | null;
   observedAt: string;
   baseCurrency: string;
   account: {
@@ -192,6 +193,7 @@ export class AavePositionSnapshotService {
     return {
       chainId: Number(chainId),
       chainName: healthFactor?.labels?.chainName ?? `Chain ${chainId}`,
+      blockNumber: stringValue(valueByName(metrics, 'block_number')),
       observedAt: latestObservation(metrics) ?? healthFactor?.observedAt ?? new Date(0).toISOString(),
       baseCurrency: valueByName(metrics, 'total_collateral_base')?.unit ?? 'USD',
       account: {

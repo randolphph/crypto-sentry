@@ -99,6 +99,7 @@ export interface AaveV3AssetPosition extends AaveV3Asset {
 export interface AaveV3Position {
   chainId: number;
   chainName: string;
+  blockNumber: string;
   walletAddress: Address;
   baseCurrencySymbol: string;
   totalCollateralBase: string;
@@ -162,6 +163,8 @@ export interface AaveV3PositionReaderOptions {
   rpcUrl: string;
   expectedChainId: number;
   fetch?: typeof globalThis.fetch;
+  timeoutMilliseconds?: number;
+  multicallBatchSizeBytes?: number;
   publicClient?: PublicClient;
 }
 
@@ -181,6 +184,8 @@ export class AaveV3PositionReader {
       throw new Error(`EVM RPC chain ID mismatch: expected ${market.chainId}, received ${chainId}`);
     }
     signal?.throwIfAborted();
+    const blockNumber = await this.publicClient.getBlockNumber({ cacheTime: 0 });
+    signal?.throwIfAborted();
 
     const [accountData, baseCurrencyUnit] = await Promise.all([
       this.publicClient.readContract({
@@ -188,11 +193,13 @@ export class AaveV3PositionReader {
         abi: poolAbi,
         functionName: 'getUserAccountData',
         args: [wallet],
+        blockNumber,
       }),
       this.publicClient.readContract({
         address: market.oracleAddress,
         abi: oracleAbi,
         functionName: 'BASE_CURRENCY_UNIT',
+        blockNumber,
       }),
     ]);
     signal?.throwIfAborted();
@@ -223,6 +230,8 @@ export class AaveV3PositionReader {
     ]);
     const results = await this.publicClient.multicall({
       allowFailure: true,
+      batchSize: this.options.multicallBatchSizeBytes ?? 8_192,
+      blockNumber,
       contracts,
       multicallAddress: MULTICALL3_ADDRESS,
     });
@@ -253,6 +262,7 @@ export class AaveV3PositionReader {
     return {
       chainId: market.chainId,
       chainName: market.chainName,
+      blockNumber: blockNumber.toString(),
       walletAddress: wallet,
       baseCurrencySymbol: market.baseCurrencySymbol,
       totalCollateralBase: decimalRatio(totalCollateralBase, baseCurrencyUnit),

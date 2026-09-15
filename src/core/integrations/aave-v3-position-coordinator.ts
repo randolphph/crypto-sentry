@@ -12,7 +12,12 @@ export interface AaveV3PositionReaderPort {
 }
 
 export interface AaveV3PositionReaderFactory {
-  create(options: { rpcUrl: string; expectedChainId: number }): AaveV3PositionReaderPort;
+  create(options: {
+    rpcUrl: string;
+    expectedChainId: number;
+    timeoutMilliseconds: number;
+    multicallBatchSizeBytes: number;
+  }): AaveV3PositionReaderPort;
 }
 
 export interface AaveV3PositionCoordinatorOptions {
@@ -20,11 +25,19 @@ export interface AaveV3PositionCoordinatorOptions {
   readerFactory?: AaveV3PositionReaderFactory;
   now?: () => Date;
   onError?: (error: Error) => void;
+  maximumAttemptsPerEndpoint?: number;
+  retryBaseDelayMilliseconds?: number;
+  circuitBreakerFailureThreshold?: number;
+  circuitBreakerCooldownMilliseconds?: number;
+  sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
 
 interface RpcEndpoint {
+  id: string;
   rpcUrl: string;
   chainId: number;
+  timeoutMilliseconds: number;
+  multicallBatchSizeBytes: number;
 }
 
 interface ChainScanResult {
@@ -33,8 +46,31 @@ interface ChainScanResult {
   error?: Error | undefined;
 }
 
+interface CircuitState {
+  consecutiveFailures: number;
+  openUntil: number;
+}
+
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function abortableSleep(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('Aave V3 retry aborted', { cause: signal.reason }));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new Error('Aave V3 retry aborted', { cause: signal.reason }));
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function metric(
@@ -62,6 +98,12 @@ export class AaveV3PositionCoordinator {
   private readonly readerFactory: AaveV3PositionReaderFactory;
   private readonly now: () => Date;
   private readonly onError: (error: Error) => void;
+  private readonly maximumAttemptsPerEndpoint: number;
+  private readonly retryBaseDelayMilliseconds: number;
+  private readonly circuitBreakerFailureThreshold: number;
+  private readonly circuitBreakerCooldownMilliseconds: number;
+  private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  private readonly circuits = new Map<string, CircuitState>();
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -71,22 +113,28 @@ export class AaveV3PositionCoordinator {
     options: AaveV3PositionCoordinatorOptions = {},
   ) {
     this.readerFactory = options.readerFactory ?? {
-      create: ({ rpcUrl, expectedChainId }) => new AaveV3PositionReader({
-        rpcUrl,
-        expectedChainId,
+      create: (readerOptions) => new AaveV3PositionReader({
+        ...readerOptions,
         ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       }),
     };
     this.now = options.now ?? (() => new Date());
     this.onError = options.onError ?? (() => undefined);
+    this.maximumAttemptsPerEndpoint = options.maximumAttemptsPerEndpoint ?? 2;
+    this.retryBaseDelayMilliseconds = options.retryBaseDelayMilliseconds ?? 250;
+    this.circuitBreakerFailureThreshold = options.circuitBreakerFailureThreshold ?? 3;
+    this.circuitBreakerCooldownMilliseconds = options.circuitBreakerCooldownMilliseconds ?? 60_000;
+    this.sleep = options.sleep ?? abortableSleep;
   }
 
   public reconcile(): void {
+    this.circuits.clear();
     const enabledMonitors = this.monitors.listEnabledAaveMonitors();
     const desiredIds = new Set(enabledMonitors.map(({ monitorId }) => monitorId));
     for (const monitorId of this.scheduledMonitorIds) {
       if (desiredIds.has(monitorId)) continue;
       this.scheduler.remove(this.taskId(monitorId));
+      this.scheduler.remove(this.staleTaskId(monitorId));
       this.scheduledMonitorIds.delete(monitorId);
     }
     for (const monitor of enabledMonitors) {
@@ -95,17 +143,34 @@ export class AaveV3PositionCoordinator {
         intervalMilliseconds: monitor.intervalSeconds * 1_000,
         run: async (signal) => this.scan(monitor.monitorId, monitor.walletAddress, signal),
       });
+      this.scheduler.upsert({
+        id: this.staleTaskId(monitor.monitorId),
+        intervalMilliseconds: Math.min(30_000, Math.max(5_000, monitor.maxStaleSeconds * 500)),
+        run: async (signal) => this.checkStale(
+          monitor.monitorId,
+          monitor.walletAddress,
+          monitor.maxStaleSeconds,
+          signal,
+        ),
+      });
       this.scheduledMonitorIds.add(monitor.monitorId);
     }
   }
 
   public close(): void {
-    for (const monitorId of this.scheduledMonitorIds) this.scheduler.remove(this.taskId(monitorId));
+    for (const monitorId of this.scheduledMonitorIds) {
+      this.scheduler.remove(this.taskId(monitorId));
+      this.scheduler.remove(this.staleTaskId(monitorId));
+    }
     this.scheduledMonitorIds.clear();
   }
 
   private taskId(monitorId: string): string {
     return `aave-v3:${monitorId}`;
+  }
+
+  private staleTaskId(monitorId: string): string {
+    return `aave-v3-stale:${monitorId}`;
   }
 
   private rpcEndpoints(): Map<number, RpcEndpoint[]> {
@@ -115,7 +180,7 @@ export class AaveV3PositionCoordinator {
       const parsed = rpcIntegrationConfigSchema.safeParse(integration.config);
       if (!parsed.success || !supportedAaveV3Markets.has(parsed.data.chainId)) continue;
       const chainEndpoints = endpoints.get(parsed.data.chainId) ?? [];
-      chainEndpoints.push(parsed.data);
+      chainEndpoints.push({ id: integration.id, ...parsed.data });
       endpoints.set(parsed.data.chainId, chainEndpoints);
     }
     return endpoints;
@@ -201,18 +266,88 @@ export class AaveV3PositionCoordinator {
   ): Promise<ChainScanResult> {
     let lastError: Error | undefined;
     for (const endpoint of endpoints) {
-      if (signal.aborted) return { chainId, error: new Error('Aave V3 scan aborted') };
+      if (this.isCircuitOpen(endpoint.id)) continue;
+      signal.throwIfAborted();
+      const reader = this.readerFactory.create({
+        rpcUrl: endpoint.rpcUrl,
+        expectedChainId: endpoint.chainId,
+        timeoutMilliseconds: endpoint.timeoutMilliseconds,
+        multicallBatchSizeBytes: endpoint.multicallBatchSizeBytes,
+      });
       try {
-        const position = await this.readerFactory.create({
-          rpcUrl: endpoint.rpcUrl,
-          expectedChainId: endpoint.chainId,
-        }).read(walletAddress, signal);
+        const position = await this.readWithRetry(reader, walletAddress, signal);
+        this.circuits.delete(endpoint.id);
         return { chainId, position };
       } catch (error) {
+        signal.throwIfAborted();
         lastError = toError(error);
+        this.recordEndpointFailure(endpoint.id);
       }
     }
-    return { chainId, error: lastError ?? new Error('No RPC endpoint was available') };
+    return { chainId, error: lastError ?? new Error('All RPC endpoints are temporarily unavailable') };
+  }
+
+  private async readWithRetry(
+    reader: AaveV3PositionReaderPort,
+    walletAddress: string,
+    signal: AbortSignal,
+  ): Promise<AaveV3Position | undefined> {
+    let lastError: Error | undefined;
+    for (let attempt = 1; attempt <= this.maximumAttemptsPerEndpoint; attempt += 1) {
+      signal.throwIfAborted();
+      try {
+        return await reader.read(walletAddress, signal);
+      } catch (error) {
+        signal.throwIfAborted();
+        lastError = toError(error);
+        if (attempt < this.maximumAttemptsPerEndpoint) {
+          await this.sleep(this.retryBaseDelayMilliseconds * 2 ** (attempt - 1), signal);
+        }
+      }
+    }
+    throw lastError ?? new Error('Aave V3 RPC request failed');
+  }
+
+  private isCircuitOpen(endpointId: string): boolean {
+    const circuit = this.circuits.get(endpointId);
+    return circuit !== undefined && circuit.openUntil > this.now().getTime();
+  }
+
+  private recordEndpointFailure(endpointId: string): void {
+    const current = this.circuits.get(endpointId) ?? { consecutiveFailures: 0, openUntil: 0 };
+    const consecutiveFailures = current.consecutiveFailures + 1;
+    this.circuits.set(endpointId, {
+      consecutiveFailures,
+      openUntil: consecutiveFailures >= this.circuitBreakerFailureThreshold
+        ? this.now().getTime() + this.circuitBreakerCooldownMilliseconds
+        : 0,
+    });
+  }
+
+  private async checkStale(
+    monitorId: string,
+    walletAddress: string,
+    maxStaleSeconds: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    signal.throwIfAborted();
+    const latestSuccessful = this.metricPipeline.list(monitorId)
+      .filter((candidate) => candidate.source === 'aave_v3' && candidate.status === 'ok')
+      .reduce<Metric | undefined>((latest, candidate) => (
+        latest === undefined || Date.parse(candidate.observedAt) > Date.parse(latest.observedAt) ? candidate : latest
+      ), undefined);
+    if (latestSuccessful === undefined) return;
+    const ageSeconds = Math.max(0, (this.now().getTime() - Date.parse(latestSuccessful.observedAt)) / 1_000);
+    if (ageSeconds <= maxStaleSeconds) return;
+    const timestamp = this.now().toISOString();
+    await this.metricPipeline.ingest(metric(
+      monitorId,
+      walletAddress,
+      'data_age_seconds',
+      String(ageSeconds),
+      timestamp,
+      { status: 'stale', unit: 'seconds' },
+    ));
   }
 
   private async emitPosition(monitorId: string, position: AaveV3Position, timestamp: string): Promise<void> {
@@ -225,6 +360,7 @@ export class AaveV3PositionCoordinator {
       ['liquidation_threshold_percent', position.liquidationThresholdPercent, 'percent'],
       ['ltv_percent', position.ltvPercent, 'percent'],
       ['health_factor', position.healthFactor, 'ratio'],
+      ['block_number', position.blockNumber, 'block'],
     ];
     for (const [name, value, unit] of aggregates) {
       await this.metricPipeline.ingest(metric(monitorId, target, name, value, timestamp, {

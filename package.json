@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/app.js",
     "test": "vitest run",
+    "test:aave:live": "node --env-file-if-exists=.env --import tsx src/cli/aave-smoke.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "lint:shell": "bash -n scripts/*.sh",

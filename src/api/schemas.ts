@@ -41,7 +41,12 @@ export const binanceIntegrationConfigSchema = z.object({
   ...config,
   futuresWebsocketUrl: normalizeBinanceFuturesWebsocketUrl(config.futuresWebsocketUrl),
 }));
-export const rpcIntegrationConfigSchema = z.object({ chainId: z.number().int().positive(), rpcUrl: z.url() });
+export const rpcIntegrationConfigSchema = z.object({
+  chainId: z.number().int().positive(),
+  rpcUrl: z.url(),
+  timeoutMilliseconds: z.number().int().min(1_000).max(60_000).default(5_000),
+  multicallBatchSizeBytes: z.number().int().min(1_024).max(100_000).default(8_192),
+});
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
 export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),

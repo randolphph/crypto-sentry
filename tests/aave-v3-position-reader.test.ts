@@ -29,6 +29,7 @@ describe('AaveV3PositionReader', () => {
     ]));
     const publicClient = {
       getChainId: vi.fn(async () => 1),
+      getBlockNumber: vi.fn(async () => 12_345_678n),
       readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
         if (functionName === 'BASE_CURRENCY_UNIT') return 10n ** 8n;
         return [5_000n * 10n ** 8n, 1_000n * 10n ** 8n, 2_500n * 10n ** 8n, 8_250n, 7_500n, 15n * 10n ** 17n] as const;
@@ -44,6 +45,7 @@ describe('AaveV3PositionReader', () => {
     await expect(reader.read(walletAddress)).resolves.toMatchObject({
       chainId: 1,
       chainName: 'Ethereum',
+      blockNumber: '12345678',
       totalCollateralBase: '5000',
       totalDebtBase: '1000',
       availableBorrowsBase: '2500',
@@ -62,12 +64,21 @@ describe('AaveV3PositionReader', () => {
       }],
     });
     expect(multicall).toHaveBeenCalledOnce();
+    expect(multicall).toHaveBeenCalledWith(expect.objectContaining({
+      batchSize: 8_192,
+      blockNumber: 12_345_678n,
+    }));
+    expect(publicClient.readContract).toHaveBeenCalledTimes(2);
+    for (const [parameters] of vi.mocked(publicClient.readContract).mock.calls) {
+      expect(parameters).toEqual(expect.objectContaining({ blockNumber: 12_345_678n }));
+    }
   });
 
   it('skips reserve calls when the address has no position on a chain', async () => {
     const multicall = vi.fn();
     const publicClient = {
       getChainId: vi.fn(async () => 8453),
+      getBlockNumber: vi.fn(async () => 23_456_789n),
       readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
         if (functionName === 'BASE_CURRENCY_UNIT') return 10n ** 8n;
         return [0n, 0n, 0n, 0n, 0n, 0n] as const;

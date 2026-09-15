@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Address } from 'viem';
 
 import { createApp } from '../src/app.js';
+import type { AaveV3Position } from '../src/adapters/aave/aave-v3-position-reader.js';
 import type { AppConfig } from '../src/config.js';
 import type { AaveV3PositionReaderFactory } from '../src/core/integrations/aave-v3-position-coordinator.js';
 
@@ -17,37 +18,40 @@ const config: AppConfig = {
   port: 3000,
   logLevel: 'silent',
 };
+const position: AaveV3Position = {
+  chainId: 1,
+  chainName: 'Ethereum',
+  blockNumber: '12345678',
+  walletAddress,
+  baseCurrencySymbol: 'USD',
+  totalCollateralBase: '5000',
+  totalDebtBase: '1000',
+  availableBorrowsBase: '2500',
+  liquidationThresholdPercent: '82.5',
+  ltvPercent: '75',
+  healthFactor: '1.5',
+  assets: [{
+    symbol: 'WETH',
+    decimals: 18,
+    underlyingAddress: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+    supplied: '2',
+    stableDebt: '0',
+    variableDebt: '0.5',
+    totalDebt: '0.5',
+    suppliedBase: '4000',
+    debtBase: '1000',
+    usageAsCollateralEnabled: true,
+  }],
+};
 
 describe('Aave position monitor API', () => {
   let app: FastifyInstance;
-  const read = vi.fn(async () => ({
-    chainId: 1,
-    chainName: 'Ethereum',
-    walletAddress,
-    baseCurrencySymbol: 'USD',
-    totalCollateralBase: '5000',
-    totalDebtBase: '1000',
-    availableBorrowsBase: '2500',
-    liquidationThresholdPercent: '82.5',
-    ltvPercent: '75',
-    healthFactor: '1.5',
-    assets: [{
-      symbol: 'WETH',
-      decimals: 18,
-      underlyingAddress: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const,
-      supplied: '2',
-      stableDebt: '0',
-      variableDebt: '0.5',
-      totalDebt: '0.5',
-      suppliedBase: '4000',
-      debtBase: '1000',
-      usageAsCollateralEnabled: true,
-    }],
-  }));
+  const read = vi.fn<(walletAddress: string, signal?: AbortSignal) => Promise<AaveV3Position | undefined>>();
   const readerFactory: AaveV3PositionReaderFactory = { create: () => ({ read }) };
 
   beforeEach(async () => {
-    read.mockClear();
+    read.mockReset();
+    read.mockResolvedValue(position);
     app = await createApp({
       config,
       logger: false,
@@ -126,6 +130,7 @@ describe('Aave position monitor API', () => {
       positions: [{
         chainId: 1,
         chainName: 'Ethereum',
+        blockNumber: '12345678',
         account: { healthFactor: '1.5', totalCollateralBase: '5000' },
         assets: [{ symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5' }],
       }],
@@ -154,7 +159,7 @@ describe('Aave position monitor API', () => {
   });
 
   it('reports RPC failures as errors instead of a zero position', async () => {
-    read.mockRejectedValueOnce(new Error('request to https://rpc.example/private-key failed'));
+    read.mockRejectedValue(new Error('request to https://rpc.example/private-key failed'));
     await createRpcIntegration();
     const created = await app.inject({
       method: 'POST',
@@ -185,6 +190,33 @@ describe('Aave position monitor API', () => {
     });
     expect(monitor.json<{ lastStatus: string }>().lastStatus).toBe('error');
     expect(monitor.body).not.toContain('private-key');
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers when an RPC retry succeeds', async () => {
+    read.mockRejectedValueOnce(new Error('temporary RPC failure'));
+    await createRpcIntegration();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/monitors',
+      headers: authorization,
+      payload: {
+        name: 'Retrying Aave account',
+        type: 'aave_position',
+        config: { walletAddress },
+      },
+    });
+    const monitorId = created.json<{ id: string }>().id;
+
+    await vi.waitFor(async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/v1/monitors/${monitorId}/positions`,
+        headers: authorization,
+      });
+      expect(response.json<{ status: string }>().status).toBe('ok');
+    });
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it('creates idempotent chain-scoped default health-factor rules', async () => {
