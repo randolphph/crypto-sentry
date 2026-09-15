@@ -43,6 +43,7 @@
 - [x] Metric label 规则过滤与按网络幂等创建的 Aave 健康因子预设规则
 - [x] Aave 固定区块读取、Multicall 分批、重试/故障转移/熔断和 stale watchdog
 - [x] 使用公开 Ethereum RPC 运行显式 Aave 全仓位读取冒烟测试
+- [x] 数据源目录、就绪状态、Alchemy/Infura/QuickNode 标识和 Binance 默认配置 API
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
 - [ ] Uniswap V3 与 PancakeSwap V3 LP 适配器
 - [ ] Uniswap V4 PositionManager/StateView 适配器

@@ -14,6 +14,25 @@ export function registerIntegrationRoutes(
 ): void {
   app.get('/api/v1/integrations', { schema: { tags: ['integrations'] } }, async () => ({ items: repository.list() }));
 
+  app.get('/api/v1/integrations/catalog', { schema: {
+    tags: ['integrations'],
+    summary: 'List supported data-source providers, networks, and safe defaults',
+  } }, async () => operations.catalog());
+
+  app.get('/api/v1/integrations/readiness', { schema: {
+    tags: ['integrations'],
+    summary: 'Report whether Aave and Binance data sources are ready for monitors',
+  } }, async () => operations.readiness());
+
+  app.post('/api/v1/integrations/binance/default', { schema: {
+    tags: ['integrations'],
+    summary: 'Idempotently create the default credential-free Binance market-data source',
+  } }, async (_request, reply) => {
+    const result = operations.ensureDefaultBinance();
+    if (result.created) events.publish({ entity: 'integration', operation: 'created', id: result.integration.id });
+    return reply.status(result.created ? 201 : 200).send(result);
+  });
+
   app.post('/api/v1/integrations', { schema: {
     tags: ['integrations'],
     summary: 'Create an integration',

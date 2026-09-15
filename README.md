@@ -86,6 +86,16 @@ Authorization: Bearer <API_TOKEN>
 
 当前可以通过 API 创建、查询、修改和删除配置。尚未接入的外部适配器操作会返回明确的 `ADAPTER_NOT_READY`，不会伪造成功结果。
 
+Dashboard 可先读取数据源目录和当前就绪状态，避免在前端硬编码支持网络、服务商和公共端点：
+
+```text
+GET  /api/v1/integrations/catalog            # 服务商、网络和安全默认值
+GET  /api/v1/integrations/readiness          # Aave/Binance 是否可创建有效 Monitor
+POST /api/v1/integrations/binance/default    # 幂等创建无需密钥的 Binance 公共行情源
+```
+
+`evm_rpc` 的 `provider` 支持 `alchemy`、`infura`、`quicknode` 和 `custom`，四者均使用标准 JSON-RPC，并可进入相同的 Aave 扫描、重试、故障转移和熔断链路。RPC URL 在查询响应中保持脱敏。
+
 Binance `market_data` 集成还提供：
 
 ```text

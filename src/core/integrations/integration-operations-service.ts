@@ -9,6 +9,12 @@ import { AppError } from '../../api/errors.js';
 import { binanceIntegrationConfigSchema, rpcIntegrationConfigSchema } from '../../api/schemas.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MarketRepository } from '../../db/repositories/market-repository.js';
+import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
+import {
+  BINANCE_DEFAULT_CONFIG,
+  INTEGRATION_CATALOG,
+  isEvmRpcProvider,
+} from './integration-catalog.js';
 
 export class IntegrationOperationsService {
   public constructor(
@@ -18,12 +24,81 @@ export class IntegrationOperationsService {
     private readonly webSocketFactory: MarketWebSocketFactory = createNodeMarketWebSocket,
   ) {}
 
+  public catalog() {
+    return INTEGRATION_CATALOG;
+  }
+
+  public readiness() {
+    const integrations = this.integrations.listRuntime();
+    const rpcNetworks = new Map<number, { chainId: number; name: string; integrationIds: string[] }>();
+    const binanceSources: Array<{
+      integrationId: string;
+      name: string;
+      enabled: boolean;
+      marketCount: number;
+    }> = [];
+
+    for (const integration of integrations) {
+      if (integration.type === 'evm_rpc' && integration.enabled && isEvmRpcProvider(integration.provider)) {
+        const parsed = rpcIntegrationConfigSchema.safeParse(integration.config);
+        const market = parsed.success ? supportedAaveV3Markets.get(parsed.data.chainId) : undefined;
+        if (parsed.success && market !== undefined) {
+          const current = rpcNetworks.get(parsed.data.chainId) ?? {
+            chainId: parsed.data.chainId,
+            name: market.chainName,
+            integrationIds: [],
+          };
+          current.integrationIds.push(integration.id);
+          rpcNetworks.set(parsed.data.chainId, current);
+        }
+      }
+      if (integration.type === 'market_data' && integration.provider === 'binance') {
+        binanceSources.push({
+          integrationId: integration.id,
+          name: integration.name,
+          enabled: integration.enabled,
+          marketCount: this.markets.list(integration.id).length,
+        });
+      }
+    }
+
+    const networks = [...rpcNetworks.values()].sort((left, right) => left.chainId - right.chainId);
+    return {
+      aave: {
+        ready: networks.length > 0,
+        configuredNetworkCount: networks.length,
+        networks,
+      },
+      binance: {
+        ready: binanceSources.some((source) => source.enabled && source.marketCount > 0),
+        sources: binanceSources,
+      },
+    };
+  }
+
+  public ensureDefaultBinance() {
+    const existing = this.integrations.listRuntime().find((integration) => (
+      integration.type === 'market_data' && integration.provider === 'binance'
+    ));
+    if (existing !== undefined) {
+      return { created: false, integration: this.integrations.get(existing.id) };
+    }
+    const integration = this.integrations.create({
+      name: 'Binance Public Market Data',
+      type: 'market_data',
+      provider: 'binance',
+      enabled: true,
+      config: { ...BINANCE_DEFAULT_CONFIG },
+    });
+    return { created: true, integration };
+  }
+
   public async test(id: string) {
     const integration = this.integrations.getRuntime(id);
     if (!integration.enabled) {
       throw new AppError(409, 'INTEGRATION_DISABLED', 'Enable the integration before using it');
     }
-    if (integration.type === 'evm_rpc' && integration.provider === 'custom') {
+    if (integration.type === 'evm_rpc' && isEvmRpcProvider(integration.provider)) {
       const config = rpcIntegrationConfigSchema.parse(integration.config);
       try {
         const probe = await new EvmRpcClient({
@@ -33,7 +108,7 @@ export class IntegrationOperationsService {
         }).testConnectivity();
         return {
           ok: true,
-          provider: 'custom',
+          provider: integration.provider,
           connectivity: { rpc: 'ok' },
           ...probe,
         };

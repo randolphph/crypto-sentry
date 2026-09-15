@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { Decimal } from 'decimal.js';
 
+import { EVM_RPC_PROVIDERS } from '../core/integrations/integration-catalog.js';
+
 const configRecord = z.record(z.string(), z.unknown());
 const enabled = z.boolean();
 const address = z.string().regex(/^0x[0-9a-fA-F]{40}$/, 'Expected an EVM address');
@@ -47,6 +49,7 @@ export const rpcIntegrationConfigSchema = z.object({
   timeoutMilliseconds: z.number().int().min(1_000).max(60_000).default(5_000),
   multicallBatchSizeBytes: z.number().int().min(1_024).max(100_000).default(8_192),
 });
+export const evmRpcProviderSchema = z.enum(EVM_RPC_PROVIDERS);
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
 export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),
@@ -95,7 +98,7 @@ export const integrationCreateSchema = z
   .superRefine((value, context) => {
     const supported =
       (value.type === 'market_data' && value.provider === 'binance') ||
-      (value.type === 'evm_rpc' && value.provider === 'custom') ||
+      (value.type === 'evm_rpc' && evmRpcProviderSchema.safeParse(value.provider).success) ||
       (value.type === 'notification' && value.provider === 'telegram');
     if (!supported) context.addIssue({ code: 'custom', path: ['provider'], message: 'Unsupported integration type/provider combination' });
     const expectedConfig =

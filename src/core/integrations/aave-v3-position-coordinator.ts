@@ -3,6 +3,7 @@ import { AaveV3PositionReader, supportedAaveV3Markets } from '../../adapters/aav
 import type { AaveV3Position } from '../../adapters/aave/aave-v3-position-reader.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
+import { isEvmRpcProvider } from './integration-catalog.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricPipeline } from '../metrics/metric-pipeline.js';
 import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
@@ -176,7 +177,7 @@ export class AaveV3PositionCoordinator {
   private rpcEndpoints(): Map<number, RpcEndpoint[]> {
     const endpoints = new Map<number, RpcEndpoint[]>();
     for (const integration of this.integrations.listRuntime()) {
-      if (!integration.enabled || integration.type !== 'evm_rpc' || integration.provider !== 'custom') continue;
+      if (!integration.enabled || integration.type !== 'evm_rpc' || !isEvmRpcProvider(integration.provider)) continue;
       const parsed = rpcIntegrationConfigSchema.safeParse(integration.config);
       if (!parsed.success || !supportedAaveV3Markets.has(parsed.data.chainId)) continue;
       const chainEndpoints = endpoints.get(parsed.data.chainId) ?? [];

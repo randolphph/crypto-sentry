@@ -73,7 +73,7 @@ describe('Aave position monitor API', () => {
       payload: {
         name: 'Ethereum Mainnet',
         type: 'evm_rpc',
-        provider: 'custom',
+        provider: 'alchemy',
         config: { chainId: 1, rpcUrl: 'https://rpc.example/private-key' },
       },
     });

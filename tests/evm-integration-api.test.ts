@@ -53,7 +53,7 @@ describe('EVM RPC integration API', () => {
       payload: {
         name: 'Ethereum Mainnet',
         type: 'evm_rpc',
-        provider: 'custom',
+        provider: 'alchemy',
         config: { chainId: 1, rpcUrl: 'https://rpc.example/private-key' },
       },
     });
@@ -71,7 +71,7 @@ describe('EVM RPC integration API', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       ok: true,
-      provider: 'custom',
+      provider: 'alchemy',
       connectivity: { rpc: 'ok' },
       chainId: 1,
       blockNumber: '100',
