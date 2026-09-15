@@ -85,9 +85,25 @@ describe('AavePositionSnapshotService', () => {
       ],
       positions: [{
         chainId: 1,
-        account: { healthFactor: '1.5', totalCollateralBase: '5000' },
+        account: { healthFactor: '1.5', healthFactorInfinite: false, totalCollateralBase: '5000' },
         assets: [{ symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5' }],
       }],
+    });
+  });
+
+  it('represents a debt-free health factor as infinite instead of a huge sentinel number', () => {
+    const ethereum = { chainId: '1', chainName: 'Ethereum' };
+    const snapshot = serviceWith([
+      metric('rpc_status', true, ethereum),
+      metric('total_collateral_base', '67031.91757239', ethereum, 'ok', 'USD'),
+      metric('total_debt_base', '0', ethereum, 'ok', 'USD'),
+      metric('health_factor', '1.1579208923731619542e+59', ethereum, 'ok', 'ratio'),
+    ]).get('mon_aave');
+
+    expect(snapshot.positions[0]?.account).toMatchObject({
+      totalDebtBase: '0',
+      healthFactor: null,
+      healthFactorInfinite: true,
     });
   });
 

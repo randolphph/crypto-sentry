@@ -131,7 +131,7 @@ describe('Aave position monitor API', () => {
         chainId: 1,
         chainName: 'Ethereum',
         blockNumber: '12345678',
-        account: { healthFactor: '1.5', totalCollateralBase: '5000' },
+        account: { healthFactor: '1.5', healthFactorInfinite: false, totalCollateralBase: '5000' },
         assets: [{ symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5' }],
       }],
     });

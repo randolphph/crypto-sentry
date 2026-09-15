@@ -146,7 +146,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 GET /api/v1/monitors/:id/positions
 ```
 
-响应包含 `status`、数据时间与年龄、扫描成功/失败网络数，以及按网络分组的账户风险和逐资产余额。`status` 明确区分 `warming_up`、`ok`、`empty`、`partial`、`stale` 和 `error`；没有仓位的网络只出现在 `networkScans`，不会生成空仓位卡片。底层原始数据仍可通过 `GET /api/v1/monitors/:id/metrics` 读取：
+响应包含 `status`、数据时间与年龄、扫描成功/失败网络数，以及按网络分组的账户风险和逐资产余额。`status` 明确区分 `warming_up`、`ok`、`empty`、`partial`、`stale` 和 `error`；没有仓位的网络只出现在 `networkScans`，不会生成空仓位卡片。账户没有债务时，结构化响应使用 `healthFactor: null` 和 `healthFactorInfinite: true` 表达无限健康因子，Dashboard 应显示 `∞` 或“无借款”，而不是展示 Aave 合约的巨大整数哨兵值；有债务时返回实际 `healthFactor` 且 `healthFactorInfinite` 为 `false`。底层原始数据仍可通过 `GET /api/v1/monitors/:id/metrics` 读取：
 
 - 账户级：`total_collateral_base`、`total_debt_base`、`available_borrows_base`、`ltv_percent`、`liquidation_threshold_percent`、`health_factor`
 - 资产级：`supplied_amount`、`stable_debt_amount`、`variable_debt_amount`、`total_debt_amount`、`supplied_base`、`debt_base`、`usage_as_collateral`

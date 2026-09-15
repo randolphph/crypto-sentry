@@ -1,5 +1,6 @@
 import { AppError } from '../../api/errors.js';
 import { aaveMonitorConfigSchema } from '../../api/schemas.js';
+import { Decimal } from 'decimal.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricSnapshotReader } from '../metrics/latest-metric-store.js';
@@ -31,6 +32,7 @@ export interface AaveChainPositionSnapshot {
     liquidationThresholdPercent: string | null;
     ltvPercent: string | null;
     healthFactor: string | null;
+    healthFactorInfinite: boolean;
   };
   assets: AaveAssetSnapshot[];
 }
@@ -79,6 +81,15 @@ function numericMetricValue(metrics: Metric[], name: string): number {
   if (value === null) return 0;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isZeroDecimal(value: string | null): boolean {
+  if (value === null) return false;
+  try {
+    return new Decimal(value).isZero();
+  } catch {
+    return false;
+  }
 }
 
 function latestObservation(metrics: Metric[]): string | null {
@@ -174,6 +185,8 @@ export class AavePositionSnapshotService {
 
   private buildChainPosition(chainId: string, metrics: Metric[]): AaveChainPositionSnapshot {
     const healthFactor = valueByName(metrics, 'health_factor');
+    const totalDebtBase = stringValue(valueByName(metrics, 'total_debt_base'));
+    const healthFactorInfinite = isZeroDecimal(totalDebtBase);
     const assetsByAddress = groupBy(
       metrics.filter((metric) => metric.labels?.assetAddress !== undefined),
       (metric) => metric.labels?.assetAddress,
@@ -198,11 +211,12 @@ export class AavePositionSnapshotService {
       baseCurrency: valueByName(metrics, 'total_collateral_base')?.unit ?? 'USD',
       account: {
         totalCollateralBase: stringValue(valueByName(metrics, 'total_collateral_base')),
-        totalDebtBase: stringValue(valueByName(metrics, 'total_debt_base')),
+        totalDebtBase,
         availableBorrowsBase: stringValue(valueByName(metrics, 'available_borrows_base')),
         liquidationThresholdPercent: stringValue(valueByName(metrics, 'liquidation_threshold_percent')),
         ltvPercent: stringValue(valueByName(metrics, 'ltv_percent')),
-        healthFactor: stringValue(healthFactor),
+        healthFactor: healthFactorInfinite ? null : stringValue(healthFactor),
+        healthFactorInfinite,
       },
       assets,
     };
