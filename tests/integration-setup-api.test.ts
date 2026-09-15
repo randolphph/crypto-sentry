@@ -118,6 +118,19 @@ describe('Integration setup API', () => {
   });
 
   it('reports supported Alchemy RPC networks as Aave-ready without exposing the URL', async () => {
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/v1/integrations',
+      headers: authorization,
+      payload: {
+        name: 'Invalid Alchemy RPC',
+        type: 'evm_rpc',
+        provider: 'alchemy',
+        config: { chainId: 0, rpcUrl: 'not-a-url' },
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+
     const created = await app.inject({
       method: 'POST',
       url: '/api/v1/integrations',

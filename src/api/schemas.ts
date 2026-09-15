@@ -103,7 +103,7 @@ export const integrationCreateSchema = z
     if (!supported) context.addIssue({ code: 'custom', path: ['provider'], message: 'Unsupported integration type/provider combination' });
     const expectedConfig =
       value.type === 'market_data' && value.provider === 'binance' ? binanceIntegrationConfigSchema :
-      value.type === 'evm_rpc' && value.provider === 'custom' ? rpcIntegrationConfigSchema :
+      value.type === 'evm_rpc' && evmRpcProviderSchema.safeParse(value.provider).success ? rpcIntegrationConfigSchema :
       value.type === 'notification' && value.provider === 'telegram' ? telegramConfigSchema : undefined;
     if (expectedConfig !== undefined) {
       const parsedConfig = expectedConfig.safeParse(value.config);
