@@ -106,6 +106,9 @@ export const integrationNetworkHealth = sqliteTable(
     chainId: integer('chain_id').notNull(),
     rpcStatus: text('rpc_status').notNull(),
     aaveV3Status: text('aave_v3_status').notNull().default('unknown'),
+    aaveAccountReadStatus: text('aave_account_read_status').notNull().default('unknown'),
+    aaveReserveCatalogStatus: text('aave_reserve_catalog_status').notNull().default('unknown'),
+    aaveEventLogsStatus: text('aave_event_logs_status').notNull().default('unknown'),
     uniswapV3Status: text('uniswap_v3_status').notNull().default('unknown'),
     uniswapV4Status: text('uniswap_v4_status').notNull().default('unknown'),
     blockNumber: text('block_number'),
@@ -186,13 +189,41 @@ export const marketMetricSamples = sqliteTable(
 export const processedMetricEvents = sqliteTable(
   'processed_metric_events',
   {
-    eventId: text('event_id').primaryKey(),
+    eventId: text('event_id').notNull(),
     monitorId: text('monitor_id')
       .notNull()
       .references(() => monitors.id, { onDelete: 'cascade' }),
     receivedAt: text('received_at').notNull(),
+    metricName: text('metric_name').notNull().default(''),
   },
-  (table) => [index('processed_metric_events_monitor_idx').on(table.monitorId, table.receivedAt)],
+  (table) => [
+    primaryKey({ columns: [table.monitorId, table.eventId, table.metricName] }),
+    index('processed_metric_events_monitor_idx').on(table.monitorId, table.receivedAt),
+  ],
+);
+
+export const chainScanCursors = sqliteTable(
+  'chain_scan_cursors',
+  {
+    integrationId: text('integration_id').notNull().references(() => integrations.id, { onDelete: 'cascade' }),
+    protocol: text('protocol').notNull(),
+    chainId: integer('chain_id').notNull(),
+    streamKey: text('stream_key').notNull(),
+    lastScannedBlock: text('last_scanned_block').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.integrationId, table.protocol, table.chainId, table.streamKey] })],
+);
+
+export const protocolMetricSamples = sqliteTable(
+  'protocol_metric_samples',
+  {
+    monitorId: text('monitor_id').notNull().references(() => monitors.id, { onDelete: 'cascade' }),
+    metricName: text('metric_name').notNull(),
+    observedAt: text('observed_at').notNull(),
+    value: text('value').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.monitorId, table.metricName, table.observedAt] })],
 );
 
 export const uniswapV4ScanCheckpoints = sqliteTable(

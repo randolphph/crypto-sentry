@@ -54,6 +54,42 @@ describe('compatible database migrations', () => {
       .toEqual({ name: 'market_metric_samples' });
     expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_metric_events'").get())
       .toEqual({ name: 'processed_metric_events' });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chain_scan_cursors'").get())
+      .toEqual({ name: 'chain_scan_cursors' });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='protocol_metric_samples'").get())
+      .toEqual({ name: 'protocol_metric_samples' });
+    expect(sqlite.prepare("PRAGMA table_info('integration_network_health')").all()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'aave_account_read_status' }),
+      expect.objectContaining({ name: 'aave_reserve_catalog_status' }),
+      expect.objectContaining({ name: 'aave_event_logs_status' }),
+    ]));
+    sqlite.close();
+  });
+
+  it('preserves event dedupe rows while upgrading the event key to monitor and metric scope', () => {
+    const sqlite = new BetterSqlite3(':memory:');
+    sqlite.pragma('foreign_keys = ON');
+    sqlite.exec(`CREATE TABLE schema_migrations (
+      name TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+    )`);
+    const record = sqlite.prepare('INSERT INTO schema_migrations VALUES (?, ?, ?)');
+    for (const migration of migrations.slice(0, 6)) {
+      sqlite.exec(migration.sql);
+      record.run(migration.name, createHash('sha256').update(migration.sql).digest('hex'), '2026-09-15T00:00:00.000Z');
+    }
+    sqlite.prepare(`INSERT INTO monitors (
+      id,name,type,enabled,interval_seconds,max_stale_seconds,config_json,last_status,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      'mon_event', 'Event monitor', 'aave_pool', 1, 20, 90, '{}', 'ok',
+      '2026-09-15T00:00:00.000Z', '2026-09-15T00:00:00.000Z',
+    );
+    sqlite.prepare('INSERT INTO processed_metric_events VALUES (?,?,?)')
+      .run('1:0xabc:7', 'mon_event', '2026-09-15T00:00:00.000Z');
+
+    runMigrations(sqlite);
+
+    expect(sqlite.prepare(`SELECT event_id AS eventId, monitor_id AS monitorId, metric_name AS metricName
+      FROM processed_metric_events`).all()).toEqual([{ eventId: '1:0xabc:7', monitorId: 'mon_event', metricName: '' }]);
     sqlite.close();
   });
 });

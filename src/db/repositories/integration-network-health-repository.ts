@@ -10,6 +10,9 @@ export interface IntegrationNetworkHealthRecord {
   chainId: number;
   rpcStatus: CapabilityStatus;
   aaveV3Status: CapabilityStatus;
+  aaveAccountReadStatus: CapabilityStatus;
+  aaveReserveCatalogStatus: CapabilityStatus;
+  aaveEventLogsStatus: CapabilityStatus;
   uniswapV3Status: CapabilityStatus;
   uniswapV4Status: CapabilityStatus;
   blockNumber: string | null;

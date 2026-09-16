@@ -80,6 +80,18 @@ describe('event Metric semantics', () => {
     await expect(pipeline.ingest({ ...metric('supply', '1', 0), kind: 'event' })).rejects.toThrow('eventId');
   });
 
+  it('preserves recent events when a polling adapter refreshes gauge metrics', async () => {
+    const latest = new LatestMetricStore();
+    const pipeline = new MetricPipeline(new MonitorStore(), latest);
+    await pipeline.ingest(metric('supply', '1', 0, '1:0xabc:9'));
+    await pipeline.ingest(metric('health_factor', '2', 1));
+
+    pipeline.forgetMonitor('mon_event');
+
+    expect(latest.list('mon_event')).toHaveLength(1);
+    expect(latest.list('mon_event')[0]).toMatchObject({ kind: 'event', eventId: '1:0xabc:9', name: 'supply' });
+  });
+
   it('persists event dedupe across repository instances', () => {
     const database = createDatabase(':memory:');
     database.sqlite.prepare(`INSERT INTO monitors (
@@ -88,8 +100,8 @@ describe('event Metric semantics', () => {
       'mon_event', 'Event monitor', 'market', 1, 20, 90, '{}', 'ok',
       '2026-09-16T00:00:00.000Z', '2026-09-16T00:00:00.000Z',
     );
-    expect(new MetricEventRepository(database.db).claim('1:0xabc:7', 'mon_event', '2026-09-16T00:00:00.000Z')).toBe(true);
-    expect(new MetricEventRepository(database.db).claim('1:0xabc:7', 'mon_event', '2026-09-16T00:00:01.000Z')).toBe(false);
+    expect(new MetricEventRepository(database.db).claim('1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:00.000Z')).toBe(true);
+    expect(new MetricEventRepository(database.db).claim('1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:01.000Z')).toBe(false);
     database.close();
   });
 });

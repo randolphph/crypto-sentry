@@ -72,6 +72,7 @@ export const aaveAccountMonitorConfigSchema = z.object({
 export const aavePoolMonitorConfigSchema = z.object({
   rpcIntegrationId: z.string().min(1),
   chainId: z.literal(1),
+  reserveAssetAddresses: z.array(address).default([]).transform((values) => [...new Set(values.map((value) => value.toLowerCase()))]),
 }).strict();
 const lpBase = {
   protocol: z.literal('uniswap'),

@@ -68,18 +68,25 @@ const oracleAbi = [
 interface AddressBookAsset {
   decimals: number;
   UNDERLYING: string;
+  A_TOKEN?: string;
+  S_TOKEN?: string;
+  V_TOKEN?: string;
 }
 
 export interface AaveV3Asset {
   symbol: string;
   decimals: number;
   underlyingAddress: Address;
+  aTokenAddress?: Address | null;
+  stableDebtTokenAddress?: Address | null;
+  variableDebtTokenAddress?: Address | null;
 }
 
 export interface AaveV3Market {
   chainId: number;
   chainName: string;
   poolAddress: Address;
+  poolAddressesProviderAddress: Address;
   dataProviderAddress: Address;
   oracleAddress: Address;
   baseCurrencySymbol: string;
@@ -117,6 +124,7 @@ type AddressBookMarket = {
   AAVE_PROTOCOL_DATA_PROVIDER: string;
   ORACLE: string;
   ASSETS: Record<string, AddressBookAsset>;
+  POOL_ADDRESSES_PROVIDER: string;
 };
 
 function marketFromAddressBook(chainName: string, market: AddressBookMarket): AaveV3Market {
@@ -124,6 +132,7 @@ function marketFromAddressBook(chainName: string, market: AddressBookMarket): Aa
     chainId: market.CHAIN_ID,
     chainName,
     poolAddress: getAddress(market.POOL),
+    poolAddressesProviderAddress: getAddress(market.POOL_ADDRESSES_PROVIDER),
     dataProviderAddress: getAddress(market.AAVE_PROTOCOL_DATA_PROVIDER),
     oracleAddress: getAddress(market.ORACLE),
     baseCurrencySymbol: 'USD',
@@ -131,6 +140,9 @@ function marketFromAddressBook(chainName: string, market: AddressBookMarket): Aa
       symbol,
       decimals: asset.decimals,
       underlyingAddress: getAddress(asset.UNDERLYING),
+      aTokenAddress: asset.A_TOKEN === undefined ? null : getAddress(asset.A_TOKEN),
+      stableDebtTokenAddress: asset.S_TOKEN === undefined ? null : getAddress(asset.S_TOKEN),
+      variableDebtTokenAddress: asset.V_TOKEN === undefined ? null : getAddress(asset.V_TOKEN),
     })),
   };
 }

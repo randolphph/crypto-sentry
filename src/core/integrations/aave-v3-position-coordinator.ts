@@ -8,6 +8,8 @@ import { resolveEvmRpcRequest } from './evm-rpc-config.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricPipeline } from '../metrics/metric-pipeline.js';
 import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
+import type { ProtocolMetricSampleRepository } from '../../db/repositories/protocol-metric-sample-repository.js';
+import { Decimal } from 'decimal.js';
 
 export interface AaveV3PositionReaderPort {
   read(walletAddress: string, signal?: AbortSignal): Promise<AaveV3Position | undefined>;
@@ -33,6 +35,7 @@ export interface AaveV3PositionCoordinatorOptions {
   circuitBreakerFailureThreshold?: number;
   circuitBreakerCooldownMilliseconds?: number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  samples?: ProtocolMetricSampleRepository;
 }
 
 interface RpcEndpoint {
@@ -108,6 +111,7 @@ export class AaveV3PositionCoordinator {
   private readonly circuitBreakerCooldownMilliseconds: number;
   private readonly sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   private readonly circuits = new Map<string, CircuitState>();
+  private readonly samples: ProtocolMetricSampleRepository | undefined;
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -129,6 +133,7 @@ export class AaveV3PositionCoordinator {
     this.circuitBreakerFailureThreshold = options.circuitBreakerFailureThreshold ?? 3;
     this.circuitBreakerCooldownMilliseconds = options.circuitBreakerCooldownMilliseconds ?? 60_000;
     this.sleep = options.sleep ?? abortableSleep;
+    this.samples = options.samples;
   }
 
   public reconcile(): void {
@@ -252,7 +257,7 @@ export class AaveV3PositionCoordinator {
       if (result.position === undefined) continue;
       positionChainCount += 1;
       positionAssetCount += result.position.assets.length;
-      await this.emitPosition(monitorId, result.position, timestamp);
+      await this.emitPosition(monitor, result.position, timestamp);
     }
 
     const scanFailed = results.some(({ error }) => error !== undefined);
@@ -367,7 +372,12 @@ export class AaveV3PositionCoordinator {
     ));
   }
 
-  private async emitPosition(monitorId: string, position: AaveV3Position, timestamp: string): Promise<void> {
+  private async emitPosition(
+    monitor: ReturnType<MonitorRepository['listEnabledAaveMonitors']>[number],
+    position: AaveV3Position,
+    timestamp: string,
+  ): Promise<void> {
+    const monitorId = monitor.monitorId;
     const target = `${position.walletAddress}@${position.chainId}`;
     const chainLabels = { chainId: String(position.chainId), chainName: position.chainName };
     const aggregates: Array<[string, string, string]> = [
@@ -376,7 +386,6 @@ export class AaveV3PositionCoordinator {
       ['available_borrows_base', position.availableBorrowsBase, position.baseCurrencySymbol],
       ['liquidation_threshold_percent', position.liquidationThresholdPercent, 'percent'],
       ['ltv_percent', position.ltvPercent, 'percent'],
-      ['health_factor', position.healthFactor, 'ratio'],
       ['block_number', position.blockNumber, 'block'],
     ];
     for (const [name, value, unit] of aggregates) {
@@ -384,6 +393,20 @@ export class AaveV3PositionCoordinator {
         status: 'ok', unit, labels: chainLabels,
       }));
     }
+    const healthFactorInfinite = new Decimal(position.totalDebtBase).isZero();
+    await this.metricPipeline.ingest(metric(monitorId, target, 'health_factor_infinite', healthFactorInfinite, timestamp, {
+      status: 'ok', unit: 'boolean', labels: chainLabels,
+    }));
+    await this.metricPipeline.ingest(metric(
+      monitorId,
+      target,
+      'health_factor',
+      healthFactorInfinite ? 'unavailable' : position.healthFactor,
+      timestamp,
+      { status: healthFactorInfinite ? 'unsupported' : 'ok', unit: 'ratio', labels: chainLabels },
+    ));
+    await this.emitChanges(monitor, position, timestamp, target, chainLabels);
+    await this.emitPositionLifecycle(monitor, position, timestamp, target, chainLabels);
     for (const asset of position.assets) {
       const labels = {
         ...chainLabels,
@@ -405,5 +428,92 @@ export class AaveV3PositionCoordinator {
         }));
       }
     }
+  }
+
+  private async emitChanges(
+    monitor: ReturnType<MonitorRepository['listEnabledAaveMonitors']>[number],
+    position: AaveV3Position,
+    timestamp: string,
+    target: string,
+    chainLabels: Record<string, string>,
+  ): Promise<void> {
+    if (this.samples === undefined) return;
+    const groups = [
+      { sampleName: 'total_collateral_base', value: position.totalCollateralBase, windows: monitor.collateralChangeWindowSeconds },
+      { sampleName: 'total_debt_base', value: position.totalDebtBase, windows: monitor.debtChangeWindowSeconds },
+    ];
+    for (const group of groups) {
+      const maximum = Math.max(0, ...group.windows);
+      const cutoff = new Date(Date.parse(timestamp) - Math.max(maximum, 60) * 1_000 - monitor.intervalSeconds * 2_000).toISOString();
+      const historical = this.samples.loadSince(monitor.monitorId, group.sampleName, cutoff);
+      this.samples.saveAndPrune(monitor.monitorId, group.sampleName, timestamp, group.value, cutoff);
+      for (const windowSeconds of group.windows) {
+        const targetTime = Date.parse(timestamp) - windowSeconds * 1_000;
+        const reference = [...historical].reverse().find((sample) => Date.parse(sample.observedAt) <= targetTime);
+        const suffix = group.sampleName === 'total_collateral_base' ? 'collateral' : 'debt';
+        const metricLabels = { ...chainLabels, windowSeconds: String(windowSeconds) };
+        if (reference === undefined) {
+          for (const name of [`total_${suffix}_change_base`, `total_${suffix}_change_percent`]) {
+            await this.metricPipeline.ingest(metric(monitor.monitorId, target, name, 'unavailable', timestamp, {
+              status: 'warming_up', unit: name.endsWith('_percent') ? 'percent' : position.baseCurrencySymbol,
+              labels: metricLabels,
+            }));
+          }
+          continue;
+        }
+        const current = new Decimal(group.value);
+        const previous = new Decimal(reference.value);
+        const change = current.minus(previous).toSignificantDigits(30).toString();
+        await this.metricPipeline.ingest(metric(
+          monitor.monitorId, target, `total_${suffix}_change_base`, change, timestamp,
+          { status: 'ok', unit: position.baseCurrencySymbol, labels: metricLabels },
+        ));
+        await this.metricPipeline.ingest(metric(
+          monitor.monitorId,
+          target,
+          `total_${suffix}_change_percent`,
+          previous.isZero() ? 'unavailable' : current.minus(previous).div(previous).mul(100).toSignificantDigits(30).toString(),
+          timestamp,
+          { status: previous.isZero() ? 'warming_up' : 'ok', unit: 'percent', labels: metricLabels },
+        ));
+      }
+    }
+  }
+
+  private async emitPositionLifecycle(
+    monitor: ReturnType<MonitorRepository['listEnabledAaveMonitors']>[number],
+    position: AaveV3Position,
+    timestamp: string,
+    target: string,
+    chainLabels: Record<string, string>,
+  ): Promise<void> {
+    if (this.samples === undefined || monitor.legacy) return;
+    const stateName = 'position_present';
+    const previous = this.samples.loadSince(monitor.monitorId, stateName, new Date(0).toISOString()).at(-1);
+    const present = !new Decimal(position.totalCollateralBase).isZero() || !new Decimal(position.totalDebtBase).isZero();
+    if (previous === undefined) {
+      this.samples.saveAndPrune(monitor.monitorId, stateName, timestamp, String(present), new Date(0).toISOString());
+      return;
+    }
+    if (previous.value === String(present)) return;
+    const eligibleNames = present
+      ? new Set(['account_supply', 'account_borrow'])
+      : new Set(['account_withdraw', 'account_repay', 'account_liquidation']);
+    const cause = this.metricPipeline.list(monitor.monitorId)
+      .filter((candidate) => candidate.kind === 'event' && eligibleNames.has(candidate.name) && candidate.eventId !== undefined &&
+        Date.parse(candidate.observedAt) >= Date.parse(previous.observedAt))
+      .sort((left, right) => {
+        const leftBlock = BigInt(left.labels?.blockNumber ?? '0');
+        const rightBlock = BigInt(right.labels?.blockNumber ?? '0');
+        return leftBlock === rightBlock ? 0 : leftBlock > rightBlock ? -1 : 1;
+      })[0];
+    if (cause === undefined) return;
+    await this.metricPipeline.ingest({
+      monitorId: monitor.monitorId, source: 'aave_v3', target,
+      name: present ? 'account_position_opened' : 'account_position_closed', value: true, unit: 'boolean',
+      observedAt: cause.observedAt, receivedAt: timestamp, status: 'ok', kind: 'event', eventId: cause.eventId,
+      labels: { ...chainLabels, ...(cause.labels ?? {}) },
+    });
+    this.samples.saveAndPrune(monitor.monitorId, stateName, timestamp, String(present), new Date(0).toISOString());
   }
 }

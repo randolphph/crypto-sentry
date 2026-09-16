@@ -181,7 +181,7 @@ export class RuleRepository {
         });
       }
       const definition = ruleMetricDefinition(monitor.type, condition.metric);
-      if (monitor.type === 'market' && definition === undefined) {
+      if (['market', 'aave_account', 'aave_pool'].includes(monitor.type) && definition === undefined) {
         throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported by this monitor type', {
           [`conditions.${index}.metric`]: `${condition.metric} is not available for ${monitor.type}`,
         });

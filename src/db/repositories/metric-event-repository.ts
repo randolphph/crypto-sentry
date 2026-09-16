@@ -7,10 +7,10 @@ import { processedMetricEvents } from '../schema/index.js';
 export class MetricEventRepository implements MetricEventDedupeStore {
   public constructor(private readonly database: AppDatabase['db']) {}
 
-  public claim(eventId: string, monitorId: string, receivedAt: string): boolean {
+  public claim(eventId: string, monitorId: string, metricName: string, receivedAt: string): boolean {
     const result = this.database.insert(processedMetricEvents)
-      .values({ eventId, monitorId, receivedAt })
-      .onConflictDoNothing({ target: processedMetricEvents.eventId })
+      .values({ eventId, monitorId, metricName, receivedAt })
+      .onConflictDoNothing({ target: [processedMetricEvents.monitorId, processedMetricEvents.eventId, processedMetricEvents.metricName] })
       .run();
     return result.changes > 0;
   }

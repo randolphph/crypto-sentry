@@ -4,6 +4,7 @@ import { AppError } from '../../api/errors.js';
 import {
   aaveMonitorConfigSchema,
   aaveAccountMonitorConfigSchema,
+  aavePoolMonitorConfigSchema,
   lpMonitorConfigSchema,
   marketMonitorConfigSchema,
   validateMonitorConfig,
@@ -19,12 +20,15 @@ import { integrationMarkets, integrations, monitors, rules } from '../schema/ind
 import { ruleConditions } from '../schema/index.js';
 import type { IntegrationRepository } from './integration-repository.js';
 import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
+import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
 
 export type AaveRuntimeMonitor = {
   monitorId: string;
   intervalSeconds: number;
   maxStaleSeconds: number;
   walletAddress: string;
+  collateralChangeWindowSeconds: number[];
+  debtChangeWindowSeconds: number[];
 } & ({ legacy: true } | { legacy: false; rpcIntegrationId: string; chainId: 1 });
 
 export type UniswapRuntimeMonitor = {
@@ -34,6 +38,15 @@ export type UniswapRuntimeMonitor = {
   rpcIntegrationId: string;
   variants: Array<{ chainId: number; version: 'v3' | 'v4' }>;
 } & ({ walletAddress: string } | { tokenId: string });
+
+export interface AavePoolRuntimeMonitor {
+  monitorId: string;
+  intervalSeconds: number;
+  maxStaleSeconds: number;
+  rpcIntegrationId: string;
+  chainId: 1;
+  reserveAssetAddresses: string[];
+}
 
 export class MonitorRepository implements MonitorRuntimeStateStore {
   public constructor(
@@ -108,6 +121,16 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   }
 
   public listEnabledAaveMonitors(): AaveRuntimeMonitor[] {
+    const windowsByMonitor = new Map<string, { collateral: number[]; debt: number[] }>();
+    for (const condition of this.database.select({
+      monitorId: rules.monitorId, metric: ruleConditions.metric, windowSeconds: ruleConditions.windowSeconds,
+    }).from(ruleConditions).innerJoin(rules, eq(ruleConditions.ruleId, rules.id)).where(eq(rules.enabled, true)).all()) {
+      if (condition.windowSeconds === null) continue;
+      const values = windowsByMonitor.get(condition.monitorId) ?? { collateral: [], debt: [] };
+      if (condition.metric.startsWith('total_collateral_change_')) values.collateral.push(condition.windowSeconds);
+      if (condition.metric.startsWith('total_debt_change_')) values.debt.push(condition.windowSeconds);
+      windowsByMonitor.set(condition.monitorId, values);
+    }
     return this.database
       .select({
         id: monitors.id,
@@ -122,18 +145,38 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
         const raw: unknown = JSON.parse(row.configJson);
         const legacy = aaveMonitorConfigSchema.safeParse(raw);
         const current = aaveAccountMonitorConfigSchema.safeParse(raw);
+        const windows = windowsByMonitor.get(row.id) ?? { collateral: [], debt: [] };
+        const changeWindows = {
+          collateralChangeWindowSeconds: [...new Set(windows.collateral)],
+          debtChangeWindowSeconds: [...new Set(windows.debt)],
+        };
         return legacy.success ? [{
           monitorId: row.id,
           intervalSeconds: row.intervalSeconds,
           maxStaleSeconds: row.maxStaleSeconds,
           ...legacy.data,
+          ...changeWindows,
           legacy: true as const,
         }] : current.success ? [{
           monitorId: row.id,
           intervalSeconds: row.intervalSeconds,
           maxStaleSeconds: row.maxStaleSeconds,
           ...current.data,
+          ...changeWindows,
           legacy: false as const,
+        }] : [];
+      });
+  }
+
+  public listEnabledAavePoolMonitors(): AavePoolRuntimeMonitor[] {
+    return this.database.select({
+      id: monitors.id, configJson: monitors.configJson,
+      intervalSeconds: monitors.intervalSeconds, maxStaleSeconds: monitors.maxStaleSeconds,
+    }).from(monitors).where(and(eq(monitors.enabled, true), eq(monitors.type, 'aave_pool'))).all()
+      .flatMap((row) => {
+        const parsed = aavePoolMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
+        return parsed.success ? [{
+          monitorId: row.id, intervalSeconds: row.intervalSeconds, maxStaleSeconds: row.maxStaleSeconds, ...parsed.data,
         }] : [];
       });
   }
@@ -245,10 +288,19 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
     monitorType: MonitorCreate['type'],
     config: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (monitorType === 'aave_pool' || monitorType === 'uniswap_pool') {
+    if (monitorType === 'uniswap_pool') {
       throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${monitorType} is planned but is not runnable yet`);
     }
     const normalized = monitorConfigSchema(monitorType).parse(config) as Record<string, unknown>;
+    if (monitorType === 'aave_pool') {
+      const reserves = new Set((supportedAaveV3Markets.get(1)?.assets ?? []).map((asset) => asset.underlyingAddress.toLowerCase()));
+      const unknown = (normalized.reserveAssetAddresses as string[]).find((address) => !reserves.has(address.toLowerCase()));
+      if (unknown !== undefined) {
+        throw new AppError(404, 'RESOURCE_NOT_FOUND', 'Aave reserve is not present in the official Ethereum V3 deployment', {
+          reserveAssetAddresses: unknown,
+        });
+      }
+    }
     if ((monitorType === 'uniswap_position' && normalized.chainId !== 4_663) ||
       (monitorType === 'uniswap_wallet' && (normalized.chainIds as number[]).some((chainId) => chainId !== 4_663))) {
       throw new AppError(409, 'PROTOCOL_NOT_READY', 'Ethereum Uniswap monitoring is planned but not implemented');
@@ -270,7 +322,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       }
       return;
     }
-    if (monitorType === 'aave_pool' || monitorType === 'uniswap_pool') return;
+    if (monitorType === 'uniswap_pool') return;
     const referenceKey = monitorType === 'market' ? 'integrationId' : 'rpcIntegrationId';
     const integrationId = config[referenceKey];
     if (typeof integrationId !== 'string') {

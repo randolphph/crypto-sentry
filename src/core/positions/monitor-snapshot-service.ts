@@ -2,10 +2,12 @@ import type { MonitorRepository } from '../../db/repositories/monitor-repository
 import type { MetricSnapshotReader } from '../metrics/latest-metric-store.js';
 import { AavePositionSnapshotService } from './aave-position-snapshot-service.js';
 import { UniswapV3PositionSnapshotService } from './uniswap-v3-position-snapshot-service.js';
+import { AavePoolSnapshotService } from './aave-pool-snapshot-service.js';
 
 export class MonitorSnapshotService {
   private readonly aave: AavePositionSnapshotService;
   private readonly uniswap: UniswapV3PositionSnapshotService;
+  private readonly aavePool: AavePoolSnapshotService;
 
   public constructor(
     private readonly monitors: MonitorRepository,
@@ -14,17 +16,26 @@ export class MonitorSnapshotService {
   ) {
     this.aave = new AavePositionSnapshotService(monitors, metrics, now);
     this.uniswap = new UniswapV3PositionSnapshotService(monitors, metrics, now);
+    this.aavePool = new AavePoolSnapshotService(monitors, metrics, now);
   }
 
   public get(monitorId: string) {
     const monitor = this.monitors.get(monitorId);
-    if (monitor.type === 'aave_pool' || monitor.type === 'uniswap_pool') {
+    if (monitor.type === 'uniswap_pool') {
       return {
         monitorId, monitorType: monitor.type, status: 'unsupported' as const,
         observedAt: null, dataAgeSeconds: null, maxStaleSeconds: monitor.maxStaleSeconds,
         capability: { available: false, reason: 'MONITOR_TYPE_NOT_READY' },
         summary: {}, data: {},
         error: { code: 'MONITOR_TYPE_NOT_READY', message: `${monitor.type} is planned but not implemented` },
+      };
+    }
+    if (monitor.type === 'aave_pool') {
+      const snapshot = this.aavePool.get(monitorId);
+      const { summary, error, observedAt, dataAgeSeconds, status, maxStaleSeconds, ...data } = snapshot;
+      return {
+        monitorId, monitorType: monitor.type, status, observedAt, dataAgeSeconds, maxStaleSeconds,
+        capability: { available: true, reason: null }, summary, data, error,
       };
     }
     if (monitor.type === 'aave_account' || monitor.type === 'aave_position') {

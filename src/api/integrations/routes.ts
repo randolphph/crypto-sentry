@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 
 import type { ConfigEventBus } from '../../core/config-events/config-event-bus.js';
 import type { IntegrationOperationsService } from '../../core/integrations/integration-operations-service.js';
@@ -6,6 +7,8 @@ import type { IntegrationRepository } from '../../db/repositories/integration-re
 import { openApiSchema } from '../openapi.js';
 import { AppError } from '../errors.js';
 import { idParamsSchema, integrationCreateSchema, integrationPatchSchema } from '../schemas.js';
+
+const aaveReserveQuerySchema = z.object({ chainId: z.coerce.number().int().min(1) });
 
 export function registerIntegrationRoutes(
   app: FastifyInstance,
@@ -24,6 +27,17 @@ export function registerIntegrationRoutes(
     tags: ['integrations'],
     summary: 'Report whether Aave and Binance data sources are ready for monitors',
   } }, async () => operations.readiness());
+
+  app.get('/api/v1/integrations/:id/aave/reserves', { schema: {
+    tags: ['integrations', 'aave'],
+    summary: 'List Aave V3 Ethereum reserves from the official deployment',
+    params: openApiSchema(idParamsSchema),
+    querystring: openApiSchema(aaveReserveQuerySchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    const { chainId } = aaveReserveQuerySchema.parse(request.query);
+    return operations.aaveReserves(id, chainId);
+  });
 
   app.post('/api/v1/integrations/binance/default', { schema: {
     tags: ['integrations'],

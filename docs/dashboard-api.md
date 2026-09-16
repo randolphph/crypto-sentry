@@ -1,4 +1,4 @@
-# CryptoSentry Dashboard API（阶段一）
+# CryptoSentry Dashboard API（阶段二）
 
 本文档对应 Dashboard 下一版的后端契约。服务默认地址为 `http://127.0.0.1:3001`，业务接口统一位于 `/api/v1`，并要求：
 
@@ -140,7 +140,7 @@ RPC 的 PATCH 合并规则需要由 Dashboard 明确处理：
 POST /api/v1/integrations/:id/test
 ```
 
-测试流程执行完成一律返回 HTTP `200`。每条链先校验 `eth_chainId`，再验证当前真正实现的协议：Ethereum 仅 Aave V3；Robinhood Chain 仅 Uniswap V3/V4。单链失败不会丢弃其他链结果。顶层 `ok` 只有全部链成功时才为 `true`。
+测试流程执行完成一律返回 HTTP `200`。每条链先校验 `eth_chainId`，再验证当前真正实现的协议。Ethereum 的 Aave 测试分别验证账户读取、Reserve 目录和事件日志；单项失败不会被配置存在所掩盖。单链失败不会丢弃其他链结果。顶层 `ok` 只有全部链成功时才为 `true`。
 
 ```json
 {
@@ -153,6 +153,7 @@ POST /api/v1/integrations/:id/test
       "ok": true,
       "blockNumber": "12345678",
       "connectivity": { "rpc": "ok", "aaveV3": "ok" },
+      "aaveCapabilities": { "accountRead": "ok", "reserveCatalog": "ok", "eventLogs": "ok" },
       "error": null
     },
     {
@@ -192,7 +193,7 @@ GET /api/v1/integrations/catalog
   "monitorTypes": [
     { "id": "market", "status": "available" },
     { "id": "aave_account", "status": "available", "chainIds": [1] },
-    { "id": "aave_pool", "status": "planned", "chainIds": [1] },
+    { "id": "aave_pool", "status": "available", "chainIds": [1] },
     { "id": "uniswap_position", "status": "available", "chainIds": [4663], "versions": ["v3", "v4"] },
     { "id": "uniswap_wallet", "status": "available", "chainIds": [4663], "versions": ["v3", "v4"] },
     { "id": "uniswap_pool", "status": "planned", "chainIds": [1, 4663], "versions": ["v3", "v4"] }
@@ -232,7 +233,51 @@ GET /api/v1/integrations/catalog
 
 Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`、`quote_volume_24h`、`funding_rate_percent`、`next_funding_time`、`open_interest`、`open_interest_change_percent` 和 `data_age_seconds`。资金费率和 OI 仅适用于 perpetual。窗口上限与 30 分钟样本保留一致。
 
-Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Ethereum Uniswap、Aave Pool 和 Uniswap Pool 不会伪装成 available。
+Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、抵押/债务窗口变化，以及 `account_supply`、`account_withdraw`、`account_borrow`、`account_repay`、`account_liquidation`、`account_position_opened`、`account_position_closed` 事件。仓位开关事件仅在持久化的账户状态发生变化且能关联到新链上事件时产生。Aave Pool 使用 `aave_event_amount_token` 与 `aave_event_amount_usd`，用 `labels.eventType` 区分五类事件；Oracle 不可用时只产生 token amount，绝不把 USD 金额伪装为 0。
+
+Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Ethereum Uniswap 和 Uniswap Pool 在 2C 完成前不会伪装成 available。
+
+### Aave Reserve 资源目录
+
+```http
+GET /api/v1/integrations/:rpcIntegrationId/aave/reserves?chainId=1
+```
+
+该接口要求 Integration 已启用、覆盖 Ethereum，并且最近的 `reserveCatalog` 能力测试通过。Pool、Addresses Provider、Data Provider、Oracle 和 token 地址均来自后端内置的 Aave 官方部署；Dashboard 不提交协议合约地址。成功响应：
+
+```json
+{
+  "chainId": 1,
+  "chainName": "Ethereum",
+  "protocol": "aave",
+  "version": "v3",
+  "poolAddress": "0x...",
+  "poolAddressesProviderAddress": "0x...",
+  "status": "ok",
+  "stale": false,
+  "items": [{
+    "underlyingAsset": "0x...",
+    "symbol": "USDC",
+    "name": "USD Coin",
+    "decimals": 6,
+    "aTokenAddress": "0x...",
+    "stableDebtTokenAddress": "0x...",
+    "variableDebtTokenAddress": "0x...",
+    "active": true,
+    "frozen": false,
+    "borrowingEnabled": true,
+    "usageAsCollateralEnabled": true,
+    "priceUsd": "1",
+    "priceStatus": "ok",
+    "metadataStatus": "ok"
+  }],
+  "blockNumber": "12345678",
+  "observedAt": "2026-09-16T00:00:00.000Z",
+  "error": null
+}
+```
+
+单个 token 元数据或价格失败返回 `status: "partial"`；对应 `name`/`priceUsd` 为 `null`。缓存读取失败时可以返回带 `stale: true` 的旧目录。尚未测试能力返回 `409 RESOURCE_CATALOG_NOT_READY`。
 
 ## 4. Readiness
 
@@ -247,7 +292,13 @@ Readiness 只使用“启用且最近配置未改变，并已通过真实连接/
   "aave": {
     "ready": true,
     "configuredNetworkCount": 1,
-    "networks": [{ "chainId": 1, "name": "Ethereum", "ready": true, "integrationIds": ["int_rpc"] }]
+    "networks": [{
+      "chainId": 1,
+      "name": "Ethereum",
+      "ready": true,
+      "integrationIds": ["int_rpc"],
+      "capabilities": { "accountRead": true, "reserveCatalog": true, "eventLogs": true }
+    }]
   },
   "uniswap": {
     "ready": true,
@@ -301,6 +352,16 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 { "rpcIntegrationId": "int_rpc", "chainId": 1, "walletAddress": "0x0000000000000000000000000000000000001234" }
 ```
 
+`aave_pool` 监控 Ethereum Aave V3 的协议事件。`reserveAssetAddresses` 来自 Reserve 目录；省略或空数组表示全部 Reserve。创建与 PATCH 都拒绝目录外地址：
+
+```json
+{
+  "rpcIntegrationId": "int_rpc",
+  "chainId": 1,
+  "reserveAssetAddresses": ["0x..."]
+}
+```
+
 `uniswap_position` 目前支持 Robinhood V3/V4：
 
 ```json
@@ -315,7 +376,6 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 
 ### 当前 planned
 
-- `aave_pool`：创建返回 `409 MONITOR_TYPE_NOT_READY`。
 - `uniswap_pool`：创建返回 `409 MONITOR_TYPE_NOT_READY`。
 - Ethereum Uniswap：创建返回 `409 PROTOCOL_NOT_READY`。
 
@@ -419,7 +479,8 @@ type MonitorSnapshot = {
 ```
 
 - market：`data.metrics` 为真实最新 Metric。
-- Aave：`data.networkScans`、`data.positions` 与钱包信息复用现有结构化仓位数据。
+- Aave Account：`data.networkScans`、`data.positions` 与钱包信息复用现有结构化仓位数据。无借款时 `healthFactor:null`、`healthFactorInfinite:true`，底层 `health_factor` Metric 为 `unsupported`，不会因无限值误告警。
+- Aave Pool：`data.discovery` 返回扫描块高，`data.recentEvents` 返回最近的去重事件；token/USD 数量分别可空，`summary.eventCount` 按 eventId 计数。
 - Uniswap：`data.positions`、发现进度、链/版本选择为真实当前数据；多版本可返回 `partial`。
 - planned 类型返回 `unsupported` 与 `capability.available=false`，不生成伪造协议字段。
 - 链上整数、tokenId、blockNumber、金额与 liquidity 保持字符串。
@@ -447,7 +508,7 @@ GET /api/v1/monitors/:id/metrics
 }
 ```
 
-本阶段新增稳定码：`RPC_ROUTING_CONFIG_INVALID`、`RPC_CHAIN_UNSUPPORTED`、`RPC_CHAIN_ID_MISMATCH`、`RPC_PARTIAL_FAILURE`、`MONITOR_TYPE_NOT_READY`、`PROTOCOL_NOT_READY`、`RULE_CONDITION_INVALID`、`METRIC_NOT_AVAILABLE`。
+稳定码包括：`RPC_ROUTING_CONFIG_INVALID`、`RPC_CHAIN_UNSUPPORTED`、`RPC_CHAIN_ID_MISMATCH`、`RPC_PARTIAL_FAILURE`、`MONITOR_TYPE_NOT_READY`、`PROTOCOL_NOT_READY`、`RULE_CONDITION_INVALID`、`METRIC_NOT_AVAILABLE`、`RESOURCE_CATALOG_NOT_READY`、`RESOURCE_NOT_FOUND`、`INDEXER_WARMING_UP`、`INDEXER_PARTIAL_FAILURE`、`VALUATION_UNAVAILABLE`、`RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID`、`EVENT_RULE_DURATION_UNSUPPORTED`。
 
 前端处理 `204` 时不要调用 `response.json()`：
 
@@ -456,10 +517,8 @@ if (response.status === 204) return null;
 const body = await response.json();
 ```
 
-## 9. 后续第二阶段（当前不可视为 ready）
+## 9. 2C 与第三阶段待实现（当前不可视为 ready）
 
-- Binance 成交量、资金费率与 Open Interest。
-- Aave Pool/Reserve 事件扫描。
 - Ethereum Uniswap V3/V4 读取器。
 - Uniswap Pool 指标。
 - LP USD 估值与完整手续费计算。

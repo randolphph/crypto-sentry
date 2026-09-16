@@ -34,7 +34,8 @@ export class EvmChainMismatchError extends EvmRpcError {
 export function createEvmPublicClient(options: EvmRpcClientOptions): PublicClient {
   return createPublicClient({
     transport: http(options.rpcUrl, {
-      retryCount: 0,
+      retryCount: 2,
+      retryDelay: 250,
       timeout: options.timeoutMilliseconds ?? 5_000,
       ...(options.fetch === undefined ? {} : { fetchFn: options.fetch }),
       ...(options.headers === undefined ? {} : { fetchOptions: { headers: options.headers } }),

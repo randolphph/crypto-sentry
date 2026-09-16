@@ -1,6 +1,7 @@
 import { ROBINHOOD_UNISWAP_V3 } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { ROBINHOOD_UNISWAP_V4 } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { RULE_METRICS } from '../rules/rule-metric-catalog.js';
+import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
 
 export const EVM_RPC_PROVIDERS = ['alchemy', 'infura', 'quicknode', 'custom'] as const;
 
@@ -64,11 +65,22 @@ export const INTEGRATION_CATALOG = {
   monitorTypes: [
     { id: 'market', status: 'available' },
     { id: 'aave_account', status: 'available', chainIds: [1] },
-    { id: 'aave_pool', status: 'planned', chainIds: [1] },
+    { id: 'aave_pool', status: 'available', chainIds: [1] },
     { id: 'uniswap_position', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
     { id: 'uniswap_wallet', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
     { id: 'uniswap_pool', status: 'planned', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
   ],
+  aave: {
+    deployments: [...supportedAaveV3Markets.values()].filter((market) => market.chainId === 1).map((market) => ({
+      chainId: market.chainId,
+      chainName: market.chainName,
+      version: 'v3',
+      poolAddress: market.poolAddress,
+      poolAddressesProviderAddress: market.poolAddressesProviderAddress,
+      dataProviderAddress: market.dataProviderAddress,
+      oracleAddress: market.oracleAddress,
+    })),
+  },
   uniswap: {
     deployments: [{
       chainId: ROBINHOOD_UNISWAP_V3.chainId,

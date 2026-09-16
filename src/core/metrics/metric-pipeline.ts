@@ -24,16 +24,17 @@ export interface MetricConsumer {
 }
 
 export interface MetricEventDedupeStore {
-  claim(eventId: string, monitorId: string, receivedAt: string): boolean;
+  claim(eventId: string, monitorId: string, metricName: string, receivedAt: string): boolean;
   clearMonitor(monitorId: string): void;
 }
 
 class InMemoryMetricEventDedupeStore implements MetricEventDedupeStore {
   private readonly eventIds = new Map<string, string>();
 
-  public claim(eventId: string, monitorId: string): boolean {
-    if (this.eventIds.has(eventId)) return false;
-    this.eventIds.set(eventId, monitorId);
+  public claim(eventId: string, monitorId: string, metricName: string): boolean {
+    const key = `${monitorId}:${metricName}:${eventId}`;
+    if (this.eventIds.has(key)) return false;
+    this.eventIds.set(key, monitorId);
     return true;
   }
 
@@ -109,7 +110,7 @@ export class MetricPipeline {
   }
 
   public forgetMonitor(monitorId: string): void {
-    this.latestMetrics.removeMonitor(monitorId);
+    this.latestMetrics.removeGauges(monitorId);
   }
 
   public removeMonitor(monitorId: string): void {
@@ -130,7 +131,9 @@ export class MetricPipeline {
     if (!monitor.enabled) {
       return { accepted: false, reason: 'monitor_disabled', forwardedToConsumers: false, consumerErrors: [] };
     }
-    if (metricKind(metric) === 'event' && !this.eventDedupe.claim(metric.eventId ?? '', metric.monitorId, metric.receivedAt)) {
+    if (metricKind(metric) === 'event' && !this.eventDedupe.claim(
+      metric.eventId ?? '', metric.monitorId, metric.name, metric.receivedAt,
+    )) {
       return { accepted: false, reason: 'duplicate_event', forwardedToConsumers: false, consumerErrors: [] };
     }
     if (!this.latestMetrics.put(metric)) {

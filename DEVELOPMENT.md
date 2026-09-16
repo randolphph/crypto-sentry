@@ -56,6 +56,10 @@
 - [x] Monitor 创建/更新共用 capability 与 RPC chainId 校验
 - [x] Rule condition 按 Monitor `maxStaleSeconds` 失效，unknown 中断 ARMED 持续时间并清理生命周期缓存
 - [x] market/Aave/Uniswap 统一结构化 Snapshot API
+- [x] Ethereum Aave V3 Reserve 目录与 Account/Reserve/EventLogs 分项能力测试
+- [x] Aave Account 无借款语义、抵押/债务窗口变化与 SQLite 样本恢复
+- [x] Aave Account/Pool 五类事件、确认区块、分片扫描、重扫窗口、游标与 eventId 去重
+- [x] Aave Pool Monitor、资源校验、结构化 Snapshot 与 Account/Pool 规则指标目录
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
 - [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API
 - [x] Robinhood Chain Uniswap V4 PositionManager/PoolManager/StateView 仓位适配器

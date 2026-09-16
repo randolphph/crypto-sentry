@@ -5,7 +5,7 @@ export interface MetricSnapshotReader {
 }
 
 function metricKey(metric: Metric): string {
-  if (metric.kind === 'event') return JSON.stringify(['event', metric.eventId]);
+  if (metric.kind === 'event') return JSON.stringify(['event', metric.eventId, metric.name]);
   const labels = Object.entries(metric.labels ?? {}).sort(([left], [right]) => left.localeCompare(right));
   return JSON.stringify([metric.source, metric.target, metric.name, labels]);
 }
@@ -45,6 +45,13 @@ export class LatestMetricStore implements MetricSnapshotReader {
 
   public removeMonitor(monitorId: string): void {
     this.metricsByMonitor.delete(monitorId);
+  }
+
+  public removeGauges(monitorId: string): void {
+    const metrics = this.metricsByMonitor.get(monitorId);
+    if (metrics === undefined) return;
+    for (const [key, metric] of metrics) if (metric.kind !== 'event') metrics.delete(key);
+    if (metrics.size === 0) this.metricsByMonitor.delete(monitorId);
   }
 
   public clear(): void {

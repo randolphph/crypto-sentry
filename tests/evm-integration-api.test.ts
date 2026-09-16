@@ -58,7 +58,16 @@ describe('EVM RPC integration API', () => {
     actualChainId = 1;
     contractCallsFail = false;
     fetchMock.mockClear();
-    app = await createApp({ config, logger: false, fetch: fetchMock, webSocketFactory: false });
+    app = await createApp({
+      config, logger: false, fetch: fetchMock, webSocketFactory: false,
+      aaveReserveCatalogReaderFactory: { create: () => ({ read: async () => ({
+        chainId: 1 as const, chainName: 'Ethereum' as const, protocol: 'aave' as const, version: 'v3' as const,
+        poolAddress: '0x0000000000000000000000000000000000000001',
+        poolAddressesProviderAddress: '0x0000000000000000000000000000000000000002',
+        items: [], blockNumber: '100', observedAt: '2026-09-16T00:00:00.000Z', status: 'ok' as const, error: null,
+      }) }) },
+      aaveCapabilityEventReaderFactory: { create: () => ({ latestBlock: async () => 100n, scan: async () => [] }) },
+    });
   });
 
   afterEach(async () => {
@@ -124,13 +133,27 @@ describe('EVM RPC integration API', () => {
         ok: true,
         blockNumber: '100',
         connectivity: { rpc: 'ok', aaveV3: 'ok' },
+        aaveCapabilities: { accountRead: 'ok', reserveCatalog: 'ok', eventLogs: 'ok' },
         error: null,
       }],
     });
     expect(response.body).not.toContain('private-key');
+    const reserves = await app.inject({
+      method: 'GET', url: `/api/v1/integrations/${integrationId}/aave/reserves?chainId=1`, headers: authorization,
+    });
+    expect(reserves.statusCode).toBe(200);
+    expect(reserves.json()).toMatchObject({
+      chainId: 1, chainName: 'Ethereum', protocol: 'aave', version: 'v3', status: 'ok', stale: false,
+    });
     const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
     expect(readiness.json()).toMatchObject({
-      aave: { ready: true, networks: [{ chainId: 1, ready: true, integrationIds: [integrationId] }] },
+      aave: {
+        ready: true,
+        networks: [{
+          chainId: 1, ready: true, integrationIds: [integrationId],
+          capabilities: { accountRead: true, reserveCatalog: true, eventLogs: true },
+        }],
+      },
     });
     await app.inject({
       method: 'PATCH', url: `/api/v1/integrations/${integrationId}`, headers: authorization,

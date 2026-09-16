@@ -118,10 +118,30 @@ describe('Dashboard next-version API contract', () => {
     });
   });
 
-  it('rejects planned monitor types and Ethereum Uniswap with stable 409 errors', async () => {
+  it('enables Aave pool while rejecting planned Uniswap pool and Ethereum Uniswap', async () => {
     const ethereum = await rpc('Ethereum', 1, 'https://ethereum.example');
+    const aavePool = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
+      name: 'Aave pool', type: 'aave_pool', enabled: false, config: { rpcIntegrationId: ethereum, chainId: 1 },
+    } });
+    expect(aavePool.statusCode).toBe(201);
+    expect(aavePool.json()).toMatchObject({ config: { chainId: 1, reserveAssetAddresses: [] } });
+    const poolMonitorId = aavePool.json<{ id: string }>().id;
+    const invalidEventRule = await app.inject({
+      method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
+        monitorId: poolMonitorId, name: 'Large supply', combinator: 'and',
+        conditions: [{ metric: 'aave_event_amount_usd', labels: { eventType: 'supply' }, operator: 'gte', threshold: '1000', hysteresis: '0' }],
+        durationSeconds: 5, cooldownSeconds: 60, severity: 'warning', notificationIntegrationIds: [], enabled: true,
+      },
+    });
+    expect(invalidEventRule.statusCode).toBe(400);
+    expect(invalidEventRule.json()).toMatchObject({ error: { code: 'EVENT_RULE_DURATION_UNSUPPORTED' } });
+    const poolSnapshot = await app.inject({
+      method: 'GET', url: `/api/v1/monitors/${poolMonitorId}/snapshot`, headers: authorization,
+    });
+    expect(poolSnapshot.json()).toMatchObject({ monitorType: 'aave_pool', status: 'warming_up', capability: { available: true } });
     const planned = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
-      name: 'Aave pool', type: 'aave_pool', config: { rpcIntegrationId: ethereum, chainId: 1 },
+      name: 'Uniswap pool', type: 'uniswap_pool',
+      config: { rpcIntegrationId: ethereum, chainId: 1, version: 'v3', poolAddress: walletAddress },
     } });
     expect(planned.statusCode).toBe(409);
     expect(planned.json()).toMatchObject({ error: { code: 'MONITOR_TYPE_NOT_READY' } });

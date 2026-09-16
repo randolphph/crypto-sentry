@@ -12,6 +12,11 @@ import type { IntegrationRepository } from '../../db/repositories/integration-re
 import type { MarketRepository } from '../../db/repositories/market-repository.js';
 import type { IntegrationNetworkHealthRepository } from '../../db/repositories/integration-network-health-repository.js';
 import { AaveV3PositionReader } from '../../adapters/aave/aave-v3-position-reader.js';
+import { AaveV3ReserveCatalogReader } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
+import type { AaveReserveCatalog } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
+import type { AaveReserveCatalogReaderOptions } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
+import { AaveV3EventReader } from '../../adapters/aave/aave-v3-event-reader.js';
+import type { AaveV3EventReaderOptions } from '../../adapters/aave/aave-v3-event-reader.js';
 import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import {
@@ -23,13 +28,32 @@ import {
 
 const ZERO_EVM_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+export interface AaveReserveCatalogReaderFactory {
+  create(options: AaveReserveCatalogReaderOptions): { read(signal?: AbortSignal): Promise<AaveReserveCatalog> };
+}
+
+export interface AaveEventReaderFactory {
+  create(options: AaveV3EventReaderOptions): {
+    latestBlock(signal?: AbortSignal): Promise<bigint>;
+    scan(fromBlock: bigint, toBlock: bigint, signal?: AbortSignal): Promise<unknown[]>;
+  };
+}
+
 export class IntegrationOperationsService {
+  private readonly aaveReserveCache = new Map<string, AaveReserveCatalog>();
+
   public constructor(
     private readonly integrations: IntegrationRepository,
     private readonly markets: MarketRepository,
     private readonly networkHealth: IntegrationNetworkHealthRepository,
     private readonly fetchImplementation: typeof globalThis.fetch = globalThis.fetch,
     private readonly webSocketFactory: MarketWebSocketFactory = createNodeMarketWebSocket,
+    private readonly aaveReserveReaderFactory: AaveReserveCatalogReaderFactory = {
+      create: (options) => new AaveV3ReserveCatalogReader(options),
+    },
+    private readonly aaveEventReaderFactory: AaveEventReaderFactory = {
+      create: (options) => new AaveV3EventReader(options),
+    },
   ) {}
 
   public catalog() {
@@ -38,7 +62,10 @@ export class IntegrationOperationsService {
 
   public readiness() {
     const integrations = this.integrations.listRuntime();
-    const aaveNetworks = new Map<number, { chainId: number; name: string; ready: true; integrationIds: string[] }>();
+    const aaveNetworks = new Map<number, {
+      chainId: number; name: string; ready: true; integrationIds: string[];
+      capabilities: { accountRead: true; reserveCatalog: true; eventLogs: true };
+    }>();
     const uniswapNetworks = new Map<number, { chainId: number; name: string; versions: { v3: boolean; v4: boolean }; integrationIds: string[] }>();
     const binanceSources: Array<{
       integrationId: string;
@@ -55,7 +82,10 @@ export class IntegrationOperationsService {
         for (const chainId of parsed.data.chainIds) {
           const health = healthByIntegration.get(`${integration.id}:${chainId}`);
           if (chainId === 1 && health?.rpcStatus === 'ok' && health.aaveV3Status === 'ok') {
-            const current = aaveNetworks.get(chainId) ?? { chainId, name: evmNetworkName(chainId), ready: true, integrationIds: [] };
+            const current = aaveNetworks.get(chainId) ?? {
+              chainId, name: evmNetworkName(chainId), ready: true, integrationIds: [],
+              capabilities: { accountRead: true, reserveCatalog: true, eventLogs: true },
+            };
             current.integrationIds.push(integration.id);
             aaveNetworks.set(chainId, current);
           }
@@ -135,6 +165,9 @@ export class IntegrationOperationsService {
         };
         let blockNumber: string | null = null;
         let errorResult: { code: string; message: string } | null = null;
+        const aaveCapabilities = { accountRead: 'unknown' as const, reserveCatalog: 'unknown' as const, eventLogs: 'unknown' as const } as {
+          accountRead: 'ok' | 'error' | 'unknown'; reserveCatalog: 'ok' | 'error' | 'unknown'; eventLogs: 'ok' | 'error' | 'unknown';
+        };
         try {
           const resolved = resolveEvmRpcRequest(config, chainId);
         const rpcClient = new EvmRpcClient({
@@ -157,7 +190,29 @@ export class IntegrationOperationsService {
             timeoutMilliseconds: config.timeoutMilliseconds,
             multicallBatchSizeBytes: config.multicallBatchSizeBytes,
           }).read(ZERO_EVM_ADDRESS);
-          connectivity.aaveV3 = 'ok';
+          aaveCapabilities.accountRead = 'ok';
+          try {
+            await this.aaveReserveReaderFactory.create({
+              rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
+              fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+            }).read();
+            aaveCapabilities.reserveCatalog = 'ok';
+          } catch {
+            aaveCapabilities.reserveCatalog = 'error';
+          }
+          try {
+            const reader = this.aaveEventReaderFactory.create({
+              rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
+              fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+            });
+            const latest = await reader.latestBlock();
+            await reader.scan(latest, latest);
+            aaveCapabilities.eventLogs = 'ok';
+          } catch {
+            aaveCapabilities.eventLogs = 'error';
+          }
+          connectivity.aaveV3 = Object.values(aaveCapabilities).every((status) => status === 'ok') ? 'ok' : 'error';
+          if (connectivity.aaveV3 === 'error') throw new Error('Aave capability probe failed');
         }
         const uniswapV3 = chainId === 4_663 ? supportedUniswapV3Deployments.get(chainId) : undefined;
         const uniswapV4 = chainId === 4_663 ? supportedUniswapV4Deployments.get(chainId) : undefined;
@@ -205,6 +260,7 @@ export class IntegrationOperationsService {
           ok: errorResult === null,
           blockNumber,
           connectivity,
+          ...(chainId === 1 ? { aaveCapabilities } : {}),
           error: errorResult,
         };
         this.networkHealth.replace({
@@ -212,6 +268,9 @@ export class IntegrationOperationsService {
           chainId,
           rpcStatus: connectivity.rpc,
           aaveV3Status: connectivity.aaveV3 ?? 'unknown',
+          aaveAccountReadStatus: aaveCapabilities.accountRead,
+          aaveReserveCatalogStatus: aaveCapabilities.reserveCatalog,
+          aaveEventLogsStatus: aaveCapabilities.eventLogs,
           uniswapV3Status: connectivity.uniswapV3 ?? 'unknown',
           uniswapV4Status: connectivity.uniswapV4 ?? 'unknown',
           blockNumber,
@@ -244,6 +303,42 @@ export class IntegrationOperationsService {
 
   public invalidateTestResults(integrationId: string): void {
     this.networkHealth.removeIntegration(integrationId);
+    this.aaveReserveCache.delete(integrationId);
+  }
+
+  public async aaveReserves(id: string, chainId: number): Promise<AaveReserveCatalog & { stale: boolean }> {
+    if (chainId !== 1) throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'Aave reserve catalog is only available for Ethereum');
+    const integration = this.integrations.getRuntime(id);
+    if (!integration.enabled || integration.type !== 'evm_rpc') {
+      throw new AppError(409, 'PROTOCOL_NOT_READY', 'An enabled EVM RPC integration is required');
+    }
+    const health = this.networkHealth.list().find((item) => item.integrationId === id && item.chainId === chainId);
+    if (health?.rpcStatus !== 'ok' || health.aaveReserveCatalogStatus !== 'ok') {
+      throw new AppError(409, 'RESOURCE_CATALOG_NOT_READY', 'Test the Ethereum Aave capability before loading reserves');
+    }
+    const cached = this.aaveReserveCache.get(id);
+    if (cached !== undefined && Date.now() - Date.parse(cached.observedAt) < 60_000) return { ...cached, stale: false };
+    try {
+      const config = rpcIntegrationConfigSchema.parse(integration.config);
+      const resolved = resolveEvmRpcRequest(config, chainId);
+      const catalog = await this.aaveReserveReaderFactory.create({
+        rpcUrl: resolved.rpcUrl,
+        headers: resolved.headers,
+        expectedChainId: chainId,
+        fetch: this.fetchImplementation,
+        timeoutMilliseconds: config.timeoutMilliseconds,
+      }).read();
+      this.aaveReserveCache.set(id, catalog);
+      return { ...catalog, stale: false };
+    } catch {
+      if (cached !== undefined) return {
+        ...cached,
+        stale: true,
+        status: 'partial',
+        error: { code: 'INDEXER_PARTIAL_FAILURE', message: 'Serving stale reserve catalog after an RPC failure' },
+      };
+      throw new AppError(502, 'RESOURCE_CATALOG_NOT_READY', 'Aave reserve catalog could not be read');
+    }
   }
 
   public async syncMarkets(id: string) {

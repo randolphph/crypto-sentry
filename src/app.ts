@@ -19,7 +19,10 @@ import { ConfigEventBus } from './core/config-events/config-event-bus.js';
 import { BinanceMarketDataCoordinator } from './core/integrations/binance-market-data-coordinator.js';
 import { AaveV3PositionCoordinator } from './core/integrations/aave-v3-position-coordinator.js';
 import type { AaveV3PositionReaderFactory } from './core/integrations/aave-v3-position-coordinator.js';
+import { AaveV3EventCoordinator } from './core/integrations/aave-v3-event-coordinator.js';
+import type { AaveV3EventReaderFactory } from './core/integrations/aave-v3-event-coordinator.js';
 import { IntegrationOperationsService } from './core/integrations/integration-operations-service.js';
+import type { AaveEventReaderFactory, AaveReserveCatalogReaderFactory } from './core/integrations/integration-operations-service.js';
 import { UniswapV3PositionCoordinator } from './core/integrations/uniswap-v3-position-coordinator.js';
 import type {
   UniswapV3PositionReaderFactory,
@@ -43,6 +46,8 @@ import { PriceSampleRepository } from './db/repositories/price-sample-repository
 import { RuleRepository } from './db/repositories/rule-repository.js';
 import { RuleExecutionRepository } from './db/repositories/rule-execution-repository.js';
 import { UniswapV4OwnershipRepository } from './db/repositories/uniswap-v4-ownership-repository.js';
+import { ChainScanCursorRepository } from './db/repositories/chain-scan-cursor-repository.js';
+import { ProtocolMetricSampleRepository } from './db/repositories/protocol-metric-sample-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
 
 export interface CreateAppOptions {
@@ -52,6 +57,9 @@ export interface CreateAppOptions {
   webSocketFactory?: MarketWebSocketFactory | false;
   marketSampleIntervalMilliseconds?: number;
   aavePositionReaderFactory?: AaveV3PositionReaderFactory;
+  aaveReserveCatalogReaderFactory?: AaveReserveCatalogReaderFactory;
+  aaveEventReaderFactory?: AaveV3EventReaderFactory;
+  aaveCapabilityEventReaderFactory?: AaveEventReaderFactory;
   uniswapV3PositionReaderFactory?: UniswapV3PositionReaderFactory;
   uniswapV4PositionReaderFactory?: UniswapV4PositionReaderFactory;
   uniswapV4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
@@ -114,7 +122,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const webSocketFactory = options.webSocketFactory === false
     ? createNodeMarketWebSocket
     : options.webSocketFactory ?? createNodeMarketWebSocket;
-  const integrationOperations = new IntegrationOperationsService(integrations, markets, integrationNetworkHealth, options.fetch, webSocketFactory);
+  const integrationOperations = new IntegrationOperationsService(
+    integrations,
+    markets,
+    integrationNetworkHealth,
+    options.fetch,
+    webSocketFactory,
+    options.aaveReserveCatalogReaderFactory,
+    options.aaveCapabilityEventReaderFactory,
+  );
   const monitors = new MonitorRepository(database.db, integrations);
   const uniswapV4Ownership = new UniswapV4OwnershipRepository(database.db);
   const rules = new RuleRepository(database.db);
@@ -144,7 +160,20 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     {
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.aavePositionReaderFactory === undefined ? {} : { readerFactory: options.aavePositionReaderFactory }),
+      samples: new ProtocolMetricSampleRepository(database.db),
       onError: (error) => app.log.warn({ err: error }, 'Aave V3 position scan error'),
+    },
+  );
+  const aaveEventCoordinator = new AaveV3EventCoordinator(
+    integrations,
+    monitors,
+    new ChainScanCursorRepository(database.db),
+    metricPipeline,
+    pollingScheduler,
+    {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.aaveEventReaderFactory === undefined ? {} : { readerFactory: options.aaveEventReaderFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'Aave V3 event scan error'),
     },
   );
   const uniswapV3PositionCoordinator = new UniswapV3PositionCoordinator(
@@ -207,11 +236,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
     if (event.entity === 'monitor' || event.entity === 'integration') {
       aavePositionCoordinator.reconcile();
+      aaveEventCoordinator.reconcile();
       uniswapV3PositionCoordinator.reconcile();
     }
   });
   marketDataCoordinator?.reconcile();
   aavePositionCoordinator.reconcile();
+  aaveEventCoordinator.reconcile();
   uniswapV3PositionCoordinator.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
@@ -238,6 +269,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     unsubscribeConfigEvents();
     marketDataCoordinator?.close();
     aavePositionCoordinator.close();
+    aaveEventCoordinator.close();
     uniswapV3PositionCoordinator.close();
     await pollingScheduler.close();
     await marketMetricService?.close();
