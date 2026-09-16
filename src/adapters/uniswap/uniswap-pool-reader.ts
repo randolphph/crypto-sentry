@@ -47,6 +47,7 @@ export interface UniswapPoolEvent {
   logIndex: number;
   amount0: string | null;
   amount1: string | null;
+  observedAt: string;
 }
 
 export interface UniswapPoolReadResult {
@@ -64,6 +65,7 @@ export interface UniswapPoolReadResult {
 
 export class UniswapPoolReader {
   private readonly publicClient: PublicClient;
+  private readonly blockTimestampCache = new Map<bigint, string>();
   public constructor(options: {
     rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds?: number;
     fetch?: typeof globalThis.fetch; publicClient?: PublicClient;
@@ -106,7 +108,7 @@ export class UniswapPoolReader {
       blockNumber: toBlock.toString(), currentTick: slot0[1], ...prices, activeLiquidity: liquidity.toString(),
       tvlToken0: formatUnits(balance0, target.token0Decimals as number), tvlToken1: formatUnits(balance1, target.token1Decimals as number),
       lpFee: String(target.feeTier), protocolFee: String(slot0[5]),
-      events: this.events(logs, target),
+      events: await this.events(logs, target),
     };
   }
 
@@ -125,19 +127,30 @@ export class UniswapPoolReader {
       ...this.prices(slot0[0], target.token0Decimals as number, target.token1Decimals as number),
       activeLiquidity: liquidity.toString(), tvlToken0: null, tvlToken1: null,
       lpFee: String(slot0[3]), protocolFee: String(slot0[2]),
-      events: this.events(logs, target),
+      events: await this.events(logs, target),
     };
   }
 
-  private events(logs: Array<Record<string, unknown>>, target: UniswapPoolTarget): UniswapPoolEvent[] {
-    return logs.flatMap((log) => {
+  private async events(logs: Array<Record<string, unknown>>, target: UniswapPoolTarget): Promise<UniswapPoolEvent[]> {
+    const relevant = logs.filter((log) => {
+      const args = log.args as Record<string, unknown> | undefined;
+      return !(target.version === 'v4' && typeof args?.id === 'string' && args.id.toLowerCase() !== target.resourceId.toLowerCase());
+    });
+    const blockNumbers = [...new Set(relevant.flatMap((log) => typeof log.blockNumber === 'bigint' ? [log.blockNumber] : []))];
+    for (let offset = 0; offset < blockNumbers.length; offset += 8) {
+      await Promise.all(blockNumbers.slice(offset, offset + 8).map(async (blockNumber) => {
+        if (this.blockTimestampCache.has(blockNumber)) return;
+        const block = await this.publicClient.getBlock({ blockNumber });
+        this.blockTimestampCache.set(blockNumber, new Date(Number(block.timestamp) * 1_000).toISOString());
+      }));
+    }
+    return relevant.flatMap((log) => {
       const tx = log.transactionHash;
       const index = log.logIndex;
       const block = log.blockNumber;
       const name = log.eventName;
       const args = log.args as Record<string, unknown> | undefined;
       if (typeof tx !== 'string' || typeof index !== 'number' || typeof block !== 'bigint' || args === undefined || typeof name !== 'string') return [];
-      if (target.version === 'v4' && typeof args.id === 'string' && args.id.toLowerCase() !== target.resourceId.toLowerCase()) return [];
       let eventType: UniswapPoolEvent['eventType'];
       if (name === 'Swap') eventType = 'swap';
       else if (name === 'Mint') eventType = 'mint';
@@ -150,6 +163,7 @@ export class UniswapPoolReader {
       return [{
         eventId: `${target.chainId}:${tx}:${index}`, eventType, blockNumber: block.toString(), transactionHash: tx,
         logIndex: index, amount0: format(args.amount0, target.token0Decimals), amount1: format(args.amount1, target.token1Decimals),
+        observedAt: this.blockTimestampCache.get(block) as string,
       }];
     });
   }

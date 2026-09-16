@@ -135,15 +135,21 @@ export const AAVE_POOL_RULE_METRICS: RuleMetricDefinition[] = [
 
 function uniswapGauge(
   id: string, name: string, units: string[], monitorTypes: string[],
-  options: { boolean?: boolean; window?: boolean; versions?: Array<'v3' | 'v4'> } = {},
+  options: { boolean?: boolean; window?: boolean; versions?: Array<'v3' | 'v4'>; aggregate?: boolean } = {},
 ): RuleMetricDefinition {
+  const poolMetric = monitorTypes.includes('uniswap_pool');
+  const identityLabels = poolMetric
+    ? ['resourceId', 'token0Address', 'token0Symbol', 'token1Address', 'token1Symbol']
+    : options.aggregate === true
+      ? []
+      : ['tokenId', 'token0Address', 'token0Symbol', 'token1Address', 'token1Symbol'];
   return {
     id, name, kind: 'gauge', valueType: options.boolean === true ? 'boolean' : 'decimal',
     operators: options.boolean === true ? booleanOperators : numericOperators,
     units, requiresWindow: options.window ?? false,
     ...(options.window === true ? { windowSecondsMin: 20, windowSecondsMax: 86_400 } : {}),
     monitorTypes, chainIds: [1, 4_663], versions: options.versions ?? ['v3', 'v4'],
-    labels: ['chainId', 'version', 'tokenId', 'resourceId', ...(options.window === true ? ['windowSeconds'] : [])],
+    labels: ['chainId', 'version', ...identityLabels, ...(options.window === true ? ['windowSeconds'] : [])],
   };
 }
 
@@ -157,6 +163,11 @@ function uniswapEvent(id: string, name: string, versions: Array<'v3' | 'v4'> = [
 
 export const UNISWAP_POSITION_RULE_METRICS: RuleMetricDefinition[] = [
   uniswapGauge('in_range', '是否在价格区间', ['boolean'], ['uniswap_position', 'uniswap_wallet'], { boolean: true }),
+  uniswapGauge('current_tick', '当前 Tick', ['tick'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('tick_lower', '区间下界 Tick', ['tick'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('tick_upper', '区间上界 Tick', ['tick'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('distance_to_lower_tick', '距下界 Tick', ['tick'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('distance_to_upper_tick', '距上界 Tick', ['tick'], ['uniswap_position', 'uniswap_wallet']),
   uniswapGauge('distance_to_nearest_boundary_percent', '距最近边界', ['percent'], ['uniswap_position', 'uniswap_wallet']),
   uniswapGauge('liquidity', '流动性', ['liquidity'], ['uniswap_position', 'uniswap_wallet']),
   uniswapGauge('token0_amount', 'Token0 数量', ['token0'], ['uniswap_position', 'uniswap_wallet']),
@@ -166,12 +177,12 @@ export const UNISWAP_POSITION_RULE_METRICS: RuleMetricDefinition[] = [
   uniswapGauge('position_value_usd', '仓位 USD 价值', ['USD'], ['uniswap_position', 'uniswap_wallet']),
   uniswapGauge('fees_value_usd', '手续费 USD 价值', ['USD'], ['uniswap_position', 'uniswap_wallet'], { versions: ['v3'] }),
   uniswapGauge('position_closed', '仓位已关闭', ['boolean'], ['uniswap_position', 'uniswap_wallet'], { boolean: true }),
-  uniswapGauge('position_count', '钱包仓位数', ['positions'], ['uniswap_wallet']),
-  uniswapGauge('in_range_count', '钱包区间内仓位数', ['positions'], ['uniswap_wallet']),
-  uniswapGauge('out_of_range_count', '钱包区间外仓位数', ['positions'], ['uniswap_wallet']),
-  uniswapGauge('failed_position_count', '钱包读取失败仓位数', ['positions'], ['uniswap_wallet']),
-  uniswapGauge('aggregate_value_usd', '钱包仓位总价值', ['USD'], ['uniswap_wallet']),
-  uniswapGauge('aggregate_fees_usd', '钱包手续费总价值', ['USD'], ['uniswap_wallet'], { versions: ['v3'] }),
+  uniswapGauge('position_count', '仓位数', ['positions'], ['uniswap_position', 'uniswap_wallet'], { aggregate: true }),
+  uniswapGauge('in_range_count', '钱包区间内仓位数', ['positions'], ['uniswap_wallet'], { aggregate: true }),
+  uniswapGauge('out_of_range_count', '钱包区间外仓位数', ['positions'], ['uniswap_wallet'], { aggregate: true }),
+  uniswapGauge('failed_position_count', '钱包读取失败仓位数', ['positions'], ['uniswap_wallet'], { aggregate: true }),
+  uniswapGauge('aggregate_value_usd', '钱包仓位总价值', ['USD'], ['uniswap_wallet'], { aggregate: true }),
+  uniswapGauge('aggregate_fees_usd', '钱包手续费总价值', ['USD'], ['uniswap_wallet'], { versions: ['v3'], aggregate: true }),
 ];
 
 export const UNISWAP_POOL_RULE_METRICS: RuleMetricDefinition[] = [
@@ -182,6 +193,10 @@ export const UNISWAP_POOL_RULE_METRICS: RuleMetricDefinition[] = [
   uniswapGauge('tvl_token0', 'Token0 TVL', ['token0'], ['uniswap_pool'], { versions: ['v3'] }),
   uniswapGauge('tvl_token1', 'Token1 TVL', ['token1'], ['uniswap_pool'], { versions: ['v3'] }),
   uniswapGauge('tvl_usd', 'Pool TVL USD', ['USD'], ['uniswap_pool'], { versions: ['v3'] }),
+  uniswapGauge('volume_token0', '窗口 Token0 成交量', ['token0'], ['uniswap_pool'], { window: true }),
+  uniswapGauge('volume_token1', '窗口 Token1 成交量', ['token1'], ['uniswap_pool'], { window: true }),
+  uniswapGauge('volume_usd', '窗口 USD 成交额', ['USD'], ['uniswap_pool'], { window: true }),
+  uniswapGauge('volume_change_percent', '窗口成交额变化率', ['percent'], ['uniswap_pool'], { window: true }),
   uniswapEvent('swap', 'Swap 事件'), uniswapEvent('mint', '增加流动性事件'),
   uniswapEvent('burn', '移除流动性事件'), uniswapEvent('fee_collection', '领取手续费事件', ['v3']),
 ];
@@ -190,13 +205,13 @@ export const RULE_METRICS = {
   market: MARKET_RULE_METRICS,
   aave_account: AAVE_ACCOUNT_RULE_METRICS,
   aave_pool: AAVE_POOL_RULE_METRICS,
-  uniswap_position: UNISWAP_POSITION_RULE_METRICS,
-  uniswap_wallet: UNISWAP_POSITION_RULE_METRICS,
+  uniswap_position: UNISWAP_POSITION_RULE_METRICS.filter((definition) => definition.monitorTypes.includes('uniswap_position')),
+  uniswap_wallet: UNISWAP_POSITION_RULE_METRICS.filter((definition) => definition.monitorTypes.includes('uniswap_wallet')),
   uniswap_pool: UNISWAP_POOL_RULE_METRICS,
 } as const;
 
 export function ruleMetricDefinition(monitorType: string, metricId: string): RuleMetricDefinition | undefined {
   const normalized = monitorType === 'aave_position' ? 'aave_account' : monitorType;
   const definitions = RULE_METRICS[normalized as keyof typeof RULE_METRICS] as readonly RuleMetricDefinition[] | undefined;
-  return definitions?.find((metric) => metric.id === metricId);
+  return definitions?.find((metric) => metric.id === metricId && metric.monitorTypes.includes(normalized));
 }

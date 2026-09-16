@@ -195,11 +195,26 @@ export const processedMetricEvents = sqliteTable(
       .references(() => monitors.id, { onDelete: 'cascade' }),
     receivedAt: text('received_at').notNull(),
     metricName: text('metric_name').notNull().default(''),
+    status: text('status').notNull().default('processed'),
+    processingStartedAt: text('processing_started_at'),
+    processedAt: text('processed_at'),
+    attemptCount: integer('attempt_count').notNull().default(1),
   },
   (table) => [
     primaryKey({ columns: [table.monitorId, table.eventId, table.metricName] }),
     index('processed_metric_events_monitor_idx').on(table.monitorId, table.receivedAt),
   ],
+);
+
+export const ruleEventCommits = sqliteTable(
+  'rule_event_commits',
+  {
+    ruleId: text('rule_id').notNull().references(() => rules.id, { onDelete: 'cascade' }),
+    eventId: text('event_id').notNull(),
+    metricName: text('metric_name').notNull(),
+    committedAt: text('committed_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.ruleId, table.eventId, table.metricName] })],
 );
 
 export const chainScanCursors = sqliteTable(
@@ -266,6 +281,36 @@ export const tokenMetadataCache = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [primaryKey({ columns: [table.chainId, table.address] })],
+);
+
+export const uniswapIndexerStates = sqliteTable(
+  'uniswap_indexer_states',
+  {
+    integrationId: text('integration_id').notNull().references(() => integrations.id, { onDelete: 'cascade' }),
+    chainId: integer('chain_id').notNull(),
+    version: text('version').notNull(),
+    status: text('status').notNull(),
+    lastErrorCode: text('last_error_code'),
+    lastAttemptAt: text('last_attempt_at').notNull(),
+    chunkSize: text('chunk_size').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.integrationId, table.chainId, table.version] })],
+);
+
+export const uniswapPoolSwapSamples = sqliteTable(
+  'uniswap_pool_swap_samples',
+  {
+    monitorId: text('monitor_id').notNull().references(() => monitors.id, { onDelete: 'cascade' }),
+    eventId: text('event_id').notNull(),
+    observedAt: text('observed_at').notNull(),
+    token0Volume: text('token0_volume').notNull(),
+    token1Volume: text('token1_volume').notNull(),
+    usdVolume: text('usd_volume'),
+  },
+  (table) => [
+    primaryKey({ columns: [table.monitorId, table.eventId] }),
+    index('uniswap_pool_swap_samples_time_idx').on(table.monitorId, table.observedAt),
+  ],
 );
 
 export const uniswapV4ScanCheckpoints = sqliteTable(

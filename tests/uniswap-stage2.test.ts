@@ -73,7 +73,9 @@ describe('Uniswap phase 2 resources and pool monitor', () => {
     await indexTask.run(new AbortController().signal);
     await indexTask.run(new AbortController().signal);
     expect(scan).toHaveBeenNthCalledWith(1, 'v3', ETHEREUM_UNISWAP_V3.deploymentBlock, 12_369_621n, expect.any(AbortSignal));
-    expect(scan).toHaveBeenNthCalledWith(2, 'v3', 12_369_610n, 12_369_621n, expect.any(AbortSignal));
+    expect(scan).toHaveBeenNthCalledWith(
+      2, 'v3', ETHEREUM_UNISWAP_V3.deploymentBlock, 12_369_621n, expect.any(AbortSignal),
+    );
     expect(pools.list({ integrationId: integration.id, chainId: 1, version: 'v3', limit: 50 }).items).toHaveLength(1);
     expect(pools.list({ integrationId: integration.id, chainId: 1, version: 'v3', q: '500', limit: 50 }).items).toHaveLength(1);
 
@@ -89,7 +91,10 @@ describe('Uniswap phase 2 resources and pool monitor', () => {
       { readerFactory: { create: () => ({ latestBlock: async () => 200n, read: async () => ({
         blockNumber: '188', currentTick: 100, token0Price: '2000', token1Price: '0.0005',
         activeLiquidity: '12345678901234567890', tvlToken0: '10', tvlToken1: '20000', lpFee: '500', protocolFee: '0',
-        events: [{ eventId: '1:0xabc:1', eventType: 'swap', blockNumber: '188', transactionHash: '0xabc', logIndex: 1, amount0: '1', amount1: '2000' }],
+        events: [{
+          eventId: '1:0xabc:1', eventType: 'swap', blockNumber: '188', transactionHash: '0xabc', logIndex: 1,
+          amount0: '1', amount1: '2000', observedAt: '2026-09-16T00:00:00.000Z',
+        }],
       }) }) }, now: () => new Date('2026-09-16T00:00:00.000Z') },
     );
     poolCoordinator.reconcile();
@@ -105,7 +110,7 @@ describe('Uniswap phase 2 resources and pool monitor', () => {
       data: {
         pool: { currentTick: '100', tvlToken0: '10', tvlToken1: '20000', tvlUsd: '40000', valuationStatus: 'ok' },
         discovery: { caughtUp: true, scannedThroughBlock: '188', chainTipBlock: '200' },
-        recentEvents: [{ amountUsd: '4000', valuationStatus: 'ok' }],
+        recentEvents: [{ amountUsd: '2000', valuationStatus: 'ok' }],
       },
       error: null,
     });

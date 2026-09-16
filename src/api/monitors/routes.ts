@@ -8,6 +8,7 @@ import { MonitorSnapshotService } from '../../core/positions/monitor-snapshot-se
 import { AaveRiskRulePresetService } from '../../core/rules/aave-risk-rule-preset-service.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { RuleRepository } from '../../db/repositories/rule-repository.js';
+import type { MonitorService } from '../../core/monitors/monitor-service.js';
 import { AppError } from '../errors.js';
 import { openApiSchema } from '../openapi.js';
 import { aaveRiskRulePresetSchema, idParamsSchema, monitorCreateSchema, monitorPatchSchema } from '../schemas.js';
@@ -18,6 +19,7 @@ export function registerMonitorRoutes(
   events: ConfigEventBus,
   metrics: MetricSnapshotReader,
   rules: RuleRepository,
+  service: MonitorService,
 ): void {
   const aavePositions = new AavePositionSnapshotService(repository, metrics);
   const uniswapPositions = new UniswapV3PositionSnapshotService(repository, metrics);
@@ -30,7 +32,7 @@ export function registerMonitorRoutes(
     summary: 'Create a monitor',
     body: openApiSchema(monitorCreateSchema),
   } }, async (request, reply) => {
-    const created = repository.create(monitorCreateSchema.parse(request.body));
+    const created = await service.create(monitorCreateSchema.parse(request.body));
     events.publish({ entity: 'monitor', operation: 'created', id: created.id });
     return reply.status(201).send(created);
   });
@@ -47,7 +49,7 @@ export function registerMonitorRoutes(
     body: openApiSchema(monitorPatchSchema),
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
-    const updated = repository.update(id, monitorPatchSchema.parse(request.body));
+    const updated = await service.update(id, monitorPatchSchema.parse(request.body));
     events.publish({ entity: 'monitor', operation: 'updated', id });
     return updated;
   });

@@ -3,6 +3,8 @@ import type { FastifyInstance } from 'fastify';
 
 import { createApp } from '../src/app.js';
 import type { AppConfig } from '../src/config.js';
+import { ETHEREUM_UNISWAP_V3 } from '../src/adapters/uniswap/uniswap-v3-position-reader.js';
+import { ETHEREUM_UNISWAP_V4 } from '../src/adapters/uniswap/uniswap-v4-position-reader.js';
 
 const token = 'evm-test-api-token-that-is-long-enough';
 const authorization = { authorization: `Bearer ${token}` };
@@ -38,11 +40,21 @@ describe('EVM RPC integration API', () => {
   let app: FastifyInstance;
   let actualChainId = 1;
   let contractCallsFail = false;
+  let uniswapV3Fails = false;
+  let uniswapV4Fails = false;
   const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
     const request = rpcRequest(init);
     if (request.method === 'eth_chainId') return rpcResponse(request.id, `0x${actualChainId.toString(16)}`);
     if (request.method === 'eth_blockNumber') return rpcResponse(request.id, '0x64');
-    if (request.method === 'eth_getCode') return rpcResponse(request.id, '0x6000');
+    if (request.method === 'eth_getCode') {
+      const address = String(request.params?.[0]).toLowerCase();
+      const v3Addresses = [ETHEREUM_UNISWAP_V3.factoryAddress, ETHEREUM_UNISWAP_V3.positionManagerAddress]
+        .map((value) => value.toLowerCase());
+      const v4Addresses = [ETHEREUM_UNISWAP_V4.poolManagerAddress, ETHEREUM_UNISWAP_V4.positionManagerAddress,
+        ETHEREUM_UNISWAP_V4.stateViewAddress].map((value) => value.toLowerCase());
+      return rpcResponse(request.id, (uniswapV3Fails && v3Addresses.includes(address)) ||
+        (uniswapV4Fails && v4Addresses.includes(address)) ? '0x' : '0x6000');
+    }
     if (request.method === 'eth_call') {
       if (contractCallsFail) return rpcError(request.id, 'intrinsic gas too low');
       const transaction = request.params?.[0] as { data?: string } | undefined;
@@ -57,6 +69,8 @@ describe('EVM RPC integration API', () => {
   beforeEach(async () => {
     actualChainId = 1;
     contractCallsFail = false;
+    uniswapV3Fails = false;
+    uniswapV4Fails = false;
     fetchMock.mockClear();
     app = await createApp({
       config, logger: false, fetch: fetchMock, webSocketFactory: false,
@@ -134,6 +148,10 @@ describe('EVM RPC integration API', () => {
         blockNumber: '100',
         connectivity: { rpc: 'ok', aaveV3: 'ok', uniswapV3: 'ok', uniswapV4: 'ok' },
         aaveCapabilities: { accountRead: 'ok', reserveCatalog: 'ok', eventLogs: 'ok' },
+        capabilityErrors: {
+          rpc: null, aaveAccountRead: null, aaveReserveCatalog: null, aaveEventLogs: null,
+          uniswapV3: null, uniswapV4: null,
+        },
         error: null,
       }],
     });
@@ -190,9 +208,50 @@ describe('EVM RPC integration API', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       ok: false,
-      networks: [{ connectivity: { rpc: 'ok', aaveV3: 'error' }, error: { code: 'RPC_CONNECTION_FAILED' } }],
+      networks: [{
+        connectivity: { rpc: 'ok', aaveV3: 'error', uniswapV3: 'ok', uniswapV4: 'ok' },
+        aaveCapabilities: { accountRead: 'error', reserveCatalog: 'ok', eventLogs: 'ok' },
+        error: { code: 'RPC_PARTIAL_FAILURE' },
+      }],
     });
     expect(response.body).not.toContain('intrinsic gas too low');
+    const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
+    expect(readiness.json()).toMatchObject({
+      aave: { ready: false, networks: [] },
+      uniswap: { ready: true, networks: [{ chainId: 1, versions: { v3: true, v4: true } }] },
+    });
+  });
+
+  it('keeps Uniswap V4 ready when the V3 capability probe fails', async () => {
+    const created = await createRpcIntegration();
+    uniswapV3Fails = true;
+    const response = await app.inject({
+      method: 'POST', url: `/api/v1/integrations/${created.json<{ id: string }>().id}/test`, headers: authorization,
+    });
+    expect(response.json()).toMatchObject({
+      ok: false,
+      networks: [{ connectivity: { rpc: 'ok', uniswapV3: 'error', uniswapV4: 'ok' } }],
+    });
+    const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
+    expect(readiness.json()).toMatchObject({
+      uniswap: { ready: true, networks: [{ chainId: 1, versions: { v3: false, v4: true } }] },
+    });
+  });
+
+  it('keeps Uniswap V3 ready when the V4 capability probe fails', async () => {
+    const created = await createRpcIntegration();
+    uniswapV4Fails = true;
+    const response = await app.inject({
+      method: 'POST', url: `/api/v1/integrations/${created.json<{ id: string }>().id}/test`, headers: authorization,
+    });
+    expect(response.json()).toMatchObject({
+      ok: false,
+      networks: [{ connectivity: { rpc: 'ok', uniswapV3: 'ok', uniswapV4: 'error' } }],
+    });
+    const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
+    expect(readiness.json()).toMatchObject({
+      uniswap: { ready: true, networks: [{ chainId: 1, versions: { v3: true, v4: false } }] },
+    });
   });
 
   it('verifies official Uniswap V3 contracts on Robinhood Chain', async () => {

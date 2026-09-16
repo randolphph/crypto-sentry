@@ -32,6 +32,10 @@ import {
   evmNetworkName,
   isEvmRpcProvider,
 } from './integration-catalog.js';
+import type {
+  UniswapV3PositionReaderFactory,
+  UniswapV4PositionReaderFactory,
+} from './uniswap-v3-position-coordinator.js';
 
 const ZERO_EVM_ADDRESS = '0x0000000000000000000000000000000000000000';
 
@@ -48,6 +52,8 @@ export interface AaveEventReaderFactory {
 
 export class IntegrationOperationsService {
   private readonly aaveReserveCache = new Map<string, AaveReserveCatalog>();
+  private readonly uniswapV3ReaderFactory: UniswapV3PositionReaderFactory;
+  private readonly uniswapV4ReaderFactory: UniswapV4PositionReaderFactory;
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -64,7 +70,16 @@ export class IntegrationOperationsService {
     private readonly uniswapPools?: UniswapPoolRepository,
     private readonly scanCursors?: ChainScanCursorRepository,
     private readonly uniswapV4Ownership?: UniswapV4OwnershipRepository,
-  ) {}
+    uniswapV3ReaderFactory?: UniswapV3PositionReaderFactory,
+    uniswapV4ReaderFactory?: UniswapV4PositionReaderFactory,
+  ) {
+    this.uniswapV3ReaderFactory = uniswapV3ReaderFactory ?? {
+      create: (options) => new UniswapV3PositionReader({ ...options, fetch: this.fetchImplementation }),
+    };
+    this.uniswapV4ReaderFactory = uniswapV4ReaderFactory ?? {
+      create: (options) => new UniswapV4PositionReader({ ...options, fetch: this.fetchImplementation }),
+    };
+  }
 
   private readonly walletIndexJobs = new Map<string, { controller: AbortController; promise: Promise<void> }>();
 
@@ -177,99 +192,92 @@ export class IntegrationOperationsService {
         };
         let blockNumber: string | null = null;
         let errorResult: { code: string; message: string } | null = null;
+        const capabilityErrors: Record<string, { code: string; message: string } | null> = {};
         const aaveCapabilities = { accountRead: 'unknown' as const, reserveCatalog: 'unknown' as const, eventLogs: 'unknown' as const } as {
           accountRead: 'ok' | 'error' | 'unknown'; reserveCatalog: 'ok' | 'error' | 'unknown'; eventLogs: 'ok' | 'error' | 'unknown';
         };
+        let resolved: ReturnType<typeof resolveEvmRpcRequest> | undefined;
+        let rpcClient: EvmRpcClient | undefined;
         try {
-          const resolved = resolveEvmRpcRequest(config, chainId);
-        const rpcClient = new EvmRpcClient({
-          rpcUrl: resolved.rpcUrl,
-          headers: resolved.headers,
-          expectedChainId: chainId,
-          fetch: this.fetchImplementation,
-          timeoutMilliseconds: config.timeoutMilliseconds,
-        });
-        const probe = await rpcClient.testConnectivity();
-        blockNumber = probe.blockNumber;
-        connectivity.rpc = 'ok';
-        const supportsAaveV3 = chainId === 1;
-        if (supportsAaveV3) {
-          await new AaveV3PositionReader({
-            rpcUrl: resolved.rpcUrl,
-            headers: resolved.headers,
-            expectedChainId: chainId,
-            fetch: this.fetchImplementation,
-            timeoutMilliseconds: config.timeoutMilliseconds,
-            multicallBatchSizeBytes: config.multicallBatchSizeBytes,
-          }).read(ZERO_EVM_ADDRESS);
-          aaveCapabilities.accountRead = 'ok';
-          try {
-            await this.aaveReserveReaderFactory.create({
-              rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
-              fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
-            }).read();
-            aaveCapabilities.reserveCatalog = 'ok';
-          } catch {
-            aaveCapabilities.reserveCatalog = 'error';
-          }
-          try {
-            const reader = this.aaveEventReaderFactory.create({
-              rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
-              fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
-            });
-            const latest = await reader.latestBlock();
-            await reader.scan(latest, latest);
-            aaveCapabilities.eventLogs = 'ok';
-          } catch {
-            aaveCapabilities.eventLogs = 'error';
-          }
-          connectivity.aaveV3 = Object.values(aaveCapabilities).every((status) => status === 'ok') ? 'ok' : 'error';
-          if (connectivity.aaveV3 === 'error') throw new Error('Aave capability probe failed');
-        }
-        const uniswapV3 = supportedUniswapV3Deployments.get(chainId);
-        const uniswapV4 = supportedUniswapV4Deployments.get(chainId);
-        if (uniswapV3 !== undefined) {
-          const [factoryCode, positionManagerCode] = await Promise.all([
-            rpcClient.publicClient.getBytecode({ address: uniswapV3.factoryAddress }),
-            rpcClient.publicClient.getBytecode({ address: uniswapV3.positionManagerAddress }),
-          ]);
-          if (factoryCode === undefined || factoryCode === '0x' || positionManagerCode === undefined || positionManagerCode === '0x') {
-            throw new Error('Official Uniswap V3 contracts are unavailable through this RPC');
-          }
-          connectivity.uniswapV3 = 'ok';
-        }
-        if (uniswapV4 !== undefined) {
-          const codes = await Promise.all([
-            rpcClient.publicClient.getBytecode({ address: uniswapV4.poolManagerAddress }),
-            rpcClient.publicClient.getBytecode({ address: uniswapV4.positionManagerAddress }),
-            rpcClient.publicClient.getBytecode({ address: uniswapV4.stateViewAddress }),
-          ]);
-          if (codes.some((code) => code === undefined || code === '0x')) {
-            throw new Error('Official Uniswap V4 contracts are unavailable through this RPC');
-          }
-          connectivity.uniswapV4 = 'ok';
-        }
-      } catch (error) {
-        if (error instanceof EvmChainMismatchError) {
+          resolved = resolveEvmRpcRequest(config, chainId);
+          rpcClient = new EvmRpcClient({
+            rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
+            fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+          });
+          const probe = await rpcClient.testConnectivity();
+          blockNumber = probe.blockNumber;
+          connectivity.rpc = 'ok';
+          capabilityErrors.rpc = null;
+        } catch (error) {
           connectivity.rpc = 'error';
-          errorResult = { code: 'RPC_CHAIN_ID_MISMATCH', message: `Expected chain ${error.expectedChainId}, received chain ${error.actualChainId}` };
-        } else {
-          if (connectivity.rpc !== 'ok') connectivity.rpc = 'error';
-          for (const capability of ['aaveV3', 'uniswapV3', 'uniswapV4'] as const) {
-            if (connectivity[capability] === 'ok') continue;
-            const available = capability === 'aaveV3'
-              ? chainId === 1
-              : capability === 'uniswapV3'
-                ? supportedUniswapV3Deployments.has(chainId)
-                : supportedUniswapV4Deployments.has(chainId);
-            if (available) connectivity[capability] = 'error';
-          }
-          const code = error instanceof Error && ['RPC_ROUTING_CONFIG_INVALID', 'RPC_CHAIN_UNSUPPORTED'].includes(error.message)
-            ? error.message
-            : 'RPC_CONNECTION_FAILED';
-          errorResult = { code, message: code === 'RPC_CONNECTION_FAILED' ? 'RPC or protocol capability test failed' : 'RPC routing configuration is invalid' };
+          const mismatch = error instanceof EvmChainMismatchError;
+          const routingCode = error instanceof Error && ['RPC_ROUTING_CONFIG_INVALID', 'RPC_CHAIN_UNSUPPORTED'].includes(error.message)
+            ? error.message : null;
+          errorResult = mismatch
+            ? { code: 'RPC_CHAIN_ID_MISMATCH', message: `Expected chain ${error.expectedChainId}, received chain ${error.actualChainId}` }
+            : routingCode === null
+              ? { code: 'RPC_CONNECTION_FAILED', message: 'RPC connectivity test failed' }
+              : { code: routingCode, message: 'RPC routing configuration is invalid' };
+          capabilityErrors.rpc = errorResult;
         }
-      }
+
+        if (connectivity.rpc === 'ok' && resolved !== undefined && rpcClient !== undefined) {
+          const probe = async (name: string, run: () => Promise<void>): Promise<'ok' | 'error'> => {
+            try {
+              await run();
+              capabilityErrors[name] = null;
+              return 'ok';
+            } catch {
+              capabilityErrors[name] = { code: 'PROTOCOL_NOT_READY', message: `${name} capability test failed` };
+              return 'error';
+            }
+          };
+          if (chainId === 1) {
+            aaveCapabilities.accountRead = await probe('aaveAccountRead', async () => {
+              await new AaveV3PositionReader({
+                rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
+                fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+                multicallBatchSizeBytes: config.multicallBatchSizeBytes,
+              }).read(ZERO_EVM_ADDRESS);
+            });
+            aaveCapabilities.reserveCatalog = await probe('aaveReserveCatalog', async () => {
+              await this.aaveReserveReaderFactory.create({
+                rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
+                fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+              }).read();
+            });
+            aaveCapabilities.eventLogs = await probe('aaveEventLogs', async () => {
+              const reader = this.aaveEventReaderFactory.create({
+                rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
+                fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+              });
+              const latest = await reader.latestBlock();
+              await reader.scan(latest, latest);
+            });
+            connectivity.aaveV3 = Object.values(aaveCapabilities).every((status) => status === 'ok') ? 'ok' : 'error';
+          }
+          const uniswapV3 = supportedUniswapV3Deployments.get(chainId);
+          if (uniswapV3 !== undefined) connectivity.uniswapV3 = await probe('uniswapV3', async () => {
+            const codes = await Promise.all([
+              rpcClient.publicClient.getBytecode({ address: uniswapV3.factoryAddress }),
+              rpcClient.publicClient.getBytecode({ address: uniswapV3.positionManagerAddress }),
+            ]);
+            if (codes.some((code) => code === undefined || code === '0x')) throw new Error('contract unavailable');
+          });
+          const uniswapV4 = supportedUniswapV4Deployments.get(chainId);
+          if (uniswapV4 !== undefined) connectivity.uniswapV4 = await probe('uniswapV4', async () => {
+            const codes = await Promise.all([
+              rpcClient.publicClient.getBytecode({ address: uniswapV4.poolManagerAddress }),
+              rpcClient.publicClient.getBytecode({ address: uniswapV4.positionManagerAddress }),
+              rpcClient.publicClient.getBytecode({ address: uniswapV4.stateViewAddress }),
+            ]);
+            if (codes.some((code) => code === undefined || code === '0x')) throw new Error('contract unavailable');
+          });
+          const applicable = Object.entries(connectivity).filter(([name]) => name !== 'rpc');
+          if (applicable.some(([, status]) => status === 'error')) {
+            errorResult = { code: 'RPC_PARTIAL_FAILURE', message: 'One or more protocol capability tests failed' };
+          }
+        }
         const result = {
           chainId,
           chainName: evmNetworkName(chainId),
@@ -277,6 +285,7 @@ export class IntegrationOperationsService {
           blockNumber,
           connectivity,
           ...(chainId === 1 ? { aaveCapabilities } : {}),
+          capabilityErrors,
           error: errorResult,
         };
         this.networkHealth.replace({
@@ -398,12 +407,16 @@ export class IntegrationOperationsService {
     const caughtUp = scanned !== undefined && chainTip !== undefined && scanned >= (chainTip > 12n ? chainTip - 12n : 0n);
     const partial = result.items.some((item) => item.token0Symbol === null || item.token1Symbol === null ||
       item.token0Decimals === null || item.token1Decimals === null);
+    const indexer = this.uniswapPools.getIndexerState(id, input.chainId, input.version);
+    const indexerFailed = indexer?.status === 'error';
     return {
-      status: scanned === undefined || !caughtUp ? 'warming_up' : partial ? 'partial' : 'ok',
+      status: indexerFailed ? 'partial' : scanned === undefined || !caughtUp ? 'warming_up' : partial ? 'partial' : 'ok',
       discovery: {
         caughtUp,
         scannedThroughBlock: scanned?.toString() ?? null,
         chainTipBlock: chainTip?.toString() ?? null,
+        lastAttemptAt: indexer?.lastAttemptAt ?? null,
+        lastError: indexer?.lastErrorCode ?? null,
       },
       items: result.items.map((item) => ({
         chainId: item.chainId, chainName: evmNetworkName(item.chainId), version: item.version,
@@ -413,7 +426,9 @@ export class IntegrationOperationsService {
         feeTier: item.feeTier, tickSpacing: item.tickSpacing, hooksAddress: item.hooksAddress,
       })),
       nextCursor: result.nextCursor,
-      error: partial ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Some token metadata is unavailable' } : null,
+      error: indexerFailed
+        ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Pool indexing is retrying after a provider log-range failure' }
+        : partial ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Some token metadata is unavailable' } : null,
     };
   }
 
@@ -435,9 +450,9 @@ export class IntegrationOperationsService {
     const chainTipBlock = health.blockNumber;
     if (input.version === 'v3') {
       try {
-        const discovered = await new UniswapV3PositionReader({
+        const discovered = await this.uniswapV3ReaderFactory.create({
           rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
-          fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+          timeoutMilliseconds: config.timeoutMilliseconds,
         }).discover(wallet);
         tokenIds = discovered.tokenIds;
         scannedThroughBlock = discovered.blockNumber.toString();
@@ -455,24 +470,39 @@ export class IntegrationOperationsService {
       caughtUp = checkpoint !== undefined && chainTipBlock !== null && checkpoint >= BigInt(chainTipBlock) - 12n;
       this.startWalletIndexJob(id, input.chainId, wallet, resolved, config.timeoutMilliseconds);
     }
-    const query = input.q?.toLowerCase();
     const after = input.cursor === undefined ? undefined : BigInt(input.cursor);
-    const filtered = tokenIds.filter((tokenId) => (after === undefined || BigInt(tokenId) > after) &&
-      (query === undefined || tokenId.includes(query)));
-    const page = filtered.slice(0, input.limit);
+    const candidates = tokenIds.filter((tokenId) => after === undefined || BigInt(tokenId) > after)
+      .sort((left, right) => BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0);
+    const readerOptions = {
+      rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
+      timeoutMilliseconds: config.timeoutMilliseconds,
+    };
     const reader = input.version === 'v3'
-      ? new UniswapV3PositionReader({ rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
-        fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds })
-      : new UniswapV4PositionReader({ rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
-        fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds });
-    const results = await Promise.allSettled(page.map(async (tokenId) => reader.read(tokenId)));
-    const items = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-    const failedPositionCount = results.length - items.length;
+      ? this.uniswapV3ReaderFactory.create(readerOptions)
+      : this.uniswapV4ReaderFactory.create(readerOptions);
+    const results: Array<PromiseSettledResult<Awaited<ReturnType<typeof reader.read>>>> = [];
+    const readConcurrency = 8;
+    for (let offset = 0; offset < candidates.length; offset += readConcurrency) {
+      const batch = candidates.slice(offset, offset + readConcurrency);
+      results.push(...await Promise.allSettled(batch.map(async (tokenId) => reader.read(tokenId))));
+    }
+    const readable = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    const failedPositionCount = results.length - readable.length;
+    const query = input.q?.trim().toLowerCase();
+    const matches = readable.filter((position) => {
+      if (query === undefined || query.length === 0) return true;
+      const pair = `${position.token0.symbol}/${position.token1.symbol}`;
+      const resources = position.version === 'v3' ? [position.poolAddress] : [position.poolId];
+      return [position.tokenId, position.token0.symbol, position.token1.symbol, position.token0.address,
+        position.token1.address, pair, `${position.token1.symbol}/${position.token0.symbol}`, ...resources]
+        .some((value) => value.toLowerCase().includes(query));
+    });
+    const items = matches.slice(0, input.limit);
     return {
       status: !caughtUp ? 'warming_up' : failedPositionCount > 0 ? 'partial' : items.length === 0 ? 'empty' : 'ok',
       discovery: { caughtUp, scannedThroughBlock, chainTipBlock }, items,
       failedPositionCount,
-      nextCursor: filtered.length > input.limit ? page.at(-1) ?? null : null,
+      nextCursor: matches.length > input.limit ? items.at(-1)?.tokenId ?? null : null,
       error: failedPositionCount > 0 ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Some positions could not be read' } : null,
     };
   }

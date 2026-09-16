@@ -5,6 +5,7 @@ import type { ChainScanCursorRepository } from '../../db/repositories/chain-scan
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { UniswapPoolRepository } from '../../db/repositories/uniswap-pool-repository.js';
+import type { UniswapPoolSwapSampleRepository } from '../../db/repositories/uniswap-pool-swap-sample-repository.js';
 import type { MetricPipeline } from '../metrics/metric-pipeline.js';
 import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
 import { resolveEvmRpcRequest } from './evm-rpc-config.js';
@@ -34,14 +35,20 @@ export class UniswapPoolCoordinator {
     private readonly cursors: ChainScanCursorRepository,
     private readonly pipeline: MetricPipeline,
     private readonly scheduler: PollingScheduler,
-    options: { fetch?: typeof globalThis.fetch; readerFactory?: UniswapPoolReaderFactory; now?: () => Date; onError?: (error: Error) => void } = {},
+    options: {
+      fetch?: typeof globalThis.fetch; readerFactory?: UniswapPoolReaderFactory; now?: () => Date;
+      onError?: (error: Error) => void; samples?: UniswapPoolSwapSampleRepository;
+    } = {},
   ) {
     this.readerFactory = options.readerFactory ?? { create: (readerOptions) => new UniswapPoolReader({
       ...readerOptions, ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     }) };
     this.now = options.now ?? (() => new Date());
     this.onError = options.onError ?? (() => undefined);
+    this.samples = options.samples;
   }
+
+  private readonly samples: UniswapPoolSwapSampleRepository | undefined;
 
   public reconcile(): void {
     const monitors = this.monitors.listEnabledUniswapPoolMonitors();
@@ -112,19 +119,29 @@ export class UniswapPoolCoordinator {
         observedAt: timestamp, receivedAt: timestamp, status: 'ok', labels,
       });
       for (const event of result.events) {
-        const amountUsd = this.usdValue(
-          event.amount0, event.amount1, row.token0Symbol, row.token1Symbol, result.token0Price, result.token1Price,
-        );
+        const amount0 = event.amount0 === null ? null : new Decimal(event.amount0).abs().toSignificantDigits(30).toString();
+        const amount1 = event.amount1 === null ? null : new Decimal(event.amount1).abs().toSignificantDigits(30).toString();
+        const amountUsd = event.eventType === 'swap'
+          ? this.swapUsdValue(amount0, amount1, row.token0Symbol, row.token1Symbol)
+          : this.usdValue(amount0, amount1, row.token0Symbol, row.token1Symbol, result.token0Price, result.token1Price);
+        const eventObservedAt = event.observedAt ?? timestamp;
+        if (event.eventType === 'swap' && amount0 !== null && amount1 !== null && monitor.volumeWindowSeconds.length > 0) {
+          this.samples?.save(monitor.monitorId, {
+            eventId: event.eventId, observedAt: eventObservedAt,
+            token0Volume: amount0, token1Volume: amount1, usdVolume: amountUsd,
+          });
+        }
         await this.pipeline.ingest({
-        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId,
-        name: event.eventType === 'collect' ? 'fee_collection' : event.eventType,
-        value: event.amount0 ?? event.amount1 ?? '1', unit: event.amount0 === null ? row.token1Symbol ?? 'token1' : row.token0Symbol ?? 'token0',
-        observedAt: timestamp, receivedAt: timestamp, status: 'ok', kind: 'event', eventId: event.eventId,
-        labels: { ...labels, eventType: event.eventType, amount0: event.amount0 ?? 'unavailable', amount1: event.amount1 ?? 'unavailable',
-          amountUsd: amountUsd ?? 'unavailable', valuationStatus: amountUsd === null ? 'unavailable' : 'ok',
-          transactionHash: event.transactionHash, logIndex: String(event.logIndex), blockNumber: event.blockNumber },
-      });
+          monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId,
+          name: event.eventType === 'collect' ? 'fee_collection' : event.eventType,
+          value: amount0 ?? amount1 ?? '1', unit: amount0 === null ? row.token1Symbol ?? 'token1' : row.token0Symbol ?? 'token0',
+          observedAt: eventObservedAt, receivedAt: timestamp, status: 'ok', kind: 'event', eventId: event.eventId,
+          labels: { ...labels, eventType: event.eventType, amount0: amount0 ?? 'unavailable', amount1: amount1 ?? 'unavailable',
+            amountUsd: amountUsd ?? 'unavailable', valuationStatus: amountUsd === null ? 'unavailable' : 'ok',
+            transactionHash: event.transactionHash, logIndex: String(event.logIndex), blockNumber: event.blockNumber },
+        });
       }
+      await this.emitWindowVolumes(monitor, labels, row.token0Symbol, row.token1Symbol, timestamp);
       this.cursors.save(monitor.rpcIntegrationId, `uniswap_${monitor.version}_pool`, monitor.chainId, stream, confirmed);
       await this.pipeline.ingest({
         monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: true,
@@ -163,5 +180,69 @@ export class UniswapPoolCoordinator {
       return new Decimal(amount0).plus(new Decimal(amount1).mul(price1)).toSignificantDigits(30).toString();
     }
     return null;
+  }
+
+  private swapUsdValue(
+    amount0: string | null,
+    amount1: string | null,
+    symbol0: string | null,
+    symbol1: string | null,
+  ): string | null {
+    if (amount0 === null || amount1 === null) return null;
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    if (symbol1 !== null && stable.has(symbol1.toUpperCase())) return new Decimal(amount1).toSignificantDigits(30).toString();
+    if (symbol0 !== null && stable.has(symbol0.toUpperCase())) return new Decimal(amount0).toSignificantDigits(30).toString();
+    return null;
+  }
+
+  private async emitWindowVolumes(
+    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    labels: Record<string, string>,
+    token0Symbol: string | null,
+    token1Symbol: string | null,
+    timestamp: string,
+  ): Promise<void> {
+    if (this.samples === undefined) return;
+    if (monitor.volumeWindowSeconds.length === 0) {
+      this.samples.clear(monitor.monitorId);
+      return;
+    }
+    const largestWindow = Math.max(...monitor.volumeWindowSeconds);
+    const cutoff = new Date(Date.parse(timestamp) - largestWindow * 2 * 1_000).toISOString();
+    const samples = this.samples.listSince(monitor.monitorId, cutoff);
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    const usdSupported = [token0Symbol, token1Symbol].some((symbol) => symbol !== null && stable.has(symbol.toUpperCase()));
+    const sum = (values: string[]) => values.reduce((total, value) => total.plus(value), new Decimal(0)).toSignificantDigits(30).toString();
+    for (const windowSeconds of monitor.volumeWindowSeconds) {
+      const end = Date.parse(timestamp);
+      const start = end - windowSeconds * 1_000;
+      const previousStart = start - windowSeconds * 1_000;
+      const current = samples.filter((sample) => {
+        const time = Date.parse(sample.observedAt);
+        return time > start && time <= end;
+      });
+      const previous = samples.filter((sample) => {
+        const time = Date.parse(sample.observedAt);
+        return time > previousStart && time <= start;
+      });
+      const windowLabels = { ...labels, windowSeconds: String(windowSeconds) };
+      const values: Array<[string, string, string, 'ok' | 'warming_up']> = [
+        ['volume_token0', sum(current.map((sample) => sample.token0Volume)), token0Symbol ?? 'token0', 'ok'],
+        ['volume_token1', sum(current.map((sample) => sample.token1Volume)), token1Symbol ?? 'token1', 'ok'],
+      ];
+      const currentUsdAvailable = usdSupported && current.every((sample) => sample.usdVolume !== null);
+      const previousUsdAvailable = usdSupported && previous.every((sample) => sample.usdVolume !== null);
+      const currentUsd = currentUsdAvailable ? sum(current.map((sample) => sample.usdVolume as string)) : null;
+      const previousUsd = previousUsdAvailable ? sum(previous.map((sample) => sample.usdVolume as string)) : null;
+      values.push(['volume_usd', currentUsd ?? 'unavailable', 'USD', currentUsd === null ? 'warming_up' : 'ok']);
+      const change = previousUsd === null || currentUsd === null || new Decimal(previousUsd).isZero()
+        ? null : new Decimal(currentUsd).div(previousUsd).minus(1).mul(100).toSignificantDigits(30).toString();
+      values.push(['volume_change_percent', change ?? 'unavailable', 'percent', change === null ? 'warming_up' : 'ok']);
+      for (const [name, value, unit, status] of values) await this.pipeline.ingest({
+        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId,
+        name, value, unit, observedAt: timestamp, receivedAt: timestamp, status, labels: windowLabels,
+      });
+    }
+    this.samples.prune(monitor.monitorId, cutoff);
   }
 }

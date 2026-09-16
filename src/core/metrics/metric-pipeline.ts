@@ -24,28 +24,40 @@ export interface MetricConsumer {
 }
 
 export interface MetricEventDedupeStore {
-  claim(eventId: string, monitorId: string, metricName: string, receivedAt: string): boolean;
+  reserve(eventId: string, monitorId: string, metricName: string, receivedAt: string): 'reserved' | 'processed' | 'processing';
+  commit(eventId: string, monitorId: string, metricName: string, processedAt: string): void;
+  release(eventId: string, monitorId: string, metricName: string): void;
   clearMonitor(monitorId: string): void;
 }
 
 class InMemoryMetricEventDedupeStore implements MetricEventDedupeStore {
-  private readonly eventIds = new Map<string, string>();
+  private readonly eventIds = new Map<string, { monitorId: string; status: 'processing' | 'processed' }>();
 
-  public claim(eventId: string, monitorId: string, metricName: string): boolean {
+  public reserve(eventId: string, monitorId: string, metricName: string): 'reserved' | 'processed' | 'processing' {
     const key = `${monitorId}:${metricName}:${eventId}`;
-    if (this.eventIds.has(key)) return false;
-    this.eventIds.set(key, monitorId);
-    return true;
+    const existing = this.eventIds.get(key);
+    if (existing !== undefined) return existing.status;
+    this.eventIds.set(key, { monitorId, status: 'processing' });
+    return 'reserved';
+  }
+
+  public commit(eventId: string, monitorId: string, metricName: string): void {
+    this.eventIds.set(`${monitorId}:${metricName}:${eventId}`, { monitorId, status: 'processed' });
+  }
+
+  public release(eventId: string, monitorId: string, metricName: string): void {
+    const key = `${monitorId}:${metricName}:${eventId}`;
+    if (this.eventIds.get(key)?.status === 'processing') this.eventIds.delete(key);
   }
 
   public clearMonitor(monitorId: string): void {
-    for (const [eventId, owner] of this.eventIds) if (owner === monitorId) this.eventIds.delete(eventId);
+    for (const [eventId, entry] of this.eventIds) if (entry.monitorId === monitorId) this.eventIds.delete(eventId);
   }
 }
 
 export interface MetricIngestionResult {
   accepted: boolean;
-  reason?: 'monitor_not_found' | 'monitor_disabled' | 'out_of_order' | 'duplicate_event';
+  reason?: 'monitor_not_found' | 'monitor_disabled' | 'out_of_order' | 'duplicate_event' | 'event_processing';
   forwardedToConsumers: boolean;
   consumerErrors: string[];
 }
@@ -131,12 +143,21 @@ export class MetricPipeline {
     if (!monitor.enabled) {
       return { accepted: false, reason: 'monitor_disabled', forwardedToConsumers: false, consumerErrors: [] };
     }
-    if (metricKind(metric) === 'event' && !this.eventDedupe.claim(
-      metric.eventId ?? '', metric.monitorId, metric.name, metric.receivedAt,
-    )) {
-      return { accepted: false, reason: 'duplicate_event', forwardedToConsumers: false, consumerErrors: [] };
+    const event = metricKind(metric) === 'event';
+    if (event) {
+      const reservation = this.eventDedupe.reserve(
+        metric.eventId ?? '', metric.monitorId, metric.name, metric.receivedAt,
+      );
+      if (reservation !== 'reserved') {
+        return {
+          accepted: false,
+          reason: reservation === 'processed' ? 'duplicate_event' : 'event_processing',
+          forwardedToConsumers: false,
+          consumerErrors: [],
+        };
+      }
     }
-    if (!this.latestMetrics.put(metric)) {
+    if (!this.latestMetrics.put(metric) && !event) {
       return { accepted: false, reason: 'out_of_order', forwardedToConsumers: false, consumerErrors: [] };
     }
 
@@ -148,6 +169,13 @@ export class MetricPipeline {
     const consumerErrors = consumerResults
       .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
       .map((result) => errorMessage(result.reason));
+    if (event) {
+      if (consumerErrors.length === 0) {
+        this.eventDedupe.commit(metric.eventId ?? '', metric.monitorId, metric.name, metric.receivedAt);
+      } else {
+        this.eventDedupe.release(metric.eventId ?? '', metric.monitorId, metric.name);
+      }
+    }
     return { accepted: true, forwardedToConsumers: consumers.length > 0, consumerErrors };
   }
 }

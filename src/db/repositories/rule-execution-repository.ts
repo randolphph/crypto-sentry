@@ -8,7 +8,7 @@ import type {
 import type { RuleOperator, RuleRuntimeState, RuleStateName } from '../../core/rules/rule-state-machine.js';
 import { createId } from '../../core/ids.js';
 import type { AppDatabase } from '../client.js';
-import { alerts, monitors, ruleConditions, ruleStates, rules } from '../schema/index.js';
+import { alerts, monitors, ruleConditions, ruleEventCommits, ruleStates, rules } from '../schema/index.js';
 
 function alertTitle(commit: RuleEvaluationCommit): string {
   const prefix = commit.action === 'repeat' ? 'Reminder' : 'Alert';
@@ -90,6 +90,15 @@ export class RuleExecutionRepository implements RuleExecutionStore {
 
   public commitEvaluation(commit: RuleEvaluationCommit): void {
     this.database.transaction((transaction) => {
+      if (commit.metric.kind === 'event' && commit.metric.eventId !== undefined) {
+        const claimed = transaction.insert(ruleEventCommits).values({
+          ruleId: commit.rule.id, eventId: commit.metric.eventId,
+          metricName: commit.metric.name, committedAt: commit.evaluatedAt,
+        }).onConflictDoNothing({
+          target: [ruleEventCommits.ruleId, ruleEventCommits.eventId, ruleEventCommits.metricName],
+        }).run();
+        if (claimed.changes === 0) return;
+      }
       transaction
         .insert(ruleStates)
         .values({

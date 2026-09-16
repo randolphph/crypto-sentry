@@ -37,6 +37,7 @@
 - [x] 24h base/quote volume、永续 funding rate/next funding time WebSocket 指标
 - [x] Open Interest 合并轮询、窗口变化、SQLite 重启恢复与错误状态
 - [x] gauge/event Metric、持久化 eventId 去重与事件规则一次性消费
+- [x] Event processing/processed inbox、失败重试、超时回收和 Rule/Alert 事务幂等
 - [x] sampling presets、Market ruleMetrics Catalog 与 Rule 能力校验
 
 ### 3. 链上协议
@@ -50,6 +51,7 @@
 - [x] 数据源目录、就绪状态、Alchemy/Infura/QuickNode 标识和 Binance 默认配置 API
 - [x] 单个 EVM RPC Integration 多 chainId 与 fixed/URL/Header/Query 路由
 - [x] 逐链真实能力测试、持久化能力状态和细粒度 Readiness
+- [x] Aave Account/Reserve/Event Logs 与 Uniswap V3/V4 完全隔离的分项探测
 - [x] 显式 Monitor 类型、新 Aave/Uniswap 配置与 legacy 类型兼容
 - [x] AND/OR Rule Group、条件表迁移、三态执行与状态持久化
 - [x] RPC PATCH 路由/Header 替换语义与密文掩码保留
@@ -59,6 +61,7 @@
 - [x] Ethereum Aave V3 Reserve 目录与 Account/Reserve/EventLogs 分项能力测试
 - [x] Aave Account 无借款语义、抵押/债务窗口变化与 SQLite 样本恢复
 - [x] Aave Account/Pool 五类事件、确认区块、分片扫描、重扫窗口、游标与 eventId 去重
+- [x] Aave confirmed tip 进度语义与逐事件实际区块时间戳
 - [x] Aave Pool Monitor、资源校验、结构化 Snapshot 与 Account/Pool 规则指标目录
 - [ ] 使用部署用 RPC 与目标钱包完成服务器环境验收
 - [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API
@@ -66,9 +69,11 @@
 - [x] V4 钱包 Transfer 日志分块索引、SQLite 检查点与 ownerOf 对账
 - [x] Ethereum/Robinhood Uniswap V3/V4 官方部署、逐链能力测试和 Readiness
 - [x] V3/V4 Pool 后台分片索引、重扫游标、token metadata 缓存、搜索与分页 API
+- [x] Pool `eth_getLogs` 自适应二分、成功子区间即时游标与持久错误状态
 - [x] Position token 数量、边界距离、V3 fees owed、稳定币链上估值与跨链 tokenId 隔离
 - [x] Uniswap Pool Monitor 基础 gauge、事件去重、统一 Snapshot 和资源存在性校验
-- [ ] Uniswap Pool 窗口 volume/change 指标与持久样本
+- [x] Uniswap Pool 窗口 token/USD volume、相邻窗口 change 与持久样本
+- [x] Position tokenId 创建/PATCH 实读校验与 Wallet 多字段资源搜索
 - [ ] V4 可可靠归属的单池 TVL/完整手续费，以及非稳定币 Binance 估值回退
 - [ ] Uniswap V3 其他网络与 PancakeSwap V3 LP 适配器
 - [ ] LP 当前代币数量、价格方向和完整未领取手续费计算

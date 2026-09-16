@@ -77,9 +77,13 @@ export class AavePoolSnapshotService {
       chainId: 1,
       reserveAssetAddresses: config.reserveAssetAddresses,
       discovery: {
-        caughtUp: progress?.status === 'ok' && progress.labels?.scannedThroughBlock === progress.labels?.chainTipBlock,
+        caughtUp: progress?.status === 'ok' && progress.labels?.scannedThroughBlock !== undefined &&
+          progress.labels.confirmedTipBlock !== undefined &&
+          BigInt(progress.labels.scannedThroughBlock) >= BigInt(progress.labels.confirmedTipBlock),
         scannedThroughBlock: progress?.labels?.scannedThroughBlock ?? null,
+        confirmedTipBlock: progress?.labels?.confirmedTipBlock ?? null,
         chainTipBlock: progress?.labels?.chainTipBlock ?? null,
+        confirmationBlocks: progress?.labels?.confirmationBlocks ?? null,
       },
       recentEvents,
       error: failed ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'The Aave event scanner could not reach the configured RPC' } : null,

@@ -107,6 +107,13 @@ describe('Rule Group API and execution', () => {
     expect(missingWindow.statusCode).toBe(400);
     expect(missingWindow.json()).toMatchObject({ error: { code: 'RULE_CONDITION_INVALID' } });
 
+    const conflictingWindow = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
+      monitorId, name: 'Conflicting window', metric: 'price_change_percent', labels: { windowSeconds: '900' },
+      windowSeconds: 300, operator: 'gte', threshold: '3', severity: 'warning',
+    } });
+    expect(conflictingWindow.statusCode).toBe(400);
+    expect(conflictingWindow.json()).toMatchObject({ error: { code: 'RULE_LABEL_INVALID' } });
+
     const badLabel = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
       monitorId, name: 'Bad label', metric: 'price', labels: { chainId: '1' }, operator: 'gte', threshold: '1', severity: 'warning',
     } });

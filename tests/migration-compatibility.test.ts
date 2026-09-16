@@ -62,6 +62,9 @@ describe('compatible database migrations', () => {
       .toEqual({ name: 'uniswap_pools' });
     expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='token_metadata_cache'").get())
       .toEqual({ name: 'token_metadata_cache' });
+    for (const name of ['rule_event_commits', 'uniswap_indexer_states', 'uniswap_pool_swap_samples']) {
+      expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name)).toEqual({ name });
+    }
     expect(sqlite.prepare("PRAGMA table_info('integration_network_health')").all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'aave_account_read_status' }),
       expect.objectContaining({ name: 'aave_reserve_catalog_status' }),
@@ -92,8 +95,12 @@ describe('compatible database migrations', () => {
 
     runMigrations(sqlite);
 
-    expect(sqlite.prepare(`SELECT event_id AS eventId, monitor_id AS monitorId, metric_name AS metricName
-      FROM processed_metric_events`).all()).toEqual([{ eventId: '1:0xabc:7', monitorId: 'mon_event', metricName: '' }]);
+    expect(sqlite.prepare(`SELECT event_id AS eventId, monitor_id AS monitorId, metric_name AS metricName,
+      status, processing_started_at AS processingStartedAt, processed_at AS processedAt, attempt_count AS attemptCount
+      FROM processed_metric_events`).all()).toEqual([{
+      eventId: '1:0xabc:7', monitorId: 'mon_event', metricName: '', status: 'processed',
+      processingStartedAt: null, processedAt: '2026-09-15T00:00:00.000Z', attemptCount: 1,
+    }]);
     sqlite.close();
   });
 });

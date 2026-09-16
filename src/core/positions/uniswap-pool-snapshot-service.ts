@@ -36,6 +36,24 @@ export class UniswapPoolSnapshotService {
     }));
     const stale = dataAgeSeconds !== null && dataAgeSeconds > monitor.maxStaleSeconds;
     const tvlUsd = stringValue(metrics, 'tvl_usd');
+    const windowSeconds = [...new Set(metrics.flatMap((metric) => (
+      metric.name.startsWith('volume_') && metric.labels?.windowSeconds !== undefined
+        ? [metric.labels.windowSeconds] : []
+    )))].sort((left, right) => Number(left) - Number(right));
+    const volumes = windowSeconds.map((window) => {
+      const find = (name: string) => metrics.find((metric) => metric.name === name && metric.labels?.windowSeconds === window);
+      const value = (name: string) => {
+        const metric = find(name);
+        return metric?.status === 'ok' && typeof metric.value === 'string' ? metric.value : null;
+      };
+      return {
+        windowSeconds: window,
+        volumeToken0: value('volume_token0'), volumeToken1: value('volume_token1'),
+        volumeUsd: value('volume_usd'), volumeChangePercent: value('volume_change_percent'),
+        status: [find('volume_token0'), find('volume_token1'), find('volume_usd'), find('volume_change_percent')]
+          .some((metric) => metric?.status !== 'ok') ? 'warming_up' : 'ok',
+      };
+    });
     return {
       status: sync === undefined ? 'warming_up' as const : sync.status === 'error' ? 'error' as const
         : stale ? 'stale' as const : tvlUsd === null ? 'partial' as const : 'ok' as const,
@@ -47,10 +65,12 @@ export class UniswapPoolSnapshotService {
         currentTick: stringValue(metrics, 'current_tick'), activeLiquidity: stringValue(metrics, 'active_liquidity'),
         tvlToken0: stringValue(metrics, 'tvl_token0'), tvlToken1: stringValue(metrics, 'tvl_token1'), tvlUsd,
         lpFee: stringValue(metrics, 'lp_fee'), protocolFee: stringValue(metrics, 'protocol_fee'),
+        feeStatus: config.version === 'v3' ? 'protocol_parameters_only' : 'unavailable',
         valuationStatus: tvlUsd === null ? 'unavailable' : 'ok',
         valuationSource: tvlUsd === null ? null : 'onchain_stablecoin_pool',
         valuationObservedAt: tvlUsd === null ? null : observedAt,
       },
+      volumes,
       discovery: {
         caughtUp: sync?.status === 'ok' && sync.labels?.scannedThroughBlock === sync.labels?.confirmedTipBlock,
         scannedThroughBlock: sync?.labels?.scannedThroughBlock ?? null, chainTipBlock: sync?.labels?.chainTipBlock ?? null,

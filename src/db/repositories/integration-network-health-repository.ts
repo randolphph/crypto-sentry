@@ -1,4 +1,4 @@
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 
 import type { AppDatabase } from '../client.js';
 import { integrationNetworkHealth } from '../schema/index.js';
@@ -26,6 +26,13 @@ export class IntegrationNetworkHealthRepository {
   public list(): IntegrationNetworkHealthRecord[] {
     return this.database.select().from(integrationNetworkHealth)
       .orderBy(asc(integrationNetworkHealth.chainId), asc(integrationNetworkHealth.integrationId)).all() as IntegrationNetworkHealthRecord[];
+  }
+
+  public get(integrationId: string, chainId: number): IntegrationNetworkHealthRecord | undefined {
+    return this.database.select().from(integrationNetworkHealth).where(and(
+      eq(integrationNetworkHealth.integrationId, integrationId),
+      eq(integrationNetworkHealth.chainId, chainId),
+    )).get() as IntegrationNetworkHealthRecord | undefined;
   }
 
   public replace(record: IntegrationNetworkHealthRecord): void {

@@ -57,7 +57,7 @@ function describeError(rule: ExecutableRule, error: unknown): Error {
 
 function labelsMatch(condition: ExecutableCondition, metric: Metric): boolean {
   return Object.entries(condition.labels).every(([name, value]) => metric.labels?.[name] === value) &&
-    (condition.metric !== 'price_change_percent' || String(condition.windowSeconds) === metric.labels?.windowSeconds);
+    (condition.windowSeconds === null || String(condition.windowSeconds) === metric.labels?.windowSeconds);
 }
 
 function metricIsFresh(metric: Metric, evaluatedAt: Date, maxStaleSeconds: number): boolean {

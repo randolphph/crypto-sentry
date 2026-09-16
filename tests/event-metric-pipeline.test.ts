@@ -12,7 +12,13 @@ import type {
 } from '../src/core/rules/rule-execution-service.js';
 import type { RuleRuntimeState } from '../src/core/rules/rule-state-machine.js';
 import { createDatabase } from '../src/db/client.js';
+import { AlertRepository } from '../src/db/repositories/alert-repository.js';
+import { IntegrationRepository } from '../src/db/repositories/integration-repository.js';
 import { MetricEventRepository } from '../src/db/repositories/metric-event-repository.js';
+import { MonitorRepository } from '../src/db/repositories/monitor-repository.js';
+import { RuleExecutionRepository } from '../src/db/repositories/rule-execution-repository.js';
+import { RuleRepository } from '../src/db/repositories/rule-repository.js';
+import { EncryptionService } from '../src/security/encryption/encryption-service.js';
 
 class MonitorStore {
   public findRuntimeMonitor(id: string): RuntimeMonitor | undefined {
@@ -100,8 +106,90 @@ describe('event Metric semantics', () => {
       'mon_event', 'Event monitor', 'market', 1, 20, 90, '{}', 'ok',
       '2026-09-16T00:00:00.000Z', '2026-09-16T00:00:00.000Z',
     );
-    expect(new MetricEventRepository(database.db).claim('1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:00.000Z')).toBe(true);
-    expect(new MetricEventRepository(database.db).claim('1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:01.000Z')).toBe(false);
+    const first = new MetricEventRepository(database.db);
+    expect(first.reserve('1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:00.000Z')).toBe('reserved');
+    first.commit('1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:00.000Z');
+    expect(new MetricEventRepository(database.db).reserve(
+      '1:0xabc:7', 'mon_event', 'supply', '2026-09-16T00:00:01.000Z',
+    )).toBe('processed');
+    database.close();
+  });
+
+  it('recovers a persisted processing reservation after its lease expires', () => {
+    const database = createDatabase(':memory:');
+    database.sqlite.prepare(`INSERT INTO monitors (
+      id,name,type,enabled,interval_seconds,max_stale_seconds,config_json,last_status,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      'mon_event', 'Event monitor', 'market', 1, 20, 90, '{}', 'ok',
+      '2026-09-16T00:00:00.000Z', '2026-09-16T00:00:00.000Z',
+    );
+    let current = new Date('2026-09-16T00:00:00.000Z');
+    const repository = new MetricEventRepository(database.db, () => current, 1_000);
+    expect(repository.reserve('1:0xlease:1', 'mon_event', 'supply', current.toISOString())).toBe('reserved');
+    current = new Date('2026-09-16T00:00:00.500Z');
+    expect(repository.reserve('1:0xlease:1', 'mon_event', 'supply', current.toISOString())).toBe('processing');
+    current = new Date('2026-09-16T00:00:01.001Z');
+    expect(repository.reserve('1:0xlease:1', 'mon_event', 'supply', current.toISOString())).toBe('reserved');
+    database.close();
+  });
+
+  it('retries the same event after a consumer failure and deduplicates it only after success', async () => {
+    const consume = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary consumer failure'))
+      .mockResolvedValue(undefined);
+    const pipeline = new MetricPipeline(new MonitorStore(), new LatestMetricStore(), [{ consume }]);
+
+    const first = await pipeline.ingest(metric('supply', '150', 1, '1:0xretry:1'));
+    const second = await pipeline.ingest(metric('supply', '150', 2, '1:0xretry:1'));
+    const third = await pipeline.ingest(metric('supply', '150', 3, '1:0xretry:1'));
+
+    expect(first.consumerErrors).toEqual(['temporary consumer failure']);
+    expect(second).toMatchObject({ accepted: true, consumerErrors: [] });
+    expect(third).toMatchObject({ accepted: false, reason: 'duplicate_event' });
+    expect(consume).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not duplicate an alert when a later consumer fails after the rule transaction commits', async () => {
+    const database = createDatabase(':memory:');
+    const integrations = new IntegrationRepository(database.db, new EncryptionService(Buffer.alloc(32, 9)));
+    const integration = integrations.create({
+      name: 'Ethereum', type: 'evm_rpc', provider: 'custom', enabled: true,
+      config: { chainId: 1, rpcUrl: 'https://rpc.invalid' },
+    });
+    const monitors = new MonitorRepository(database.db, integrations);
+    const monitor = monitors.create({
+      name: 'Aave events', type: 'aave_pool', enabled: true, intervalSeconds: 20, maxStaleSeconds: 90,
+      config: { rpcIntegrationId: integration.id, chainId: 1, reserveAssetAddresses: [] },
+    });
+    new RuleRepository(database.db).create({
+      monitorId: monitor.id, name: 'Large supply', combinator: 'and',
+      conditions: [{
+        metric: 'aave_event_amount_token', labels: { eventType: 'supply' }, operator: 'gte',
+        threshold: '100', hysteresis: '0',
+      }],
+      durationSeconds: 0, cooldownSeconds: 0, severity: 'warning', notificationIntegrationIds: [], enabled: true,
+    });
+    const downstream = { consume: vi.fn().mockRejectedValueOnce(new Error('after-rule failure')).mockResolvedValue(undefined) };
+    const pipeline = new MetricPipeline(
+      monitors,
+      new LatestMetricStore(),
+      [new RuleExecutionService(new RuleExecutionRepository(database.db)), downstream],
+      new MetricEventRepository(database.db),
+    );
+    const timestamp = '2026-09-16T00:00:00.000Z';
+    const event: Metric = {
+      monitorId: monitor.id, source: 'aave_v3', target: 'USDC', name: 'aave_event_amount_token',
+      value: '150', unit: 'USDC', observedAt: timestamp, receivedAt: timestamp, status: 'ok',
+      kind: 'event', eventId: '1:0xcommit:1', labels: { eventType: 'supply' },
+    };
+
+    expect((await pipeline.ingest(event)).consumerErrors).toEqual(['after-rule failure']);
+    expect(new AlertRepository(database.db).list({ limit: 50, offset: 0 }).total).toBe(1);
+    expect((await pipeline.ingest(event)).consumerErrors).toEqual([]);
+    expect(new AlertRepository(database.db).list({ limit: 50, offset: 0 }).total).toBe(1);
+    expect(await pipeline.ingest(event)).toMatchObject({ accepted: false, reason: 'duplicate_event' });
+
+    await pipeline.close();
     database.close();
   });
 });

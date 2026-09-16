@@ -53,7 +53,9 @@ import { UniswapPoolIndexCoordinator } from './core/integrations/uniswap-pool-in
 import type { UniswapPoolCatalogReaderFactory } from './core/integrations/uniswap-pool-index-coordinator.js';
 import { UniswapPoolCoordinator } from './core/integrations/uniswap-pool-coordinator.js';
 import type { UniswapPoolReaderFactory } from './core/integrations/uniswap-pool-coordinator.js';
+import { UniswapPoolSwapSampleRepository } from './db/repositories/uniswap-pool-swap-sample-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
+import { MonitorService } from './core/monitors/monitor-service.js';
 
 export interface CreateAppOptions {
   config?: AppConfig;
@@ -96,7 +98,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             type: 'string',
             enum: [
               'RPC_ROUTING_CONFIG_INVALID', 'RPC_CHAIN_UNSUPPORTED', 'RPC_CHAIN_ID_MISMATCH',
-              'RPC_PARTIAL_FAILURE', 'MONITOR_TYPE_NOT_READY', 'PROTOCOL_NOT_READY',
+              'RPC_CONNECTION_FAILED', 'RPC_PARTIAL_FAILURE', 'MONITOR_TYPE_NOT_READY', 'PROTOCOL_NOT_READY',
               'RULE_CONDITION_INVALID', 'METRIC_NOT_AVAILABLE', 'RESOURCE_CATALOG_NOT_READY',
               'RESOURCE_NOT_FOUND', 'POSITION_NOT_FOUND', 'POOL_NOT_FOUND', 'INDEXER_WARMING_UP',
               'INDEXER_PARTIAL_FAILURE', 'VALUATION_UNAVAILABLE', 'RULE_METRIC_UNSUPPORTED',
@@ -143,8 +145,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     uniswapPools,
     chainScanCursors,
     uniswapV4Ownership,
+    options.uniswapV3PositionReaderFactory,
+    options.uniswapV4PositionReaderFactory,
   );
   const monitors = new MonitorRepository(database.db, integrations);
+  const monitorService = new MonitorService(monitors, integrations, integrationNetworkHealth, options.fetch, {
+    ...(options.uniswapV3PositionReaderFactory === undefined ? {} : { v3Factory: options.uniswapV3PositionReaderFactory }),
+    ...(options.uniswapV4PositionReaderFactory === undefined ? {} : { v4Factory: options.uniswapV4PositionReaderFactory }),
+  });
   const rules = new RuleRepository(database.db);
   const ruleExecutionStore = new RuleExecutionRepository(database.db);
   const ruleExecution = new RuleExecutionService(ruleExecutionStore);
@@ -221,6 +229,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     {
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       ...(options.uniswapPoolReaderFactory === undefined ? {} : { readerFactory: options.uniswapPoolReaderFactory }),
+      samples: new UniswapPoolSwapSampleRepository(database.db),
       onError: (error) => app.log.warn({ err: error }, 'Uniswap pool monitor error'),
     },
   );
@@ -262,6 +271,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (event.entity === 'monitor' || event.entity === 'integration' || event.entity === 'rule') {
       marketDataCoordinator?.reconcile();
     }
+    if (event.entity === 'rule') {
+      aavePositionCoordinator.reconcile();
+      uniswapPoolCoordinator.reconcile();
+    }
     if (event.entity === 'monitor' || event.entity === 'integration') {
       aavePositionCoordinator.reconcile();
       aaveEventCoordinator.reconcile();
@@ -289,7 +302,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
 
   registerIntegrationRoutes(app, integrations, integrationOperations, events);
-  registerMonitorRoutes(app, monitors, events, latestMetrics, rules);
+  registerMonitorRoutes(app, monitors, events, latestMetrics, rules, monitorService);
   registerRuleRoutes(app, rules, events);
   registerAlertRoutes(app, alerts);
   registerStatusRoutes(app, status);

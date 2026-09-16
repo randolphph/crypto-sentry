@@ -63,6 +63,7 @@ function addressArgument(args: Record<string, unknown>, name: string): Address |
 
 export class AaveV3EventReader {
   private readonly publicClient: PublicClient;
+  private readonly blockTimestampCache = new Map<bigint, string>();
 
   public constructor(private readonly options: AaveV3EventReaderOptions) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
@@ -77,11 +78,18 @@ export class AaveV3EventReader {
     const market = supportedAaveV3Markets.get(this.options.expectedChainId);
     if (market === undefined || market.chainId !== 1) throw new Error('Aave V3 events are only available on Ethereum');
     signal?.throwIfAborted();
-    const [logs, block, baseUnit] = await Promise.all([
+    const [logs, baseUnit] = await Promise.all([
       this.publicClient.getLogs({ address: market.poolAddress, events: eventAbi, fromBlock, toBlock }),
-      this.publicClient.getBlock({ blockNumber: toBlock }),
       this.publicClient.readContract({ address: market.oracleAddress, abi: oracleAbi, functionName: 'BASE_CURRENCY_UNIT', blockNumber: toBlock }),
     ]);
+    const blockNumbers = [...new Set(logs.flatMap((log) => log.blockNumber === null ? [] : [log.blockNumber]))];
+    for (let offset = 0; offset < blockNumbers.length; offset += 8) {
+      await Promise.all(blockNumbers.slice(offset, offset + 8).map(async (blockNumber) => {
+        if (this.blockTimestampCache.has(blockNumber)) return;
+        const block = await this.publicClient.getBlock({ blockNumber });
+        this.blockTimestampCache.set(blockNumber, new Date(Number(block.timestamp) * 1_000).toISOString());
+      }));
+    }
     const assets = new Map(market.assets.map((asset) => [asset.underlyingAddress.toLowerCase(), asset]));
     const eventAssets = new Set<Address>();
     for (const log of logs) {
@@ -102,9 +110,8 @@ export class AaveV3EventReader {
       }
     }));
     const prices = new Map(priceEntries);
-    const observedAt = new Date(Number(block.timestamp) * 1_000).toISOString();
     return logs.flatMap((log): AaveV3ChainEvent[] => {
-      if (log.transactionHash === null || log.logIndex === null || log.eventName === undefined) return [];
+      if (log.transactionHash === null || log.logIndex === null || log.eventName === undefined || log.blockNumber === null) return [];
       const args = log.args as Record<string, unknown>;
       const eventType = log.eventName === 'LiquidationCall' ? 'liquidation' : log.eventName.toLowerCase() as AaveEventType;
       const reserve = addressArgument(args, eventType === 'liquidation' ? 'debtAsset' : 'reserve');
@@ -132,7 +139,7 @@ export class AaveV3EventReader {
         blockNumber: String(log.blockNumber),
         transactionHash: log.transactionHash,
         logIndex: log.logIndex,
-        observedAt,
+        observedAt: this.blockTimestampCache.get(log.blockNumber) as string,
         reserveAssetAddress: reserve,
         symbol: asset.symbol,
         tokenAmount: formatted,

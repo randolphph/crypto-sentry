@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet 和 Pool 基础监控及异步 Pool 目录。Telegram 尚未接入；Uniswap 窗口成交量、V4 完整手续费和非稳定币 USD 回退仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、Pool、异步 Pool 目录和持久化窗口成交量。Telegram 尚未接入；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
 
@@ -115,7 +115,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 行情处理层每 5 秒为每个启用市场写入一个 SQLite 价格采样，并滚动清理 30 分钟以前的数据。服务启动时先恢复本地窗口；窗口不足则使用 Binance 1 分钟 K 线补齐，现货读取 `/api/v3/klines`，永续标记价格读取 `/fapi/v1/markPriceKlines`。预热未完成时，`price_change_percent` 为 `warming_up`，不会进入规则引擎。
 
-每个市场目前输出三个 Metric：
+每个市场的基础 Metric 包括：
 
 - `price`：WebSocket 最新成交价或标记价格
 - `price_change_percent`：按规则的 `windowSeconds` 独立计算；默认同时提供 5 分钟窗口
@@ -129,7 +129,9 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 Binance market Monitor 还输出 24 小时 base/quote volume；永续合约输出 funding rate、next funding time、open interest 和窗口 OI 变化率。价格、volume、funding 优先复用共享 WebSocket，OI 按 Integration + symbol 合并 REST 轮询并遵循 Monitor interval。价格和 OI 样本持久化到 SQLite，重启后可继续窗口计算；缺失值使用 warming/error 状态和 `unavailable`，不会伪装为数值 0。Catalog 的 `samplingPresets` 与 `ruleMetrics` 是 Dashboard 渲染规则表单的唯一能力来源。
 
-Metric 支持 gauge/event 两种语义。链上 event 必须带 `chainId:txHash:logIndex` 形式的稳定 eventId，后端持久化去重；event 不会因后续 gauge 更新或 cooldown 到期而被重复消费。
+Metric 支持 gauge/event 两种语义。链上 event 必须带 `chainId:txHash:logIndex` 形式的稳定 eventId。Event 先以 processing 状态持久占位，只有全部 consumer 成功后才提交 processed；失败可重试，进程异常遗留的占位会超时回收。规则状态、Alert 和该规则的 Event 幂等记录在同一事务提交，因此后续 consumer 失败后的重试不会重复创建 Alert。event 不会因后续 gauge 更新或 cooldown 到期而被重复消费。
+
+所有窗口条件统一使用 `condition.windowSeconds` 匹配 Metric 的 `labels.windowSeconds`，不再按指标名称设特例；规则 labels 若也填写 windowSeconds，必须与 condition 字段一致。
 
 ## Aave V3 地址监控
 
@@ -167,7 +169,7 @@ GET /api/v1/monitors/:id/positions
 
 新 Dashboard 使用 `aave_account` 并显式指定 `rpcIntegrationId` 与 `chainId: 1`。Account 还提供 `health_factor_infinite`、抵押/债务窗口变化指标和 supply/withdraw/borrow/repay/liquidation 事件。窗口样本持久化到 SQLite，重启后继续计算；无借款不会把 Aave 的最大整数哨兵作为可执行健康因子。
 
-`aave_pool` 使用同一个 Ethereum RPC，可选 `reserveAssetAddresses`；空数组监控全部官方 Reserve。事件扫描按 Integration 合并，采用确认区块、RPC 范围分片、持久游标和重扫窗口，eventId 使用 `chainId:txHash:logIndex` 并持久去重。每个事件保留 token 原始精度格式化数量；Aave Oracle 失败时 USD 为 `null`、valuationStatus 为 unavailable，不返回 0。统一快照通过 `GET /api/v1/monitors/:id/snapshot` 返回最近事件和扫描进度。
+`aave_pool` 使用同一个 Ethereum RPC，可选 `reserveAssetAddresses`；空数组监控全部官方 Reserve。事件扫描按 Integration 合并，采用确认区块、RPC 范围分片、持久游标和重扫窗口，eventId 使用 `chainId:txHash:logIndex` 并持久去重。每个事件保留 token 原始精度格式化数量；Aave Oracle 失败时 USD 为 `null`、valuationStatus 为 unavailable，不返回 0。统一快照通过 `GET /api/v1/monitors/:id/snapshot` 返回最近事件和扫描进度，其中 caughtUp 比较 `scannedThroughBlock >= confirmedTipBlock`；`chainTipBlock` 是未扣确认数的链头。事件 observedAt 使用各自 blockNumber 的时间戳，并缓存同区块查询。
 
 真实 RPC 冒烟测试默认不会加入普通测试套件。部署环境配置好测试参数后可显式运行：
 
@@ -193,11 +195,11 @@ Content-Type: application/json
 
 ## Ethereum / Robinhood Chain Uniswap V3/V4 LP 监控
 
-支持 Ethereum（Chain ID `1`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。Pool 目录由后台按确认区块分片索引并持久化游标；资源 API 返回 caughtUp、scannedThroughBlock 和 chainTipBlock，首次请求不会同步扫描 Ethereum 全历史。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
+支持 Ethereum（Chain ID `1`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。Pool 目录由后台按确认区块分片索引并持久化游标；Provider 拒绝大范围 `eth_getLogs` 时会自动二分，并在每个成功子区间立即推进游标。资源 API 返回 caughtUp、scannedThroughBlock、chainTipBlock、lastAttemptAt 和 lastError，首次请求不会同步扫描 Ethereum 全历史。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
 
 Position Snapshot 的分组键为 `chainId + version + tokenId`。后端计算边界距离、token0/token1 数量、V3 已记账手续费和关闭状态；Wallet 汇总 position/in-range/out-of-range/failed 数量。包含可信稳定币的池可用链上价格计算 USD，否则 `positionValueUsd`/`tvlUsd` 为 `null` 且 valuationStatus 为 unavailable，绝不显示成 0。
 
-`uniswap_pool` 必须从 Pool 目录选择 V3 `poolAddress` 或 V4 `poolId`。Pool Monitor 输出 tick、双向价格、活跃流动性、V3 token TVL、可靠时的 USD TVL，以及 swap/mint/burn 事件；V3 另提供 fee_collection。eventId 按 `chainId:txHash:logIndex` 去重。V4 无法按单池可靠归属的 TVL 和手续费字段保持 `null`。
+`uniswap_pool` 必须从 Pool 目录选择 V3 `poolAddress` 或 V4 `poolId`。Pool Monitor 输出 tick、双向价格、活跃流动性、V3 token TVL、可靠时的 USD TVL，以及 swap/mint/burn 事件；V3 另提供 fee_collection。启用对应窗口 Rule 后，Swap 样本按 eventId 去重并持久化，输出 `volume_token0`、`volume_token1`、可靠时的 `volume_usd`，以及当前窗口相对前一等长窗口的 `volume_change_percent`。不同窗口通过 labels.windowSeconds 与 Snapshot 的 volumes 数组隔离。eventId 按 `chainId:txHash:logIndex` 去重。V4 无法按单池可靠归属的 TVL 和手续费字段保持 `null`。
 
 先创建 RPC 集成：
 
@@ -262,7 +264,9 @@ GET /api/v1/monitors/:id/uniswap-positions
 
 V3 使用 PositionManager 的 `balanceOf` 与 `tokenOfOwnerByIndex` 自动枚举。V4 PositionManager 不支持 Enumerable，因此后端从官方部署块开始按钱包过滤 `Transfer` 日志，分块同步并把每个成功区块范围的检查点和当前 token 所有权写入 SQLite；后续轮询只扫描增量区块，再用 `ownerOf` 对账。`discovery.caughtUp` 为 `false` 时状态保持 `warming_up`，并返回 `scannedThroughBlock` 和 `chainTipBlock` 供 Dashboard 展示同步进度。RPC 报错不会推进检查点。
 
-旧的单 `tokenId` 配置仍可用于 V3/V4，并继续通过 `GET /api/v1/monitors/:id/uniswap-position` 读取；钱包配置必须使用集合接口。底层指标可从 `GET /api/v1/monitors/:id/metrics` 获取。V4 当前不返回待领取手续费，避免把未完整计算的 fee growth 伪装成准确数值。
+新 `uniswap_position` 创建时，以及修改 RPC/chain/version/tokenId 时，会先要求对应能力测试 ready，再实际读取并验证 tokenId；不存在返回 `POSITION_NOT_FOUND`，RPC 临时故障返回 `RPC_CONNECTION_FAILED`，验证失败不写配置。钱包发现接口的 `q` 支持 tokenId、Pool 标识、token symbol/address 和正反向币对。
+
+旧的单 `tokenId` 配置仍可用于 V3/V4，并继续通过 `GET /api/v1/monitors/:id/uniswap-position` 读取；钱包配置必须使用集合接口。底层指标可从 `GET /api/v1/monitors/:id/metrics` 获取。V3 `tokensOwed0/1` 仅是 PositionManager 已记账待领取金额，不代表完整 fee-growth 模拟；V4 当前不返回待领取手续费，避免伪装成准确数值。
 
 有实际 LP tokenId 时可显式运行真实读取测试：
 

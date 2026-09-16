@@ -216,6 +216,12 @@ export class RuleRepository {
           [`conditions.${index}.windowSeconds`]: `Expected ${definition.windowSecondsMin}-${definition.windowSecondsMax} seconds`,
         });
       }
+      if (condition.labels.windowSeconds !== undefined &&
+        condition.labels.windowSeconds !== String(condition.windowSeconds)) {
+        throw new AppError(400, 'RULE_LABEL_INVALID', 'Rule window label conflicts with windowSeconds', {
+          [`conditions.${index}.labels.windowSeconds`]: `Expected ${String(condition.windowSeconds)}`,
+        });
+      }
       const monitorConfig = JSON.parse(monitor.configJson) as Record<string, unknown>;
       const marketType = monitorConfig.marketType;
       if (definition.marketTypes !== undefined && typeof marketType === 'string' &&

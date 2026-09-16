@@ -57,6 +57,7 @@ export interface UniswapPoolRuntimeMonitor {
   chainId: number;
   version: 'v3' | 'v4';
   resourceId: string;
+  volumeWindowSeconds: number[];
 }
 
 export class MonitorRepository implements MonitorRuntimeStateStore {
@@ -234,6 +235,17 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   }
 
   public listEnabledUniswapPoolMonitors(): UniswapPoolRuntimeMonitor[] {
+    const windowsByMonitor = new Map<string, number[]>();
+    for (const condition of this.database.select({
+      monitorId: rules.monitorId, metric: ruleConditions.metric, windowSeconds: ruleConditions.windowSeconds,
+    }).from(ruleConditions).innerJoin(rules, eq(ruleConditions.ruleId, rules.id)).where(eq(rules.enabled, true)).all()) {
+      if (condition.windowSeconds === null || ![
+        'volume_token0', 'volume_token1', 'volume_usd', 'volume_change_percent',
+      ].includes(condition.metric)) continue;
+      const windows = windowsByMonitor.get(condition.monitorId) ?? [];
+      windows.push(condition.windowSeconds);
+      windowsByMonitor.set(condition.monitorId, windows);
+    }
     return this.database.select({
       id: monitors.id, configJson: monitors.configJson,
       intervalSeconds: monitors.intervalSeconds, maxStaleSeconds: monitors.maxStaleSeconds,
@@ -245,6 +257,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
           monitorId: row.id, intervalSeconds: row.intervalSeconds, maxStaleSeconds: row.maxStaleSeconds,
           rpcIntegrationId: parsed.data.rpcIntegrationId, chainId: parsed.data.chainId, version: parsed.data.version,
           resourceId: (parsed.data.version === 'v3' ? parsed.data.poolAddress : parsed.data.poolId) as string,
+          volumeWindowSeconds: [...new Set(windowsByMonitor.get(row.id) ?? [])],
         }];
       });
   }

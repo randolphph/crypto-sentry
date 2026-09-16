@@ -222,12 +222,6 @@ export const ruleConditionSchema = z.object({
   if ((value.threshold === 'true' || value.threshold === 'false') && !['eq', 'neq'].includes(value.operator)) {
     context.addIssue({ code: 'custom', path: ['operator'], message: 'Boolean thresholds only support eq and neq' });
   }
-  if (value.metric === 'price_change_percent' && value.windowSeconds === undefined) {
-    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'price_change_percent requires windowSeconds' });
-  }
-  if (value.metric === 'price_change_percent' && (value.windowSeconds ?? 0) > 1_800) {
-    context.addIssue({ code: 'custom', path: ['windowSeconds'], message: 'Price change windows cannot exceed the 30 minute sample retention' });
-  }
 });
 
 const ruleGroupMetadataSchema = z.object({

@@ -1,7 +1,7 @@
 import { and, asc, eq } from 'drizzle-orm';
 
 import type { AppDatabase } from '../client.js';
-import { tokenMetadataCache, uniswapPools } from '../schema/index.js';
+import { tokenMetadataCache, uniswapIndexerStates, uniswapPools } from '../schema/index.js';
 
 export interface UniswapPoolRecord {
   integrationId: string;
@@ -75,5 +75,24 @@ export class UniswapPoolRepository {
     return this.database.select().from(tokenMetadataCache).where(and(
       eq(tokenMetadataCache.chainId, chainId), eq(tokenMetadataCache.address, address.toLowerCase()),
     )).get();
+  }
+
+  public getIndexerState(integrationId: string, chainId: number, version: 'v3' | 'v4') {
+    return this.database.select().from(uniswapIndexerStates).where(and(
+      eq(uniswapIndexerStates.integrationId, integrationId),
+      eq(uniswapIndexerStates.chainId, chainId),
+      eq(uniswapIndexerStates.version, version),
+    )).get();
+  }
+
+  public saveIndexerState(input: {
+    integrationId: string; chainId: number; version: 'v3' | 'v4'; status: 'running' | 'ok' | 'error';
+    lastErrorCode: string | null; lastAttemptAt: string; chunkSize: bigint;
+  }): void {
+    const row = { ...input, chunkSize: input.chunkSize.toString() };
+    this.database.insert(uniswapIndexerStates).values(row).onConflictDoUpdate({
+      target: [uniswapIndexerStates.integrationId, uniswapIndexerStates.chainId, uniswapIndexerStates.version],
+      set: row,
+    }).run();
   }
 }

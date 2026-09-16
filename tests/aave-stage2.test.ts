@@ -96,7 +96,7 @@ describe('Aave phase 2 resources and events', () => {
       integrations, monitors, new ChainScanCursorRepository(database.db), pipeline,
       scheduler as unknown as PollingScheduler,
       {
-        confirmationBlocks: 0n, initialLookbackBlocks: 10n, reorgRewindBlocks: 2n, blockChunkSize: 100n,
+        confirmationBlocks: 12n, initialLookbackBlocks: 10n, reorgRewindBlocks: 2n, blockChunkSize: 100n,
         readerFactory: { create: () => ({ latestBlock: async () => 100n, scan }) },
       },
     );
@@ -106,8 +106,8 @@ describe('Aave phase 2 resources and events', () => {
     await task.run(new AbortController().signal);
     await task.run(new AbortController().signal);
 
-    expect(scan).toHaveBeenNthCalledWith(1, 90n, 100n, expect.any(AbortSignal));
-    expect(scan).toHaveBeenNthCalledWith(2, 99n, 100n, expect.any(AbortSignal));
+    expect(scan).toHaveBeenNthCalledWith(1, 78n, 88n, expect.any(AbortSignal));
+    expect(scan).toHaveBeenNthCalledWith(2, 87n, 88n, expect.any(AbortSignal));
     expect(latest.list(pool.id).filter((metric) => metric.kind === 'event')).toHaveLength(9);
     expect(latest.list(account.id).filter((metric) => metric.kind === 'event').map((metric) => metric.name)).toEqual(
       expect.arrayContaining(types.map((type) => `account_${type}`)),
@@ -115,7 +115,10 @@ describe('Aave phase 2 resources and events', () => {
     const snapshot = new MonitorSnapshotService(monitors, latest, () => new Date('2026-09-16T00:00:10.000Z')).get(pool.id);
     expect(snapshot).toMatchObject({
       monitorType: 'aave_pool', status: 'partial', capability: { available: true },
-      summary: { eventCount: 5 }, data: { discovery: { scannedThroughBlock: '100', chainTipBlock: '100' } },
+      summary: { eventCount: 5 },
+      data: { discovery: {
+        caughtUp: true, scannedThroughBlock: '88', confirmedTipBlock: '88', chainTipBlock: '100', confirmationBlocks: '12',
+      } },
     });
     coordinator.close();
     expect(scheduler.tasks.size).toBe(0);

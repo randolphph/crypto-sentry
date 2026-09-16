@@ -140,7 +140,7 @@ RPC 的 PATCH 合并规则需要由 Dashboard 明确处理：
 POST /api/v1/integrations/:id/test
 ```
 
-测试流程执行完成一律返回 HTTP `200`。每条链先校验 `eth_chainId`，再验证当前真正实现的协议。Ethereum 的 Aave 测试分别验证账户读取、Reserve 目录和事件日志；单项失败不会被配置存在所掩盖。单链失败不会丢弃其他链结果。顶层 `ok` 只有全部链成功时才为 `true`。
+测试流程执行完成一律返回 HTTP `200`。每条链先独立校验 `eth_chainId` 和最新块高；只有 RPC 失败才停止该网络的后续测试。RPC 成功后，Aave Account、Reserve Catalog、Event Logs、Uniswap V3 和 Uniswap V4 分别隔离探测，任何一项失败都不会跳过或覆盖其他能力的真实结果。单链失败也不会丢弃其他链结果。`network.ok` 表示该网络所有适用能力都成功；顶层 `ok` 只有全部网络都成功时才为 `true`。Readiness 始终按分项能力计算，不使用聚合 `network.ok` 代替协议结果。
 
 ```json
 {
@@ -150,11 +150,19 @@ POST /api/v1/integrations/:id/test
     {
       "chainId": 1,
       "chainName": "Ethereum",
-      "ok": true,
+      "ok": false,
       "blockNumber": "12345678",
-      "connectivity": { "rpc": "ok", "aaveV3": "ok" },
-      "aaveCapabilities": { "accountRead": "ok", "reserveCatalog": "ok", "eventLogs": "ok" },
-      "error": null
+      "connectivity": { "rpc": "ok", "aaveV3": "error", "uniswapV3": "ok", "uniswapV4": "ok" },
+      "aaveCapabilities": { "accountRead": "error", "reserveCatalog": "ok", "eventLogs": "ok" },
+      "capabilityErrors": {
+        "rpc": null,
+        "aaveAccountRead": { "code": "PROTOCOL_NOT_READY", "message": "aaveAccountRead capability test failed" },
+        "aaveReserveCatalog": null,
+        "aaveEventLogs": null,
+        "uniswapV3": null,
+        "uniswapV4": null
+      },
+      "error": { "code": "RPC_PARTIAL_FAILURE", "message": "One or more protocol capability tests failed" }
     },
     {
       "chainId": 4663,
@@ -234,6 +242,8 @@ GET /api/v1/integrations/catalog
 Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`、`quote_volume_24h`、`funding_rate_percent`、`next_funding_time`、`open_interest`、`open_interest_change_percent` 和 `data_age_seconds`。资金费率和 OI 仅适用于 perpetual。窗口上限与 30 分钟样本保留一致。
 
 Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、抵押/债务窗口变化，以及 `account_supply`、`account_withdraw`、`account_borrow`、`account_repay`、`account_liquidation`、`account_position_opened`、`account_position_closed` 事件。仓位开关事件仅在持久化的账户状态发生变化且能关联到新链上事件时产生。Aave Pool 使用 `aave_event_amount_token` 与 `aave_event_amount_usd`，用 `labels.eventType` 区分五类事件；Oracle 不可用时只产生 token amount，绝不把 USD 金额伪装为 0。
+
+Uniswap Position 与 Wallet 的目录分别按 `monitorTypes` 过滤。`in_range_count`、`out_of_range_count`、`failed_position_count`、`aggregate_value_usd`、`aggregate_fees_usd` 只对 Wallet 开放；`position_count` 因两类 Monitor 都实际产生而同时开放。Pool 目录包括 `volume_token0`、`volume_token1`、`volume_usd`、`volume_change_percent`，它们都要求 `windowSeconds`（20–86400 秒），并按 `chainId`、`version`、`resourceId`、`windowSeconds` 区分。
 
 Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Uniswap deployment 目录同时返回 Ethereum/Robinhood V3 Factory 与 V4 PoolManager、PositionManager、StateView、deploymentBlock 和 explorerUrl。
 
@@ -368,6 +378,8 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 { "rpcIntegrationId": "int_rpc", "chainId": 1, "version": "v3", "tokenId": "123" }
 ```
 
+创建时，以及 PATCH 修改 `rpcIntegrationId`、`chainId`、`version` 或 `tokenId` 时，后端先检查对应链/版本最近能力测试，再用 Position Reader 验证 tokenId 确实属于该链和版本。不存在返回 `404 POSITION_NOT_FOUND`；RPC 临时失败返回 `RPC_CONNECTION_FAILED`，不会伪装成仓位不存在。验证失败不会写入 Monitor 或发布配置事件。只修改 name、enabled、intervalSeconds、maxStaleSeconds 时不会再次访问 RPC。
+
 `uniswap_wallet` 的数组会去重；同轮按链与版本展开，部分失败保留成功结果：
 
 ```json
@@ -391,7 +403,9 @@ GET /api/v1/integrations/:id/uniswap/pools?chainId=1&version=v3&q=ETH%2FUSDC&lim
 GET /api/v1/integrations/:id/uniswap/wallet-positions?chainId=1&version=v4&walletAddress=0x...&limit=50&cursor=...
 ```
 
-Pool 目录从本地 SQLite 返回，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；`discovery` 返回 caughtUp、scannedThroughBlock、chainTipBlock。token metadata 单项失败返回 partial，不丢弃其他 Pool。Wallet V3 直接枚举 ERC-721，V4 使用后台、可恢复的 Transfer 索引；单个 Position 读取失败只增加 failedPositionCount。
+Pool 目录从本地 SQLite 返回，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；`discovery` 返回 caughtUp、scannedThroughBlock、chainTipBlock、lastAttemptAt 和 lastError。后台索引初始使用大区间；Provider 因范围、结果数或 timeout 拒绝 `eth_getLogs` 时会递归二分，每个成功子区间立即保存游标，后续任务从最后成功位置并带 reorg rewind 继续。最小单块仍失败时 API 返回 `partial` 和稳定的 `INDEXER_PARTIAL_FAILURE`，而不是永久停留在 warming_up。token metadata 单项失败同样返回 partial，不丢弃 Pool。
+
+Wallet V3 直接枚举 ERC-721，V4 使用后台、可恢复的 Transfer 索引；单个 Position 读取失败只增加 failedPositionCount。`q` 支持 tokenId、poolAddress/poolId、token0/token1 symbol、token address，以及正向或反向 `TOKEN0/TOKEN1` 币对；过滤后再分页。
 
 ### Legacy / deprecated
 
@@ -464,9 +478,12 @@ GET 始终返回 `combinator` 与 `conditions`。为旧 Dashboard 暂时保留�
 - unknown 不触发告警，也不恢复已触发告警。`TRIGGERED` 状态会原样保持，等待有效数据恢复后再判断恢复条件。
 - `ARMED` 状态进入 unknown 时会清空 `conditionSince`；重新取得完整有效数据后重新累计 `durationSeconds`，unknown 时间不会计入持续满足时长。
 - `durationSeconds`、`cooldownSeconds` 作用于整个组；hysteresis 分别作用于各 condition 的恢复边界。
+- 只要 condition 指定 `windowSeconds`，规则执行就强制匹配 Metric 的 `labels.windowSeconds`，适用于价格、OI、Aave change、Uniswap volume 以及后续全部窗口指标，不按 metric 名称设特例。`condition.labels` 不必重复填写窗口；若填写，必须与 `condition.windowSeconds` 完全一致，否则返回 `RULE_LABEL_INVALID`。
 - 修改 Rule 会清理对应条件缓存；删除 Rule 或 Monitor 也会清理缓存。修改条件、combinator、duration 或启停状态会重置组运行状态；状态在 SQLite 持久化。
 
-Metric 分为 `gauge` 与 `event`。省略 `kind` 的旧 Metric 按 gauge 处理；event 必须携带稳定 `eventId`，链上格式为 `chainId:txHash:logIndex`。eventId 在 SQLite 去重，重放不会再次触发。event 只在到达时参与规则计算，可与当前未过期 gauge 组合；后续 gauge 更新不会重放旧 event。event 条件不允许非零 `durationSeconds`。
+Metric 分为 `gauge` 与 `event`。省略 `kind` 的旧 Metric 按 gauge 处理；event 必须携带稳定 `eventId`，链上格式为 `chainId:txHash:logIndex`。Event 使用 SQLite `processing → processed` 生命周期：只有所有必要 consumer 成功后才提交 processed；consumer 失败会释放本次处理权，同一 eventId 可重试；进程异常遗留的 processing reservation 超时后可回收。规则状态、Alert 与该规则对 Event 的幂等提交在同一事务中，因此“规则已写 Alert、后续 consumer 失败”的重试不会生成重复 Alert。成功后重放才返回 `duplicate_event`。
+
+event 只在到达时参与规则计算，可与当前未过期 gauge 组合；后续 gauge 更新不会重放旧 event。event 条件不允许非零 `durationSeconds`。
 
 Rule 创建和更新会按 Catalog 校验 Monitor 类型、marketType/network/version、operator、window 和 labels。稳定错误包括 `RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID` 与 `EVENT_RULE_DURATION_UNSUPPORTED`。
 
@@ -494,9 +511,9 @@ type MonitorSnapshot = {
 
 - market：`data.metrics` 为真实最新 Metric。
 - Aave Account：`data.networkScans`、`data.positions` 与钱包信息复用现有结构化仓位数据。无借款时 `healthFactor:null`、`healthFactorInfinite:true`，底层 `health_factor` Metric 为 `unsupported`，不会因无限值误告警。
-- Aave Pool：`data.discovery` 返回扫描块高，`data.recentEvents` 返回最近的去重事件；token/USD 数量分别可空，`summary.eventCount` 按 eventId 计数。
-- Uniswap Position/Wallet：`data.positions`、发现进度、链/版本选择为真实当前数据；分组键包含 chainId/version/tokenId，多版本可返回 `partial`。返回 token 数量、边界距离、关闭状态和可靠时的 USD 估值；不可估值字段为 `null`。
-- Uniswap Pool：`data.pool` 返回 tick、双向价格、active liquidity、可用 TVL/fee 字段、估值状态；`data.recentEvents` 返回 swap/mint/burn，V3 还可返回 fee_collection；`data.discovery` 返回同步块高。
+- Aave Pool：`data.discovery` 同时返回 `scannedThroughBlock`、`confirmedTipBlock`、`chainTipBlock`、`confirmationBlocks`。`caughtUp` 的定义是 `scannedThroughBlock >= confirmedTipBlock`；chain tip 是最新块，而 confirmed tip 已减去确认块数，因此正常运行时两者通常不同。`data.recentEvents` 的 observedAt 来自事件实际 blockNumber 的时间戳，相同区块只读取一次；token/USD 数量分别可空，`summary.eventCount` 按 eventId 计数。
+- Uniswap Position/Wallet：`data.positions`、发现进度、链/版本选择为真实当前数据；分组键包含 chainId/version/tokenId，多版本可返回 `partial`。返回 token 数量、边界距离、关闭状态和可靠时的 USD 估值；不可估值字段为 `null`。V3 的 `tokensOwed0/1` 和 `fees_owed_token0/1` 仅表示 PositionManager 已记账待领取金额，不是完整 fee-growth 模拟；Snapshot 通过 `feeStatus` 明示这一点。
+- Uniswap Pool：`data.pool` 返回 tick、双向价格、active liquidity、可用 TVL/fee 字段、`valuationStatus` 与 `feeStatus`；`data.recentEvents` 返回 swap/mint/burn，V3 还可返回 fee_collection；`data.discovery` 返回同步块高。`data.volumes[]` 按 windowSeconds 分组，包含 rolling `volumeToken0`、`volumeToken1`、可靠时的 `volumeUsd`，以及当前窗口相对紧邻前一窗口的 `volumeChangePercent`。前一窗口为 0、尚未预热或 USD 不可靠时相关值为 `null`/warming_up，不返回伪造的 0。
 - planned 类型返回 `unsupported` 与 `capability.available=false`，不生成伪造协议字段。
 - 链上整数、tokenId、blockNumber、金额与 liquidity 保持字符串。
 
@@ -523,7 +540,7 @@ GET /api/v1/monitors/:id/metrics
 }
 ```
 
-稳定码包括：`RPC_ROUTING_CONFIG_INVALID`、`RPC_CHAIN_UNSUPPORTED`、`RPC_CHAIN_ID_MISMATCH`、`RPC_PARTIAL_FAILURE`、`MONITOR_TYPE_NOT_READY`、`PROTOCOL_NOT_READY`、`RULE_CONDITION_INVALID`、`METRIC_NOT_AVAILABLE`、`RESOURCE_CATALOG_NOT_READY`、`RESOURCE_NOT_FOUND`、`POSITION_NOT_FOUND`、`POOL_NOT_FOUND`、`INDEXER_WARMING_UP`、`INDEXER_PARTIAL_FAILURE`、`VALUATION_UNAVAILABLE`、`RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID`、`EVENT_RULE_DURATION_UNSUPPORTED`。
+稳定码包括：`RPC_ROUTING_CONFIG_INVALID`、`RPC_CHAIN_UNSUPPORTED`、`RPC_CHAIN_ID_MISMATCH`、`RPC_CONNECTION_FAILED`、`RPC_PARTIAL_FAILURE`、`MONITOR_TYPE_NOT_READY`、`PROTOCOL_NOT_READY`、`RULE_CONDITION_INVALID`、`METRIC_NOT_AVAILABLE`、`RESOURCE_CATALOG_NOT_READY`、`RESOURCE_NOT_FOUND`、`POSITION_NOT_FOUND`、`POOL_NOT_FOUND`、`INDEXER_WARMING_UP`、`INDEXER_PARTIAL_FAILURE`、`VALUATION_UNAVAILABLE`、`RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID`、`EVENT_RULE_DURATION_UNSUPPORTED`。
 
 前端处理 `204` 时不要调用 `response.json()`：
 
@@ -532,10 +549,13 @@ if (response.status === 204) return null;
 const body = await response.json();
 ```
 
-## 9. 后续能力（当前不可视为 ready）
+## 9. 当前明确的降级边界与后续能力
 
-- Uniswap Pool 窗口成交量与变化率。
-- V4 单池完整 TVL/手续费归属。
-- 不含可信稳定币时的 Binance 价格回退和完整手续费计算。
-- Telegram 实际投递。
-- 新告警提醒去重与恢复通知。
+以下字段继续返回 `null`/unavailable，Catalog 不会在不支持的 version 暴露对应指标：
+
+- V4 单池 TVL。
+- V4 完整手续费归属。
+- 非稳定币的 Binance/multi-pool USD 回退。
+- V3 完整 fee-growth 模拟；当前 `tokensOwed` 仅为已记账待领取手续费。
+
+Telegram 实际投递、新告警提醒去重与恢复通知仍属于第三阶段。本阶段已实现 Uniswap Pool token0/token1 rolling volume；`volume_usd` 和 `volume_change_percent` 只在估值可靠、前一窗口有效时提供 actionable 数值。

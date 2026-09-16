@@ -195,6 +195,7 @@ export class UniswapV3PositionSnapshotService {
       token1Amount: stringValue(byName(metrics, 'token1_amount')),
       feesOwedToken0: stringValue(byName(metrics, 'fees_owed_token0')),
       feesOwedToken1: stringValue(byName(metrics, 'fees_owed_token1')),
+      feeStatus: version === 'v3' ? 'tokens_owed_recorded_only' as const : 'unavailable' as const,
       positionValueUsd: stringValue(byName(metrics, 'position_value_usd')),
       feesValueUsd: stringValue(byName(metrics, 'fees_value_usd')),
       valuationStatus: labels.valuationStatus === 'ok' ? 'ok' as const : 'unavailable' as const,
