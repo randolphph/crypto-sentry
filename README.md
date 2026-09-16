@@ -124,6 +124,10 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 `evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 会逐个测试全部 `chainIds`：先调用 `eth_chainId` 与 `eth_blockNumber`，再检查该网络当前已实现协议的真实合约。Ethereum 读取 Aave Pool 和 Oracle；Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。响应使用 `networks[]` 保留每条链的独立结果；测试流程完成返回 HTTP 200，只有全部链成功时顶层 `ok` 才为 true。配置网络不一致使用 `RPC_CHAIN_ID_MISMATCH`，连接或能力失败使用不含敏感 URL 的稳定错误码。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。
 
+Binance market Monitor 还输出 24 小时 base/quote volume；永续合约输出 funding rate、next funding time、open interest 和窗口 OI 变化率。价格、volume、funding 优先复用共享 WebSocket，OI 按 Integration + symbol 合并 REST 轮询并遵循 Monitor interval。价格和 OI 样本持久化到 SQLite，重启后可继续窗口计算；缺失值使用 warming/error 状态和 `unavailable`，不会伪装为数值 0。Catalog 的 `samplingPresets` 与 `ruleMetrics` 是 Dashboard 渲染规则表单的唯一能力来源。
+
+Metric 支持 gauge/event 两种语义。链上 event 必须带 `chainId:txHash:logIndex` 形式的稳定 eventId，后端持久化去重；event 不会因后续 gauge 更新或 cooldown 到期而被重复消费。
+
 ## Aave V3 地址监控
 
 先为需要扫描的网络各创建一个启用的 `evm_rpc` 集成。当前自动识别 Ethereum（1）、Arbitrum（42161）、Base（8453）和 BNB Chain（56）；同一网络配置多个 RPC 时会按顺序故障转移。Pool、Oracle、Data Provider 和资产地址均来自 Aave 官方 Address Book，无需手工填写合约地址。

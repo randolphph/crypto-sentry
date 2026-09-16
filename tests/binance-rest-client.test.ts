@@ -103,6 +103,24 @@ describe('Binance REST client', () => {
     expect(canonicalizeBinanceSymbol('eth', 'btc')).toBe('ETH/BTC');
   });
 
+  it('loads perpetual open interest without converting its decimal precision', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      expect(url.pathname).toBe('/fapi/v1/openInterest');
+      expect(url.searchParams.get('symbol')).toBe('BTCUSDT');
+      return jsonResponse({ symbol: 'BTCUSDT', openInterest: '123456789.123456789', time: 1_725_000_000_000 });
+    });
+    const client = new BinanceRestClient({
+      spotRestUrl: 'https://spot.example', futuresRestUrl: 'https://futures.example', fetch: fetchMock,
+    });
+
+    await expect(client.loadOpenInterest('btcusdt')).resolves.toEqual({
+      providerSymbol: 'BTCUSDT',
+      openInterest: '123456789.123456789',
+      observedAt: new Date(1_725_000_000_000).toISOString(),
+    });
+  });
+
   it('migrates the retired USDⓈ-M WebSocket root to the market endpoint', () => {
     expect(normalizeBinanceFuturesWebsocketUrl('wss://fstream.binance.com')).toBe('wss://fstream.binance.com/market');
     expect(normalizeBinanceFuturesWebsocketUrl('wss://proxy.example/custom')).toBe('wss://proxy.example/custom');

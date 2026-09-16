@@ -200,6 +200,38 @@ GET /api/v1/integrations/catalog
 }
 ```
 
+第二阶段 Catalog 还返回采样预设和规则指标目录。Dashboard 必须从这里渲染可选指标、operator、window 和 labels，不应硬编码：
+
+```json
+{
+  "samplingPresets": [
+    { "id": "realtime", "intervalSeconds": 5 },
+    { "id": "standard", "intervalSeconds": 20 },
+    { "id": "economy", "intervalSeconds": 60 }
+  ],
+  "ruleMetrics": {
+    "market": [
+      {
+        "id": "open_interest_change_percent",
+        "name": "未平仓量变化率",
+        "kind": "gauge",
+        "valueType": "decimal",
+        "operators": ["gt", "gte", "lt", "lte", "eq", "neq"],
+        "units": ["percent"],
+        "requiresWindow": true,
+        "windowSecondsMin": 5,
+        "windowSecondsMax": 1800,
+        "monitorTypes": ["market"],
+        "marketTypes": ["perpetual"],
+        "labels": ["marketType", "providerSymbol", "canonicalSymbol", "windowSeconds"]
+      }
+    ]
+  }
+}
+```
+
+Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`、`quote_volume_24h`、`funding_rate_percent`、`next_funding_time`、`open_interest`、`open_interest_change_percent` 和 `data_age_seconds`。资金费率和 OI 仅适用于 perpetual。窗口上限与 30 分钟样本保留一致。
+
 Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Ethereum Uniswap、Aave Pool 和 Uniswap Pool 不会伪装成 available。
 
 ## 4. Readiness
@@ -359,6 +391,10 @@ GET 始终返回 `combinator` 与 `conditions`。为旧 Dashboard 暂时保留�
 - `ARMED` 状态进入 unknown 时会清空 `conditionSince`；重新取得完整有效数据后重新累计 `durationSeconds`，unknown 时间不会计入持续满足时长。
 - `durationSeconds`、`cooldownSeconds` 作用于整个组；hysteresis 分别作用于各 condition 的恢复边界。
 - 修改 Rule 会清理对应条件缓存；删除 Rule 或 Monitor 也会清理缓存。修改条件、combinator、duration 或启停状态会重置组运行状态；状态在 SQLite 持久化。
+
+Metric 分为 `gauge` 与 `event`。省略 `kind` 的旧 Metric 按 gauge 处理；event 必须携带稳定 `eventId`，链上格式为 `chainId:txHash:logIndex`。eventId 在 SQLite 去重，重放不会再次触发。event 只在到达时参与规则计算，可与当前未过期 gauge 组合；后续 gauge 更新不会重放旧 event。event 条件不允许非零 `durationSeconds`。
+
+Rule 创建和更新会按 Catalog 校验 Monitor 类型、marketType/network/version、operator、window 和 labels。稳定错误包括 `RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID` 与 `EVENT_RULE_DURATION_UNSUPPORTED`。
 
 ## 7. 统一 Snapshot
 

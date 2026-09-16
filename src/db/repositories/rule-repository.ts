@@ -4,6 +4,7 @@ import { AppError } from '../../api/errors.js';
 import { ruleConditionSchema, ruleCreateSchema, rulePatchSchema } from '../../api/schemas.js';
 import type { NormalizedRuleCreate, RuleCreate, RulePatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
+import { ruleMetricDefinition } from '../../core/rules/rule-metric-catalog.js';
 import type { AppDatabase } from '../client.js';
 import { alerts, integrations, monitors, ruleConditions, ruleStates, rules } from '../schema/index.js';
 
@@ -28,9 +29,10 @@ export class RuleRepository {
       conditions: parsed.error.issues.map((issue) => issue.message).join('; '),
     });
     const normalized = parsed.data;
-    const monitor = this.database.select({ id: monitors.id }).from(monitors).where(eq(monitors.id, normalized.monitorId)).get();
+    const monitor = this.database.select({ id: monitors.id, type: monitors.type, configJson: monitors.configJson })
+      .from(monitors).where(eq(monitors.id, normalized.monitorId)).get();
     if (monitor === undefined) throw new AppError(400, 'INVALID_RULE_CONFIG', 'monitorId must reference an existing monitor');
-    this.validateConditions(normalized.conditions);
+    this.validateConditions(normalized.conditions, monitor, normalized.durationSeconds);
     this.validateNotificationIntegrations(normalized.notificationIntegrationIds);
     const timestamp = new Date().toISOString();
     const first = normalized.conditions[0];
@@ -76,7 +78,11 @@ export class RuleRepository {
       : legacyPatch === undefined
         ? currentConditions
         : [{ ...currentConditions[0], ...legacyPatch } as ConditionInput];
-    this.validateConditions(conditions);
+    const monitor = this.database.select({ id: monitors.id, type: monitors.type, configJson: monitors.configJson })
+      .from(monitors).where(eq(monitors.id, row.monitorId)).get();
+    if (monitor === undefined) throw new AppError(400, 'INVALID_RULE_CONFIG', 'Rule monitor was not found');
+    const durationSeconds = parsedInput.durationSeconds ?? row.durationSeconds;
+    this.validateConditions(conditions, monitor, durationSeconds);
     if ('notificationIntegrationIds' in parsedInput && parsedInput.notificationIntegrationIds !== undefined) {
       this.validateNotificationIntegrations(parsedInput.notificationIntegrationIds);
     }
@@ -159,7 +165,11 @@ export class RuleRepository {
     };
   }
 
-  private validateConditions(conditions: ConditionInput[]): void {
+  private validateConditions(
+    conditions: ConditionInput[],
+    monitor: { type: string; configJson: string },
+    durationSeconds: number,
+  ): void {
     if (conditions.length < 1 || conditions.length > 20) {
       throw new AppError(400, 'RULE_CONDITION_INVALID', 'A rule group requires between 1 and 20 conditions');
     }
@@ -168,6 +178,60 @@ export class RuleRepository {
       if (!parsed.success) {
         throw new AppError(400, 'RULE_CONDITION_INVALID', 'Rule condition is invalid', {
           [`conditions.${index}`]: parsed.error.issues.map((issue) => issue.message).join('; '),
+        });
+      }
+      const definition = ruleMetricDefinition(monitor.type, condition.metric);
+      if (monitor.type === 'market' && definition === undefined) {
+        throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported by this monitor type', {
+          [`conditions.${index}.metric`]: `${condition.metric} is not available for ${monitor.type}`,
+        });
+      }
+      if (definition === undefined) continue;
+      if (!definition.operators.includes(condition.operator)) {
+        throw new AppError(400, 'RULE_CONDITION_INVALID', 'Operator is not supported for this metric', {
+          [`conditions.${index}.operator`]: `Allowed operators: ${definition.operators.join(', ')}`,
+        });
+      }
+      const invalidLabel = Object.keys(condition.labels).find((label) => !definition.labels.includes(label));
+      if (invalidLabel !== undefined) {
+        throw new AppError(400, 'RULE_LABEL_INVALID', 'Rule labels are invalid for this metric', {
+          [`conditions.${index}.labels.${invalidLabel}`]: 'Label is not supported by this metric',
+        });
+      }
+      if (definition.requiresWindow && condition.windowSeconds === undefined) {
+        throw new AppError(400, 'RULE_CONDITION_INVALID', 'This metric requires windowSeconds', {
+          [`conditions.${index}.windowSeconds`]: 'windowSeconds is required',
+        });
+      }
+      if (!definition.requiresWindow && condition.windowSeconds !== undefined) {
+        throw new AppError(400, 'RULE_CONDITION_INVALID', 'This metric does not support a window', {
+          [`conditions.${index}.windowSeconds`]: 'Remove windowSeconds',
+        });
+      }
+      if (condition.windowSeconds !== undefined && (
+        condition.windowSeconds < (definition.windowSecondsMin ?? 1) ||
+        condition.windowSeconds > (definition.windowSecondsMax ?? Number.MAX_SAFE_INTEGER)
+      )) {
+        throw new AppError(400, 'RULE_CONDITION_INVALID', 'Rule window is outside the supported range', {
+          [`conditions.${index}.windowSeconds`]: `Expected ${definition.windowSecondsMin}-${definition.windowSecondsMax} seconds`,
+        });
+      }
+      const monitorConfig = JSON.parse(monitor.configJson) as Record<string, unknown>;
+      const marketType = monitorConfig.marketType;
+      if (definition.marketTypes !== undefined && typeof marketType === 'string' &&
+        !definition.marketTypes.includes(marketType as 'spot' | 'perpetual')) {
+        throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported by this market type', {
+          [`conditions.${index}.metric`]: `${condition.metric} is not available for ${marketType}`,
+        });
+      }
+      if (condition.labels.marketType !== undefined && condition.labels.marketType !== marketType) {
+        throw new AppError(400, 'RULE_LABEL_INVALID', 'Rule labels do not match the monitor configuration', {
+          [`conditions.${index}.labels.marketType`]: `Expected ${String(marketType)}`,
+        });
+      }
+      if (definition.kind === 'event' && durationSeconds !== 0) {
+        throw new AppError(400, 'EVENT_RULE_DURATION_UNSUPPORTED', 'Event rules require durationSeconds to be 0', {
+          durationSeconds: 'Event conditions cannot accumulate duration',
         });
       }
     }

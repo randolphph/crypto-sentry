@@ -5,6 +5,7 @@ export interface MetricSnapshotReader {
 }
 
 function metricKey(metric: Metric): string {
+  if (metric.kind === 'event') return JSON.stringify(['event', metric.eventId]);
   const labels = Object.entries(metric.labels ?? {}).sort(([left], [right]) => left.localeCompare(right));
   return JSON.stringify([metric.source, metric.target, metric.name, labels]);
 }
@@ -26,6 +27,12 @@ export class LatestMetricStore implements MetricSnapshotReader {
     if (current !== undefined && Date.parse(metric.observedAt) <= Date.parse(current.observedAt)) return false;
 
     metrics.set(key, cloneMetric(metric));
+    if (metric.kind === 'event') {
+      const events = [...metrics.entries()]
+        .filter(([, candidate]) => candidate.kind === 'event')
+        .sort(([, left], [, right]) => Date.parse(right.observedAt) - Date.parse(left.observedAt));
+      for (const [eventKey] of events.slice(100)) metrics.delete(eventKey);
+    }
     this.metricsByMonitor.set(metric.monitorId, metrics);
     return true;
   }

@@ -1,6 +1,6 @@
 import type { MetricConsumer } from '../metrics/metric-pipeline.js';
 import type { Metric } from '../metrics/metric.js';
-import { isActionableMetric } from '../metrics/metric.js';
+import { isActionableMetric, metricKind } from '../metrics/metric.js';
 import type { RuntimeComponentHealth, RuntimeHealthProvider } from '../status/runtime-health.js';
 import {
   combineConditionResults,
@@ -129,6 +129,7 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
         const evaluationTime = new Date(evaluatedAt);
         const results = rule.conditions.map((condition): TriState => {
           const latest = this.latestByCondition.get(condition.id)?.metric;
+          if (latest !== undefined && metricKind(latest) === 'event' && !matching.includes(condition)) return 'unknown';
           if (latest === undefined || !isActionableMetric(latest) ||
             !metricIsFresh(latest, evaluationTime, rule.maxStaleSeconds)) return 'unknown';
           return state.state === 'TRIGGERED'
@@ -144,6 +145,9 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
         const truth = combineConditionResults(rule.combinator, results);
         const evaluation = evaluateRuleTruth(rule, state, truth, String(metric.value), evaluationTime);
         this.store.commitEvaluation({ rule, state: evaluation.state, action: evaluation.action, metric, evaluatedAt });
+        for (const condition of matching) {
+          if (metric.kind === 'event') this.latestByCondition.delete(condition.id);
+        }
       } catch (error) {
         failures.push(describeError(rule, error));
       }

@@ -37,7 +37,7 @@ describe('Rule Group condition freshness', () => {
       monitorId, name: `${combinator} freshness`, combinator,
       conditions: [
         { metric: 'price', labels: {}, operator: 'gte', threshold: '100' },
-        { metric: 'volume', labels: {}, operator: 'gte', threshold: '10' },
+        { metric: 'quote_volume_24h', labels: {}, operator: 'gte', threshold: '10' },
       ],
       durationSeconds, cooldownSeconds: 60, severity: 'warning', notificationIntegrationIds: [], enabled: true,
     } });
@@ -62,8 +62,8 @@ describe('Rule Group condition freshness', () => {
   it('treats an expired true AND condition as unknown and resumes after a fresh update', async () => {
     await createRule('and');
     await ingest('price', '101', 0);
-    await ingest('volume', '1', 0);
-    await ingest('volume', '11', 6);
+    await ingest('quote_volume_24h', '1', 0);
+    await ingest('quote_volume_24h', '11', 6);
     expect(await alertCount()).toBe(0);
 
     await ingest('price', '102', 7);
@@ -73,27 +73,27 @@ describe('Rule Group condition freshness', () => {
   it('allows a fresh true OR condition to trigger when another condition is expired', async () => {
     await createRule('or');
     await ingest('price', '1', 0);
-    await ingest('volume', '11', 6);
+    await ingest('quote_volume_24h', '11', 6);
     expect(await alertCount()).toBe(1);
   });
 
   it('does not count an unknown interval toward group duration', async () => {
     await createRule('and', 10);
     await ingest('price', '101', 0);
-    await ingest('volume', '11', 0);
-    await ingest('volume', '12', 6);
+    await ingest('quote_volume_24h', '11', 0);
+    await ingest('quote_volume_24h', '12', 6);
     await ingest('price', '102', 7);
-    await ingest('volume', '13', 11);
+    await ingest('quote_volume_24h', '13', 11);
     await ingest('price', '103', 15);
     expect(await alertCount()).toBe(0);
-    await ingest('volume', '14', 17);
+    await ingest('quote_volume_24h', '14', 17);
     expect(await alertCount()).toBe(1);
   });
 
   it('keeps a triggered rule open when its expression becomes unknown', async () => {
     await createRule('and');
     await ingest('price', '101', 0);
-    await ingest('volume', '11', 0);
+    await ingest('quote_volume_24h', '11', 0);
     expect(await alertCount('open')).toBe(1);
 
     await ingest('price', '0', 6, 'error');
@@ -103,14 +103,14 @@ describe('Rule Group condition freshness', () => {
   it('clears cached conditions when a rule is updated', async () => {
     const ruleId = await createRule('and');
     await ingest('price', '101', 0);
-    await ingest('volume', '1', 0);
+    await ingest('quote_volume_24h', '1', 0);
 
     const updated = await app.inject({
       method: 'PATCH', url: `/api/v1/rules/${ruleId}`, headers: authorization,
       payload: { name: 'Updated rule name' },
     });
     expect(updated.statusCode).toBe(200);
-    await ingest('volume', '11', 1);
+    await ingest('quote_volume_24h', '11', 1);
     expect(await alertCount()).toBe(0);
 
     await ingest('price', '102', 2);

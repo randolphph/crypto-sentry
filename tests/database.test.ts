@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDatabase } from '../src/db/client.js';
+import { migrations } from '../src/db/migrations.js';
 import { IntegrationRepository } from '../src/db/repositories/integration-repository.js';
 import { EncryptionService } from '../src/security/encryption/encryption-service.js';
 
@@ -31,7 +32,8 @@ describe('SQLite persistence', () => {
     });
     expect(firstDatabase.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
     expect(firstDatabase.sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(firstDatabase.sqlite.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 5 });
+    expect(firstDatabase.sqlite.prepare('SELECT count(*) AS count FROM schema_migrations').get())
+      .toEqual({ count: migrations.length });
     firstDatabase.close();
 
     expect(readFileSync(databasePath).includes(Buffer.from('database-secret'))).toBe(false);

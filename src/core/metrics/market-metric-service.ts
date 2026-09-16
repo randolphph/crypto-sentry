@@ -18,6 +18,13 @@ export interface PriceSampleStore {
   loadSince(monitorId: string, cutoff: string): PriceSample[];
   saveAndPrune(monitorId: string, samples: PriceSample[], cutoff: string): void;
   clear(monitorId: string): void;
+  loadMetricSince?(monitorId: string, metricName: string, cutoff: string): Array<{ observedAt: string; value: string }>;
+  saveMetricAndPrune?(
+    monitorId: string,
+    metricName: string,
+    samples: Array<{ observedAt: string; value: string }>,
+    cutoff: string,
+  ): void;
 }
 
 export interface MarketMetricRuntime {
@@ -27,8 +34,13 @@ export interface MarketMetricRuntime {
   providerSymbol: string;
   canonicalSymbol?: string | undefined;
   priceType?: 'last' | 'mark' | undefined;
+  baseAsset?: string | undefined;
+  quoteAsset?: string | undefined;
+  intervalSeconds?: number;
   maxStaleSeconds: number;
-  windowSeconds: number[];
+  windowSeconds?: number[];
+  priceWindowSeconds?: number[];
+  openInterestWindowSeconds?: number[];
   spotRestUrl: string;
   futuresRestUrl: string;
 }
@@ -41,12 +53,21 @@ export interface MarketMetricServiceOptions {
   onError(error: Error): void;
 }
 
+type NormalizedMarketMetricRuntime = MarketMetricRuntime & {
+  intervalSeconds: number;
+  priceWindowSeconds: number[];
+  openInterestWindowSeconds: number[];
+};
+
 interface MonitorState {
-  config: MarketMetricRuntime;
+  config: NormalizedMarketMetricRuntime;
   identity: string;
   generation: number;
   samples: PriceSample[];
+  openInterestSamples: Array<{ observedAt: string; value: string }>;
   latestPrice?: Metric | undefined;
+  latestOpenInterest?: Metric | undefined;
+  nextOpenInterestAt: number;
   warmup?: Promise<void> | undefined;
   warmupFailures: number;
   nextWarmupAt: number;
@@ -65,6 +86,7 @@ function labelsFor(config: MarketMetricRuntime): Record<string, string> {
     marketType: config.marketType,
     priceType: config.priceType ?? (config.marketType === 'spot' ? 'last' : 'mark'),
     providerSymbol: config.providerSymbol,
+    canonicalSymbol: config.canonicalSymbol ?? config.providerSymbol,
   };
 }
 
@@ -126,7 +148,12 @@ export class MarketMetricService {
     const timestamp = this.now().getTime();
     const cutoff = new Date(timestamp - MARKET_SAMPLE_RETENTION_MILLISECONDS).toISOString();
     for (const configuration of configurations) {
-      const config = { ...configuration, windowSeconds: uniqueWindows(configuration.windowSeconds) };
+      const config = {
+        ...configuration,
+        intervalSeconds: configuration.intervalSeconds ?? 20,
+        priceWindowSeconds: uniqueWindows(configuration.priceWindowSeconds ?? configuration.windowSeconds ?? []),
+        openInterestWindowSeconds: uniqueWindows(configuration.openInterestWindowSeconds ?? []),
+      };
       const identity = [config.integrationId, config.marketType, config.providerSymbol, targetFor(config), config.priceType].join(':');
       const existing = this.states.get(config.monitorId);
       if (existing !== undefined && existing.identity === identity) {
@@ -140,6 +167,8 @@ export class MarketMetricService {
         identity,
         generation: (existing?.generation ?? 0) + 1,
         samples: this.samples.loadSince(config.monitorId, cutoff),
+        openInterestSamples: this.samples.loadMetricSince?.(config.monitorId, 'open_interest', cutoff) ?? [],
+        nextOpenInterestAt: 0,
         warmupFailures: 0,
         nextWarmupAt: 0,
       };
@@ -150,6 +179,10 @@ export class MarketMetricService {
   }
 
   public async ingestPrice(metric: Metric): Promise<void> {
+    await this.ingestMetric(metric);
+  }
+
+  public async ingestMetric(metric: Metric): Promise<void> {
     const state = this.states.get(metric.monitorId);
     if (state !== undefined && metric.name === 'price' && metric.status === 'ok') {
       const currentObservedAt = state.latestPrice === undefined ? Number.NEGATIVE_INFINITY : Date.parse(state.latestPrice.observedAt);
@@ -164,6 +197,7 @@ export class MarketMetricService {
     for (const state of this.states.values()) {
       await this.processMonitor(state, at);
     }
+    await this.pollOpenInterest(at);
   }
 
   public async waitForWarmups(): Promise<void> {
@@ -226,7 +260,7 @@ export class MarketMetricService {
   }
 
   private hasAllReferences(state: MonitorState, timestamp: number): boolean {
-    return state.config.windowSeconds.every((window) =>
+    return state.config.priceWindowSeconds.every((window) =>
       findReference(state.samples, timestamp - window * 1_000) !== undefined);
   }
 
@@ -244,10 +278,105 @@ export class MarketMetricService {
     }
 
     await this.emitDataAge(state, at);
-    for (const windowSeconds of state.config.windowSeconds) {
+    for (const windowSeconds of state.config.priceWindowSeconds) {
       await this.emitPriceChange(state, at, windowSeconds);
     }
     this.ensureWarmup(state, timestamp);
+  }
+
+  private async pollOpenInterest(at: Date): Promise<void> {
+    const due = [...this.states.values()].filter((state) => (
+      state.config.marketType === 'perpetual' && at.getTime() >= state.nextOpenInterestAt
+    ));
+    const groups = new Map<string, MonitorState[]>();
+    for (const state of due) {
+      const key = `${state.config.integrationId}:${state.config.providerSymbol.toUpperCase()}`;
+      const current = groups.get(key) ?? [];
+      current.push(state);
+      groups.set(key, current);
+    }
+    await Promise.all([...groups.values()].map(async (states) => {
+      const first = states[0];
+      if (first === undefined) return;
+      for (const state of states) {
+        state.nextOpenInterestAt = at.getTime() + state.config.intervalSeconds * 1_000;
+      }
+      const client = new BinanceRestClient({
+        spotRestUrl: first.config.spotRestUrl,
+        futuresRestUrl: first.config.futuresRestUrl,
+        ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
+      });
+      try {
+        const result = await client.loadOpenInterest(first.config.providerSymbol);
+        for (const state of states) await this.acceptOpenInterest(state, result.openInterest, result.observedAt, at);
+      } catch (error) {
+        this.options.onError(new Error(`Open interest polling failed for ${first.config.providerSymbol}: ${errorValue(error).message}`));
+        for (const state of states) {
+          await this.metricPipeline.ingest({
+            monitorId: state.config.monitorId,
+            source: 'binance',
+            target: targetFor(state.config),
+            name: 'open_interest',
+            value: state.latestOpenInterest === undefined ? 'unavailable' : String(state.latestOpenInterest.value),
+            unit: 'contracts',
+            observedAt: at.toISOString(),
+            receivedAt: this.now().toISOString(),
+            status: 'error',
+            labels: labelsFor(state.config),
+          });
+        }
+      }
+    }));
+  }
+
+  private async acceptOpenInterest(state: MonitorState, value: string, observedAt: string, at: Date): Promise<void> {
+    const metric: Metric = {
+      monitorId: state.config.monitorId,
+      source: 'binance',
+      target: targetFor(state.config),
+      name: 'open_interest',
+      value,
+      unit: 'contracts',
+      observedAt,
+      receivedAt: this.now().toISOString(),
+      status: 'ok',
+      labels: labelsFor(state.config),
+    };
+    state.latestOpenInterest = metric;
+    const cutoffMilliseconds = at.getTime() - MARKET_SAMPLE_RETENTION_MILLISECONDS;
+    const sample = { observedAt, value };
+    const byTimestamp = new Map(state.openInterestSamples.map((item) => [item.observedAt, item]));
+    byTimestamp.set(observedAt, sample);
+    state.openInterestSamples = [...byTimestamp.values()]
+      .filter((item) => Date.parse(item.observedAt) >= cutoffMilliseconds)
+      .sort((left, right) => Date.parse(left.observedAt) - Date.parse(right.observedAt));
+    this.samples.saveMetricAndPrune?.(
+      state.config.monitorId,
+      'open_interest',
+      [sample],
+      new Date(cutoffMilliseconds).toISOString(),
+    );
+    await this.metricPipeline.ingest(metric);
+    for (const windowSeconds of state.config.openInterestWindowSeconds) {
+      const reference = [...state.openInterestSamples].reverse()
+        .find((item) => Date.parse(item.observedAt) <= at.getTime() - windowSeconds * 1_000);
+      const common = {
+        monitorId: state.config.monitorId,
+        source: 'binance',
+        target: targetFor(state.config),
+        name: 'open_interest_change_percent',
+        unit: 'percent',
+        observedAt: at.toISOString(),
+        receivedAt: this.now().toISOString(),
+        labels: { ...labelsFor(state.config), windowSeconds: String(windowSeconds) },
+      } as const;
+      if (reference === undefined || new Decimal(reference.value).isZero()) {
+        await this.metricPipeline.ingest({ ...common, value: 'unavailable', status: 'warming_up' });
+        continue;
+      }
+      const change = new Decimal(value).div(reference.value).minus(1).times(100).toSignificantDigits(18).toString();
+      await this.metricPipeline.ingest({ ...common, value: change, status: 'ok' });
+    }
   }
 
   private async emitDataAge(state: MonitorState, at: Date): Promise<void> {
@@ -285,7 +414,7 @@ export class MarketMetricService {
       labels: { ...labelsFor(state.config), windowSeconds: String(windowSeconds) },
     } as const;
     if (latest === undefined || reference === undefined) {
-      await this.metricPipeline.ingest({ ...common, value: '0', status: latestIsStale ? 'stale' : 'warming_up' });
+      await this.metricPipeline.ingest({ ...common, value: 'unavailable', status: latestIsStale ? 'stale' : 'warming_up' });
       return;
     }
     const change = new Decimal(String(latest.value)).dividedBy(reference.price).minus(1).times(100);

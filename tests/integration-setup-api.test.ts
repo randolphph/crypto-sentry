@@ -57,6 +57,8 @@ describe('Integration setup API', () => {
       };
       monitorTypes: Array<{ id: string; status: string; chainIds?: number[]; versions?: string[] }>;
       uniswap: { deployments: Array<{ chainId: number; version: string; positionManagerAddress: string }> };
+      samplingPresets: Array<{ id: string; intervalSeconds: number }>;
+      ruleMetrics: { market: Array<{ id: string; kind: string; requiresWindow: boolean; marketTypes: string[] }> };
     }>();
     expect(catalogBody).toMatchObject({
       marketData: { providers: [{ id: 'binance', requiresCredentials: false }] },
@@ -78,6 +80,16 @@ describe('Integration setup API', () => {
     expect(catalogBody.monitorTypes).toEqual(expect.arrayContaining([
       { id: 'aave_pool', status: 'planned', chainIds: [1] },
       { id: 'uniswap_wallet', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
+    ]));
+    expect(catalogBody.samplingPresets).toEqual([
+      { id: 'realtime', intervalSeconds: 5 },
+      { id: 'standard', intervalSeconds: 20 },
+      { id: 'economy', intervalSeconds: 60 },
+    ]);
+    expect(catalogBody.ruleMetrics.market).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'base_volume_24h', kind: 'gauge', marketTypes: ['spot', 'perpetual'] }),
+      expect.objectContaining({ id: 'funding_rate_percent', kind: 'gauge', marketTypes: ['perpetual'] }),
+      expect.objectContaining({ id: 'open_interest_change_percent', requiresWindow: true }),
     ]));
     expect(catalogBody.evmRpc.networks).toEqual([
       expect.objectContaining({ chainId: 1, name: 'Ethereum' }),

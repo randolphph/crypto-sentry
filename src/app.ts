@@ -37,6 +37,7 @@ import { AlertRepository } from './db/repositories/alert-repository.js';
 import { IntegrationRepository } from './db/repositories/integration-repository.js';
 import { IntegrationNetworkHealthRepository } from './db/repositories/integration-network-health-repository.js';
 import { MarketRepository } from './db/repositories/market-repository.js';
+import { MetricEventRepository } from './db/repositories/metric-event-repository.js';
 import { MonitorRepository } from './db/repositories/monitor-repository.js';
 import { PriceSampleRepository } from './db/repositories/price-sample-repository.js';
 import { RuleRepository } from './db/repositories/rule-repository.js';
@@ -81,7 +82,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
             enum: [
               'RPC_ROUTING_CONFIG_INVALID', 'RPC_CHAIN_UNSUPPORTED', 'RPC_CHAIN_ID_MISMATCH',
               'RPC_PARTIAL_FAILURE', 'MONITOR_TYPE_NOT_READY', 'PROTOCOL_NOT_READY',
-              'RULE_CONDITION_INVALID', 'METRIC_NOT_AVAILABLE',
+              'RULE_CONDITION_INVALID', 'METRIC_NOT_AVAILABLE', 'RESOURCE_CATALOG_NOT_READY',
+              'RESOURCE_NOT_FOUND', 'POSITION_NOT_FOUND', 'POOL_NOT_FOUND', 'INDEXER_WARMING_UP',
+              'INDEXER_PARTIAL_FAILURE', 'VALUATION_UNAVAILABLE', 'RULE_METRIC_UNSUPPORTED',
+              'RULE_LABEL_INVALID', 'EVENT_RULE_DURATION_UNSUPPORTED',
             ],
           },
           ErrorResponse: {
@@ -119,7 +123,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const alerts = new AlertRepository(database.db);
   const status = new StatusService(database.db, [ruleExecution]);
   const latestMetrics = new LatestMetricStore();
-  const metricPipeline = new MetricPipeline(monitors, latestMetrics, [ruleExecution]);
+  const metricPipeline = new MetricPipeline(
+    monitors,
+    latestMetrics,
+    [ruleExecution],
+    new MetricEventRepository(database.db),
+  );
   app.decorate('metricPipeline', metricPipeline);
   const pollingScheduler = new PollingScheduler({
     onError: (taskId, error) => app.log.warn({ err: error, taskId }, 'Polling task failed'),
@@ -182,7 +191,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const unsubscribeConfigEvents = events.subscribe((event) => {
     if (event.entity === 'monitor') {
       if (event.operation === 'deleted') {
-        metricPipeline.forgetMonitor(event.id);
+        metricPipeline.removeMonitor(event.id);
         ruleExecution.invalidateMonitor(event.id);
       }
       if (event.operation === 'updated') ruleExecution.invalidateMonitor(event.id);

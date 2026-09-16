@@ -43,28 +43,28 @@ describe('Rule Group API and execution', () => {
       monitorId, name: 'Price and volume', combinator: 'and',
       conditions: [
         { metric: 'price', labels: {}, operator: 'gte', threshold: '100', hysteresis: '5' },
-        { metric: 'volume', labels: {}, operator: 'gte', threshold: '10', hysteresis: '1' },
+        { metric: 'quote_volume_24h', labels: {}, operator: 'gte', threshold: '10', hysteresis: '1' },
       ],
       durationSeconds: 60, cooldownSeconds: 60, severity: 'warning', notificationIntegrationIds: [], enabled: true,
     } });
     expect(created.statusCode).toBe(201);
-    expect(created.json()).toMatchObject({ combinator: 'and', conditions: [{ metric: 'price' }, { metric: 'volume' }] });
+    expect(created.json()).toMatchObject({ combinator: 'and', conditions: [{ metric: 'price' }, { metric: 'quote_volume_24h' }] });
     const ruleId = created.json<{ id: string }>().id;
 
     await ingest('price', '101', '2026-09-15T00:00:00.000Z');
-    await ingest('volume', '11', '2026-09-15T00:00:00.000Z');
+    await ingest('quote_volume_24h', '11', '2026-09-15T00:00:00.000Z');
     await ingest('price', '102', '2026-09-15T00:00:59.000Z');
     expect((await app.inject({ method: 'GET', url: '/api/v1/alerts', headers: authorization })).json<{ total: number }>().total).toBe(0);
-    await ingest('volume', '12', '2026-09-15T00:01:00.000Z');
+    await ingest('quote_volume_24h', '12', '2026-09-15T00:01:00.000Z');
     expect((await app.inject({ method: 'GET', url: '/api/v1/alerts', headers: authorization })).json<{ total: number }>().total).toBe(1);
 
     await ingest('price', '98', '2026-09-15T00:01:10.000Z');
-    await ingest('volume', '12', '2026-09-15T00:01:59.000Z');
+    await ingest('quote_volume_24h', '12', '2026-09-15T00:01:59.000Z');
     expect((await app.inject({ method: 'GET', url: '/api/v1/alerts', headers: authorization })).json<{ total: number }>().total).toBe(1);
-    await ingest('volume', '12', '2026-09-15T00:02:00.000Z');
+    await ingest('quote_volume_24h', '12', '2026-09-15T00:02:00.000Z');
     expect((await app.inject({ method: 'GET', url: '/api/v1/alerts', headers: authorization })).json<{ total: number }>().total).toBe(2);
 
-    await ingest('volume', '0', '2026-09-15T00:02:01.000Z', 'error');
+    await ingest('quote_volume_24h', '0', '2026-09-15T00:02:01.000Z', 'error');
     const stillOpen = await app.inject({ method: 'GET', url: '/api/v1/alerts?status=open', headers: authorization });
     expect(stillOpen.json<{ total: number }>().total).toBe(2);
     await ingest('price', '94', '2026-09-15T00:02:02.000Z');
@@ -85,11 +85,34 @@ describe('Rule Group API and execution', () => {
       monitorId, name: 'Price or volume', combinator: 'or',
       conditions: [
         { metric: 'price', labels: {}, operator: 'gte', threshold: '100' },
-        { metric: 'volume', labels: {}, operator: 'gte', threshold: '10' },
+        { metric: 'quote_volume_24h', labels: {}, operator: 'gte', threshold: '10' },
       ],
       durationSeconds: 0, cooldownSeconds: 60, severity: 'warning', notificationIntegrationIds: [], enabled: true,
     } });
     await ingest('price', '101', '2026-09-15T00:00:00.000Z');
     expect((await app.inject({ method: 'GET', url: '/api/v1/alerts', headers: authorization })).json<{ total: number }>().total).toBe(1);
+  });
+
+  it('validates metric support, windows, labels, and market type from the catalog', async () => {
+    const funding = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
+      monitorId, name: 'Spot funding', metric: 'funding_rate_percent', operator: 'gte', threshold: '0.01',
+      severity: 'warning',
+    } });
+    expect(funding.statusCode).toBe(400);
+    expect(funding.json()).toMatchObject({ error: { code: 'RULE_METRIC_UNSUPPORTED' } });
+
+    const missingWindow = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
+      monitorId, name: 'Price move', metric: 'price_change_percent', operator: 'gte', threshold: '3', severity: 'warning',
+    } });
+    expect(missingWindow.statusCode).toBe(400);
+    expect(missingWindow.json()).toMatchObject({ error: { code: 'RULE_CONDITION_INVALID' } });
+
+    const badLabel = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
+      monitorId, name: 'Bad label', metric: 'price', labels: { chainId: '1' }, operator: 'gte', threshold: '1', severity: 'warning',
+    } });
+    expect(badLabel.statusCode).toBe(400);
+    const badLabelBody = badLabel.json<{ error: { code: string; fields: Record<string, string> } }>();
+    expect(badLabelBody.error.code).toBe('RULE_LABEL_INVALID');
+    expect(typeof badLabelBody.error.fields['conditions.0.labels.chainId']).toBe('string');
   });
 });

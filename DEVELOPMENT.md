@@ -34,6 +34,10 @@
 - [x] 5 秒采样、30 分钟窗口、SQLite 重启恢复与 REST K 线预热
 - [x] 价格、按规则窗口计算的涨跌幅与数据过期指标
 - [x] 断线过期/恢复链路和 100 市场共享连接、指标周期容量测试
+- [x] 24h base/quote volume、永续 funding rate/next funding time WebSocket 指标
+- [x] Open Interest 合并轮询、窗口变化、SQLite 重启恢复与错误状态
+- [x] gauge/event Metric、持久化 eventId 去重与事件规则一次性消费
+- [x] sampling presets、Market ruleMetrics Catalog 与 Rule 能力校验
 
 ### 3. 链上协议
 

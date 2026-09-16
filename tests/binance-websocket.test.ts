@@ -73,7 +73,7 @@ describe('Binance WebSocket messages', () => {
 
   it('decodes spot last prices and perpetual mark prices and ignores invalid payloads', () => {
     expect(decodeBinancePriceEvent('spot', JSON.stringify({
-      e: '24hrMiniTicker', E: 1_725_000_000_000, s: 'BTCUSDT', c: '90123.456789',
+      e: '24hrMiniTicker', E: 1_725_000_000_000, s: 'BTCUSDT', c: '90123.456789', v: '123.45', q: '11122233.44',
     }))).toEqual({
       marketType: 'spot',
       providerSymbol: 'BTCUSDT',
@@ -83,7 +83,7 @@ describe('Binance WebSocket messages', () => {
     });
     expect(decodeBinancePriceEvent('perpetual', JSON.stringify({
       stream: 'ethusdt@markPrice@1s',
-      data: { e: 'markPriceUpdate', E: 1_725_000_000_100, s: 'ETHUSDT', p: '2456.78' },
+      data: { e: 'markPriceUpdate', E: 1_725_000_000_100, s: 'ETHUSDT', p: '2456.78', r: '0.0001', T: 1_725_001_000_000 },
     }))).toEqual(expect.objectContaining({ priceType: 'mark', price: '2456.78' }));
     expect(decodeBinancePriceEvent('spot', '{invalid')).toBeUndefined();
     expect(decodeBinancePriceEvent('spot', JSON.stringify({
@@ -185,20 +185,30 @@ describe('Binance market stream manager', () => {
     const perpetual = sockets.find((socket) => socket.url.includes('futures'));
     spot?.open();
     perpetual?.open();
-    spot?.message({ e: '24hrMiniTicker', E: 1_725_000_000_000, s: 'BTCUSDT', c: '90000.01' });
-    perpetual?.message({ e: 'markPriceUpdate', E: 1_725_000_000_100, s: 'ETHUSDT', p: '2500.02' });
+    spot?.message({ e: '24hrMiniTicker', E: 1_725_000_000_000, s: 'BTCUSDT', c: '90000.01', v: '12.3456789', q: '1111111.2222' });
+    perpetual?.message({
+      e: 'markPriceUpdate', E: 1_725_000_000_100, s: 'ETHUSDT', p: '2500.02', r: '0.0001', T: 1_725_001_000_000,
+    });
     await Promise.resolve();
 
-    expect(metrics).toHaveLength(3);
-    expect(metrics.find((metric) => metric.monitorId === 'mon_spot_1')).toMatchObject({
+    expect(metrics).toHaveLength(9);
+    expect(metrics.find((metric) => metric.monitorId === 'mon_spot_1' && metric.name === 'price')).toMatchObject({
       target: 'BTC/USD', value: '90000.01', labels: { priceType: 'last' },
     });
-    expect(metrics.find((metric) => metric.monitorId === 'mon_spot_2')).toMatchObject({
+    expect(metrics.find((metric) => metric.monitorId === 'mon_spot_2' && metric.name === 'base_volume_24h')).toMatchObject({
+      value: '12.3456789', unit: 'base_asset', labels: { baseAsset: 'BTC', quoteAsset: 'USDT' },
+    });
+    expect(metrics.find((metric) => metric.monitorId === 'mon_spot_2' && metric.name === 'price')).toMatchObject({
       target: 'BTCUSDT', value: '90000.01',
     });
-    expect(metrics.find((metric) => metric.monitorId === 'mon_perp')).toMatchObject({
+    expect(metrics.find((metric) => metric.monitorId === 'mon_perp' && metric.name === 'price')).toMatchObject({
       target: 'ETH/USD', value: '2500.02', labels: { priceType: 'mark' },
     });
+    expect(metrics.find((metric) => metric.monitorId === 'mon_perp' && metric.name === 'funding_rate_percent'))
+      .toMatchObject({ value: '0.01', unit: 'percent' });
+    expect(parseControlMessage(perpetual?.sent[0] ?? '{}').params).toEqual([
+      'ethusdt@markPrice@1s', 'ethusdt@miniTicker',
+    ]);
     manager.close();
   });
 });

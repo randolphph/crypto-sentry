@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { migrations, runMigrations } from '../src/db/migrations.js';
 
-describe('0004_multichain_rpc_and_rule_groups migration', () => {
+describe('compatible database migrations', () => {
   it('upgrades an existing database and preserves/backfills legacy rules atomically', () => {
     const sqlite = new BetterSqlite3(':memory:');
     sqlite.pragma('foreign_keys = ON');
@@ -50,6 +50,10 @@ describe('0004_multichain_rpc_and_rule_groups migration', () => {
     expect(sqlite.prepare('SELECT state, last_value AS lastValue FROM rule_states WHERE rule_id = ?').get('rule_existing')).toEqual({
       state: 'TRIGGERED', lastValue: '3.1',
     });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='market_metric_samples'").get())
+      .toEqual({ name: 'market_metric_samples' });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='processed_metric_events'").get())
+      .toEqual({ name: 'processed_metric_events' });
     sqlite.close();
   });
 });

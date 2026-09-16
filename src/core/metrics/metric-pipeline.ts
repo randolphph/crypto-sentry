@@ -1,4 +1,4 @@
-import { isActionableMetric, parseMetric } from './metric.js';
+import { isActionableMetric, metricKind, parseMetric } from './metric.js';
 import type { Metric, MetricStatus } from './metric.js';
 import type { LatestMetricStore } from './latest-metric-store.js';
 
@@ -23,9 +23,28 @@ export interface MetricConsumer {
   consume(metric: Metric): Promise<void>;
 }
 
+export interface MetricEventDedupeStore {
+  claim(eventId: string, monitorId: string, receivedAt: string): boolean;
+  clearMonitor(monitorId: string): void;
+}
+
+class InMemoryMetricEventDedupeStore implements MetricEventDedupeStore {
+  private readonly eventIds = new Map<string, string>();
+
+  public claim(eventId: string, monitorId: string): boolean {
+    if (this.eventIds.has(eventId)) return false;
+    this.eventIds.set(eventId, monitorId);
+    return true;
+  }
+
+  public clearMonitor(monitorId: string): void {
+    for (const [eventId, owner] of this.eventIds) if (owner === monitorId) this.eventIds.delete(eventId);
+  }
+}
+
 export interface MetricIngestionResult {
   accepted: boolean;
-  reason?: 'monitor_not_found' | 'monitor_disabled' | 'out_of_order';
+  reason?: 'monitor_not_found' | 'monitor_disabled' | 'out_of_order' | 'duplicate_event';
   forwardedToConsumers: boolean;
   consumerErrors: string[];
 }
@@ -67,6 +86,7 @@ export class MetricPipeline {
     private readonly monitorStates: MonitorRuntimeStateStore,
     private readonly latestMetrics: LatestMetricStore,
     private readonly consumers: MetricConsumer[] = [],
+    private readonly eventDedupe: MetricEventDedupeStore = new InMemoryMetricEventDedupeStore(),
   ) {}
 
   public async ingest(input: unknown): Promise<MetricIngestionResult> {
@@ -92,6 +112,11 @@ export class MetricPipeline {
     this.latestMetrics.removeMonitor(monitorId);
   }
 
+  public removeMonitor(monitorId: string): void {
+    this.latestMetrics.removeMonitor(monitorId);
+    this.eventDedupe.clearMonitor(monitorId);
+  }
+
   public async close(): Promise<void> {
     await Promise.all(this.queues.values());
     this.latestMetrics.clear();
@@ -104,6 +129,9 @@ export class MetricPipeline {
     }
     if (!monitor.enabled) {
       return { accepted: false, reason: 'monitor_disabled', forwardedToConsumers: false, consumerErrors: [] };
+    }
+    if (metricKind(metric) === 'event' && !this.eventDedupe.claim(metric.eventId ?? '', metric.monitorId, metric.receivedAt)) {
+      return { accepted: false, reason: 'duplicate_event', forwardedToConsumers: false, consumerErrors: [] };
     }
     if (!this.latestMetrics.put(metric)) {
       return { accepted: false, reason: 'out_of_order', forwardedToConsumers: false, consumerErrors: [] };

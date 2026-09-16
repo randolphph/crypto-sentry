@@ -15,7 +15,7 @@ import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
 import type { AppDatabase } from '../client.js';
-import { integrations, monitors, rules } from '../schema/index.js';
+import { integrationMarkets, integrations, monitors, rules } from '../schema/index.js';
 import { ruleConditions } from '../schema/index.js';
 import type { IntegrationRepository } from './integration-repository.js';
 import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
@@ -60,31 +60,50 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   }
 
   public listEnabledMarketSubscriptions() {
-    const windowsByMonitor = new Map<string, number[]>();
+    const windowsByMonitor = new Map<string, { price: number[]; openInterest: number[] }>();
     for (const rule of this.database
-      .select({ monitorId: rules.monitorId, windowSeconds: ruleConditions.windowSeconds })
+      .select({ monitorId: rules.monitorId, metric: ruleConditions.metric, windowSeconds: ruleConditions.windowSeconds })
       .from(ruleConditions)
       .innerJoin(rules, eq(ruleConditions.ruleId, rules.id))
-      .where(and(eq(rules.enabled, true), eq(ruleConditions.metric, 'price_change_percent')))
+      .where(eq(rules.enabled, true))
       .all()) {
-      if (rule.windowSeconds === null) continue;
-      const windows = windowsByMonitor.get(rule.monitorId) ?? [];
-      windows.push(rule.windowSeconds);
+      if (rule.windowSeconds === null || !['price_change_percent', 'open_interest_change_percent'].includes(rule.metric)) continue;
+      const windows = windowsByMonitor.get(rule.monitorId) ?? { price: [], openInterest: [] };
+      (rule.metric === 'price_change_percent' ? windows.price : windows.openInterest).push(rule.windowSeconds);
       windowsByMonitor.set(rule.monitorId, windows);
     }
     return this.database
-      .select({ id: monitors.id, configJson: monitors.configJson, maxStaleSeconds: monitors.maxStaleSeconds })
+      .select({
+        id: monitors.id,
+        configJson: monitors.configJson,
+        intervalSeconds: monitors.intervalSeconds,
+        maxStaleSeconds: monitors.maxStaleSeconds,
+      })
       .from(monitors)
       .where(and(eq(monitors.enabled, true), eq(monitors.type, 'market')))
       .all()
       .flatMap((row) => {
         const config = marketMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
-        return config.success ? [{
+        if (!config.success) return [];
+        const market = this.database.select({
+          canonicalSymbol: integrationMarkets.canonicalSymbol,
+          baseAsset: integrationMarkets.baseAsset,
+          quoteAsset: integrationMarkets.quoteAsset,
+        }).from(integrationMarkets).where(and(
+          eq(integrationMarkets.integrationId, config.data.integrationId),
+          eq(integrationMarkets.marketType, config.data.marketType),
+          eq(integrationMarkets.providerSymbol, config.data.providerSymbol),
+        )).get();
+        const windows = windowsByMonitor.get(row.id) ?? { price: [], openInterest: [] };
+        return [{
           monitorId: row.id,
+          intervalSeconds: row.intervalSeconds,
           maxStaleSeconds: row.maxStaleSeconds,
-          windowSeconds: windowsByMonitor.get(row.id) ?? [],
+          priceWindowSeconds: windows.price,
+          openInterestWindowSeconds: windows.openInterest,
+          ...(market === undefined ? {} : market),
           ...config.data,
-        }] : [];
+        }];
       });
   }
 

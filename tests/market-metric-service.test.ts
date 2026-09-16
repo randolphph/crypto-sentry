@@ -9,6 +9,7 @@ import type { Metric } from '../src/core/metrics/metric.js';
 
 class FakePriceSampleStore implements PriceSampleStore {
   public readonly byMonitor = new Map<string, PriceSample[]>();
+  public readonly metrics = new Map<string, Array<{ observedAt: string; value: string }>>();
 
   public loadSince(monitorId: string, cutoff: string): PriceSample[] {
     return (this.byMonitor.get(monitorId) ?? []).filter((sample) => Date.parse(sample.observedAt) >= Date.parse(cutoff));
@@ -24,11 +25,32 @@ class FakePriceSampleStore implements PriceSampleStore {
 
   public clear(monitorId: string): void {
     this.byMonitor.delete(monitorId);
+    for (const key of this.metrics.keys()) if (key.startsWith(`${monitorId}:`)) this.metrics.delete(key);
+  }
+
+  public loadMetricSince(monitorId: string, metricName: string, cutoff: string) {
+    return (this.metrics.get(`${monitorId}:${metricName}`) ?? [])
+      .filter((sample) => Date.parse(sample.observedAt) >= Date.parse(cutoff));
+  }
+
+  public saveMetricAndPrune(
+    monitorId: string,
+    metricName: string,
+    samples: Array<{ observedAt: string; value: string }>,
+    cutoff: string,
+  ): void {
+    const key = `${monitorId}:${metricName}`;
+    const merged = new Map((this.metrics.get(key) ?? []).map((sample) => [sample.observedAt, sample]));
+    for (const sample of samples) merged.set(sample.observedAt, sample);
+    this.metrics.set(key, [...merged.values()].filter((sample) => Date.parse(sample.observedAt) >= Date.parse(cutoff)));
   }
 }
 
 class FakeMonitorStore {
-  public readonly monitors = new Map<string, RuntimeMonitor>([['mon_btc', { id: 'mon_btc', enabled: true }]]);
+  public readonly monitors = new Map<string, RuntimeMonitor>([
+    ['mon_btc', { id: 'mon_btc', enabled: true }],
+    ['mon_btc_2', { id: 'mon_btc_2', enabled: true }],
+  ]);
   public readonly states = new Map<string, MonitorRuntimeState>();
 
   public findRuntimeMonitor(id: string): RuntimeMonitor | undefined {
@@ -165,8 +187,61 @@ describe('MarketMetricService', () => {
 
     expect(errors[0]?.message).toContain('Market warmup failed for mon_btc');
     expect(latest.list('mon_btc')).toContainEqual(expect.objectContaining({
-      name: 'price_change_percent', value: '0', status: 'warming_up',
+      name: 'price_change_percent', value: 'unavailable', status: 'warming_up',
     }));
     await service.close();
+  });
+
+  it('deduplicates open-interest polling, calculates persisted windows, and reports failures without zero', async () => {
+    let current = new Date('2026-09-14T12:05:00.000Z');
+    const samples = new FakePriceSampleStore();
+    for (const monitorId of ['mon_btc', 'mon_btc_2']) {
+      samples.byMonitor.set(monitorId, [{ observedAt: '2026-09-14T12:00:00.000Z', price: '100' }]);
+      samples.metrics.set(`${monitorId}:open_interest`, [{ observedAt: '2026-09-14T12:00:00.000Z', value: '100' }]);
+    }
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      if (calls > 1) return new Response('{}', { status: 503 });
+      return new Response(JSON.stringify({ symbol: 'BTCUSDT', openInterest: '110.000000000000000001', time: current.getTime() }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+    const { errors, latest, service } = setup(samples, () => current, fetchMock);
+    const perpetual = {
+      ...runtime, marketType: 'perpetual' as const, priceType: 'mark' as const,
+      intervalSeconds: 20, priceWindowSeconds: [300], openInterestWindowSeconds: [300],
+    };
+    service.reconcile([perpetual, { ...perpetual, monitorId: 'mon_btc_2' }]);
+
+    await service.runCycle(current);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(latest.list('mon_btc')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'open_interest', value: '110.000000000000000001', status: 'ok' }),
+      expect.objectContaining({ name: 'open_interest_change_percent', value: '10', status: 'ok' }),
+    ]));
+    current = new Date('2026-09-14T12:05:05.000Z');
+    await service.runCycle(current);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    current = new Date('2026-09-14T12:05:21.000Z');
+    await service.runCycle(current);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(latest.list('mon_btc')).toContainEqual(expect.objectContaining({
+      name: 'open_interest', value: '110.000000000000000001', status: 'error',
+    }));
+    expect(errors.at(-1)?.message).toContain('Open interest polling failed');
+    await service.close();
+
+    current = new Date('2026-09-14T12:10:00.000Z');
+    const restartFetch = vi.fn(async () => new Response(JSON.stringify({
+      symbol: 'BTCUSDT', openInterest: '121.0000000000000000011', time: current.getTime(),
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const restarted = setup(samples, () => current, restartFetch);
+    restarted.service.reconcile([perpetual]);
+    await restarted.service.runCycle(current);
+    expect(restarted.latest.list('mon_btc')).toContainEqual(expect.objectContaining({
+      name: 'open_interest_change_percent', value: '10', status: 'ok',
+    }));
+    await restarted.service.close();
   });
 });

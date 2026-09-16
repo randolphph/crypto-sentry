@@ -13,7 +13,16 @@ export const metricSchema = z.object({
   observedAt: z.iso.datetime({ offset: true }),
   receivedAt: z.iso.datetime({ offset: true }),
   status: metricStatusSchema,
+  kind: z.enum(['gauge', 'event']).optional(),
+  eventId: z.string().min(1).optional(),
   labels: z.record(z.string(), z.string()).optional(),
+}).superRefine((metric, context) => {
+  if (metric.kind === 'event' && metric.eventId === undefined) {
+    context.addIssue({ code: 'custom', path: ['eventId'], message: 'Event metrics require a stable eventId' });
+  }
+  if (metric.kind !== 'event' && metric.eventId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['eventId'], message: 'Only event metrics may include eventId' });
+  }
 });
 
 export type Metric = z.infer<typeof metricSchema>;
@@ -24,6 +33,10 @@ export function parseMetric(input: unknown): Metric {
 
 export function isActionableMetric(metric: Metric): boolean {
   return metric.status === 'ok' || (metric.name === 'data_age_seconds' && metric.status === 'stale');
+}
+
+export function metricKind(metric: Metric): 'gauge' | 'event' {
+  return metric.kind ?? 'gauge';
 }
 
 export interface AdapterContext<TConfig> {

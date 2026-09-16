@@ -167,6 +167,34 @@ export const priceSamples = sqliteTable(
   ],
 );
 
+export const marketMetricSamples = sqliteTable(
+  'market_metric_samples',
+  {
+    monitorId: text('monitor_id')
+      .notNull()
+      .references(() => monitors.id, { onDelete: 'cascade' }),
+    metricName: text('metric_name').notNull(),
+    observedAt: text('observed_at').notNull(),
+    value: text('value').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.monitorId, table.metricName, table.observedAt] }),
+    index('market_metric_samples_observed_at_idx').on(table.observedAt),
+  ],
+);
+
+export const processedMetricEvents = sqliteTable(
+  'processed_metric_events',
+  {
+    eventId: text('event_id').primaryKey(),
+    monitorId: text('monitor_id')
+      .notNull()
+      .references(() => monitors.id, { onDelete: 'cascade' }),
+    receivedAt: text('received_at').notNull(),
+  },
+  (table) => [index('processed_metric_events_monitor_idx').on(table.monitorId, table.receivedAt)],
+);
+
 export const uniswapV4ScanCheckpoints = sqliteTable(
   'uniswap_v4_scan_checkpoints',
   {

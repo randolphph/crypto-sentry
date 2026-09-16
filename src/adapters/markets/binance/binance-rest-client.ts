@@ -24,6 +24,11 @@ const futuresExchangeInfoSchema = z.object({
   }).passthrough()),
 }).passthrough();
 const klineResponseSchema = z.array(z.array(z.unknown()).min(7));
+const openInterestResponseSchema = z.object({
+  symbol: z.string().min(1),
+  openInterest: z.string().min(1),
+  time: z.number().int().nonnegative().optional(),
+}).passthrough();
 
 const usdEquivalentQuotes = new Set(['USD', 'USDT', 'USDC', 'FDUSD', 'BUSD', 'TUSD']);
 
@@ -44,6 +49,12 @@ export interface BinanceKlineRequest {
 export interface BinancePriceSample {
   observedAt: string;
   price: string;
+}
+
+export interface BinanceOpenInterest {
+  providerSymbol: string;
+  openInterest: string;
+  observedAt: string;
 }
 
 export class BinanceRestError extends Error {
@@ -135,6 +146,26 @@ export class BinanceRestClient {
         return [];
       }
     });
+  }
+
+  public async loadOpenInterest(providerSymbol: string): Promise<BinanceOpenInterest> {
+    const parameters = new URLSearchParams({ symbol: providerSymbol.toUpperCase() });
+    const result = await this.request(
+      this.options.futuresRestUrl,
+      `/fapi/v1/openInterest?${parameters.toString()}`,
+      openInterestResponseSchema,
+    );
+    try {
+      const value = new Decimal(result.openInterest);
+      if (!value.isFinite() || value.isNegative()) throw new Error('invalid open interest');
+    } catch (error) {
+      throw new BinanceRestError('Binance returned invalid open interest', error);
+    }
+    return {
+      providerSymbol: result.symbol,
+      openInterest: result.openInterest,
+      observedAt: new Date(result.time ?? Date.now()).toISOString(),
+    };
   }
 
   private async request<Output>(baseUrl: string, path: string, schema: z.ZodType<Output>): Promise<Output> {

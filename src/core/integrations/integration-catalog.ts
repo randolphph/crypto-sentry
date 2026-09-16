@@ -1,5 +1,6 @@
 import { ROBINHOOD_UNISWAP_V3 } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { ROBINHOOD_UNISWAP_V4 } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
+import { RULE_METRICS } from '../rules/rule-metric-catalog.js';
 
 export const EVM_RPC_PROVIDERS = ['alchemy', 'infura', 'quicknode', 'custom'] as const;
 
@@ -13,6 +14,12 @@ export const BINANCE_DEFAULT_CONFIG = {
 } as const;
 
 export const INTEGRATION_CATALOG = {
+  samplingPresets: [
+    { id: 'realtime', intervalSeconds: 5 },
+    { id: 'standard', intervalSeconds: 20 },
+    { id: 'economy', intervalSeconds: 60 },
+  ],
+  ruleMetrics: RULE_METRICS,
   marketData: {
     providers: [{
       id: 'binance',

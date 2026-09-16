@@ -61,8 +61,10 @@ export class BinanceMarketDataCoordinator {
       metricRuntimes.push(...subscriptions.map((subscription) => ({
         ...subscription,
         integrationId: integration.id,
+        intervalSeconds: subscription.intervalSeconds,
         maxStaleSeconds: subscription.maxStaleSeconds,
-        windowSeconds: subscription.windowSeconds,
+        priceWindowSeconds: subscription.priceWindowSeconds,
+        openInterestWindowSeconds: subscription.openInterestWindowSeconds,
         spotRestUrl: parsedConfig.data.restUrl,
         futuresRestUrl: parsedConfig.data.futuresRestUrl,
       })));
@@ -80,7 +82,7 @@ export class BinanceMarketDataCoordinator {
           futuresWebsocketUrl,
           webSocketFactory: this.webSocketFactory,
           emitMetric: async (metric) => {
-            await this.marketMetrics.ingestPrice(metric);
+            await this.marketMetrics.ingestMetric(metric);
           },
           onError: this.onError,
         });
