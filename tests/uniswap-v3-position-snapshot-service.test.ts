@@ -102,4 +102,13 @@ describe('UniswapV3PositionSnapshotService', () => {
     expect(snapshot.observedAt).toBe(observedAt);
     expect(snapshot.dataAgeSeconds).toBe(120);
   });
+
+  it('does not overwrite identical token IDs from different chains', () => {
+    const ethereum = { ...metric('read_status', true), labels: { ...labels, chainId: '1', chainName: 'Ethereum' } };
+    const robinhood = { ...metric('read_status', true), labels: { ...labels, chainId: '4663', chainName: 'Robinhood Chain' } };
+    const snapshot = serviceWith([ethereum, robinhood]).get('mon_uniswap');
+
+    expect(snapshot.positions).toHaveLength(2);
+    expect(snapshot.positions.map((position) => position.chainId).sort((left, right) => left - right)).toEqual([1, 4_663]);
+  });
 });

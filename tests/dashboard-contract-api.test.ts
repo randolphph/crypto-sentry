@@ -118,7 +118,7 @@ describe('Dashboard next-version API contract', () => {
     });
   });
 
-  it('enables Aave pool while rejecting planned Uniswap pool and Ethereum Uniswap', async () => {
+  it('enables Aave pool and requires Uniswap pools to come from the indexed resource catalog', async () => {
     const ethereum = await rpc('Ethereum', 1, 'https://ethereum.example');
     const aavePool = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
       name: 'Aave pool', type: 'aave_pool', enabled: false, config: { rpcIntegrationId: ethereum, chainId: 1 },
@@ -143,14 +143,13 @@ describe('Dashboard next-version API contract', () => {
       name: 'Uniswap pool', type: 'uniswap_pool',
       config: { rpcIntegrationId: ethereum, chainId: 1, version: 'v3', poolAddress: walletAddress },
     } });
-    expect(planned.statusCode).toBe(409);
-    expect(planned.json()).toMatchObject({ error: { code: 'MONITOR_TYPE_NOT_READY' } });
+    expect(planned.statusCode).toBe(404);
+    expect(planned.json()).toMatchObject({ error: { code: 'POOL_NOT_FOUND' } });
     const ethereumUniswap = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
       name: 'Ethereum Uniswap', type: 'uniswap_position',
       config: { rpcIntegrationId: ethereum, chainId: 1, version: 'v3', tokenId: '1' },
     } });
-    expect(ethereumUniswap.statusCode).toBe(409);
-    expect(ethereumUniswap.json()).toMatchObject({ error: { code: 'PROTOCOL_NOT_READY' } });
+    expect(ethereumUniswap.statusCode).toBe(201);
 
     const robinhood = await rpc('Robinhood', 4_663, 'https://robinhood.example');
     const wrongRpc = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
@@ -174,8 +173,8 @@ describe('Dashboard next-version API contract', () => {
       method: 'PATCH', url: `/api/v1/monitors/${positionId}`, headers: authorization,
       payload: { config: { chainId: 1 } },
     });
-    expect(ethereumPatch.statusCode).toBe(409);
-    expect(ethereumPatch.json()).toMatchObject({ error: { code: 'PROTOCOL_NOT_READY' } });
+    expect(ethereumPatch.statusCode).toBe(400);
+    expect(ethereumPatch.json()).toMatchObject({ error: { code: 'RPC_CHAIN_UNSUPPORTED' } });
     expect((await app.inject({ method: 'GET', url: `/api/v1/monitors/${positionId}`, headers: authorization })).json())
       .toMatchObject({ config: { rpcIntegrationId: robinhood, chainId: 4_663, version: 'v3', tokenId: '11' } });
 
@@ -210,8 +209,8 @@ describe('Dashboard next-version API contract', () => {
       payload: { config: { chainIds: [4_663, 1] } },
     });
 
-    expect(rejected.statusCode).toBe(409);
-    expect(rejected.json()).toMatchObject({ error: { code: 'PROTOCOL_NOT_READY' } });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({ error: { code: 'RPC_CHAIN_UNSUPPORTED' } });
     expect((await app.inject({ method: 'GET', url: `/api/v1/monitors/${monitorId}`, headers: authorization })).json())
       .toMatchObject({ config: { chainIds: [4_663], versions: ['v3', 'v4'] } });
   });

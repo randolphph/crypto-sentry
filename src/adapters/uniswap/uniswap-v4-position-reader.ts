@@ -105,7 +105,19 @@ export const ROBINHOOD_UNISWAP_V4: UniswapV4Deployment = {
   stateViewAddress: getAddress('0xf3334192d15450cdd385c8b70e03f9a6bd9e673b'),
 };
 
+export const ETHEREUM_UNISWAP_V4: UniswapV4Deployment = {
+  chainId: 1,
+  chainName: 'Ethereum',
+  rpcUrl: '',
+  explorerUrl: 'https://etherscan.io',
+  deploymentBlock: 21_688_329n,
+  poolManagerAddress: getAddress('0x000000000004444c5dc75cb358380d2e3de08a90'),
+  positionManagerAddress: getAddress('0xbd216513d74c8cf14cf4747e6aaa6420ff64ee9e'),
+  stateViewAddress: getAddress('0x7ffe42c4a5deea5b0fec41c94c136cf115597227'),
+};
+
 export const supportedUniswapV4Deployments = new Map<number, UniswapV4Deployment>([
+  [ETHEREUM_UNISWAP_V4.chainId, ETHEREUM_UNISWAP_V4],
   [ROBINHOOD_UNISWAP_V4.chainId, ROBINHOOD_UNISWAP_V4],
 ]);
 

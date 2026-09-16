@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持在 Robinhood Chain 上按钱包自动发现并监控 LP NFT。Ethereum Uniswap、Pool 指标和 Telegram 尚未接入。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet 和 Pool 基础监控及异步 Pool 目录。Telegram 尚未接入；Uniswap 窗口成交量、V4 完整手续费和非稳定币 USD 回退仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
 
@@ -94,6 +94,8 @@ Dashboard 可先读取数据源目录和当前就绪状态，避免在前端硬�
 GET  /api/v1/integrations/catalog            # 服务商、网络和安全默认值
 GET  /api/v1/integrations/readiness          # Aave/Binance/Uniswap 是否可创建有效 Monitor
 GET  /api/v1/integrations/:id/aave/reserves # Ethereum Aave V3 官方 Reserve 目录
+GET  /api/v1/integrations/:id/uniswap/pools # 异步索引的 V3/V4 Pool 目录
+GET  /api/v1/integrations/:id/uniswap/wallet-positions # 创建 Monitor 前发现 LP
 POST /api/v1/integrations/binance/default    # 幂等创建无需密钥的 Binance 公共行情源
 ```
 
@@ -189,9 +191,13 @@ Content-Type: application/json
 
 默认创建 `health_factor <= 1.2` 的 warning（持续 60 秒）和 `health_factor <= 1.05` 的 critical（立即触发），冷却时间为 30 分钟。请求体可覆盖 `warningThreshold`、`criticalThreshold`、两级持续时间、`cooldownSeconds` 和 `notificationIntegrationIds`。接口是幂等的：同一 Monitor 和网络重复调用不会重复创建默认规则。
 
-## Robinhood Chain Uniswap V3/V4 LP 监控
+## Ethereum / Robinhood Chain Uniswap V3/V4 LP 监控
 
-支持 Robinhood Chain 主网（Chain ID `4663`）上的 Uniswap V3 与 V4 NFT 仓位。后端内置官方 V3 Factory/NonfungiblePositionManager，以及 V4 PoolManager/PositionManager/StateView 地址，不接受前端传入合约地址。Robinhood 公共 RPC 可用于简单读取；钱包级 V4 首次历史日志同步建议在 Dashboard 中配置 Alchemy、QuickNode 或其他支持大范围 `eth_getLogs` 的专用标准 JSON-RPC。
+支持 Ethereum（Chain ID `1`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。Pool 目录由后台按确认区块分片索引并持久化游标；资源 API 返回 caughtUp、scannedThroughBlock 和 chainTipBlock，首次请求不会同步扫描 Ethereum 全历史。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
+
+Position Snapshot 的分组键为 `chainId + version + tokenId`。后端计算边界距离、token0/token1 数量、V3 已记账手续费和关闭状态；Wallet 汇总 position/in-range/out-of-range/failed 数量。包含可信稳定币的池可用链上价格计算 USD，否则 `positionValueUsd`/`tvlUsd` 为 `null` 且 valuationStatus 为 unavailable，绝不显示成 0。
+
+`uniswap_pool` 必须从 Pool 目录选择 V3 `poolAddress` 或 V4 `poolId`。Pool Monitor 输出 tick、双向价格、活跃流动性、V3 token TVL、可靠时的 USD TVL，以及 swap/mint/burn 事件；V3 另提供 fee_collection。eventId 按 `chainId:txHash:logIndex` 去重。V4 无法按单池可靠归属的 TVL 和手续费字段保持 `null`。
 
 先创建 RPC 集成：
 

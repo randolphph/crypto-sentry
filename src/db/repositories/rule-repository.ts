@@ -181,7 +181,7 @@ export class RuleRepository {
         });
       }
       const definition = ruleMetricDefinition(monitor.type, condition.metric);
-      if (['market', 'aave_account', 'aave_pool'].includes(monitor.type) && definition === undefined) {
+      if (['market', 'aave_account', 'aave_pool', 'uniswap_position', 'uniswap_wallet', 'uniswap_pool'].includes(monitor.type) && definition === undefined) {
         throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported by this monitor type', {
           [`conditions.${index}.metric`]: `${condition.metric} is not available for ${monitor.type}`,
         });
@@ -227,6 +227,30 @@ export class RuleRepository {
       if (condition.labels.marketType !== undefined && condition.labels.marketType !== marketType) {
         throw new AppError(400, 'RULE_LABEL_INVALID', 'Rule labels do not match the monitor configuration', {
           [`conditions.${index}.labels.marketType`]: `Expected ${String(marketType)}`,
+        });
+      }
+      const selectedChainIds = Array.isArray(monitorConfig.chainIds)
+        ? monitorConfig.chainIds as number[]
+        : typeof monitorConfig.chainId === 'number' ? [monitorConfig.chainId] : [];
+      if (definition.chainIds !== undefined && selectedChainIds.some((chainId) => !definition.chainIds?.includes(chainId))) {
+        throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported on the monitor network', {
+          [`conditions.${index}.metric`]: `${condition.metric} is not available on every selected chain`,
+        });
+      }
+      const selectedVersions = Array.isArray(monitorConfig.versions)
+        ? monitorConfig.versions as Array<'v3' | 'v4'>
+        : typeof monitorConfig.version === 'string' ? [monitorConfig.version as 'v3' | 'v4'] : [];
+      if (definition.versions !== undefined && selectedVersions.some((version) => !definition.versions?.includes(version))) {
+        throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported by the monitor protocol version');
+      }
+      if (condition.labels.chainId !== undefined && selectedChainIds.length > 0 && !selectedChainIds.includes(Number(condition.labels.chainId))) {
+        throw new AppError(400, 'RULE_LABEL_INVALID', 'Rule chain label does not match the monitor configuration', {
+          [`conditions.${index}.labels.chainId`]: 'Select a chain configured by the monitor',
+        });
+      }
+      if (condition.labels.version !== undefined && !selectedVersions.includes(condition.labels.version as 'v3' | 'v4')) {
+        throw new AppError(400, 'RULE_LABEL_INVALID', 'Rule version label does not match the monitor configuration', {
+          [`conditions.${index}.labels.version`]: 'Select a version configured by the monitor',
         });
       }
       if (definition.kind === 'event' && durationSeconds !== 0) {

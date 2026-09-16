@@ -48,6 +48,11 @@ import { RuleExecutionRepository } from './db/repositories/rule-execution-reposi
 import { UniswapV4OwnershipRepository } from './db/repositories/uniswap-v4-ownership-repository.js';
 import { ChainScanCursorRepository } from './db/repositories/chain-scan-cursor-repository.js';
 import { ProtocolMetricSampleRepository } from './db/repositories/protocol-metric-sample-repository.js';
+import { UniswapPoolRepository } from './db/repositories/uniswap-pool-repository.js';
+import { UniswapPoolIndexCoordinator } from './core/integrations/uniswap-pool-index-coordinator.js';
+import type { UniswapPoolCatalogReaderFactory } from './core/integrations/uniswap-pool-index-coordinator.js';
+import { UniswapPoolCoordinator } from './core/integrations/uniswap-pool-coordinator.js';
+import type { UniswapPoolReaderFactory } from './core/integrations/uniswap-pool-coordinator.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
 
 export interface CreateAppOptions {
@@ -64,6 +69,8 @@ export interface CreateAppOptions {
   uniswapV4PositionReaderFactory?: UniswapV4PositionReaderFactory;
   uniswapV4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
   pollingMinimumIntervalMilliseconds?: number;
+  uniswapPoolCatalogReaderFactory?: UniswapPoolCatalogReaderFactory;
+  uniswapPoolReaderFactory?: UniswapPoolReaderFactory;
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -119,6 +126,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const integrations = new IntegrationRepository(database.db, encryption);
   const integrationNetworkHealth = new IntegrationNetworkHealthRepository(database.db);
   const markets = new MarketRepository(database.db);
+  const chainScanCursors = new ChainScanCursorRepository(database.db);
+  const uniswapPools = new UniswapPoolRepository(database.db);
+  const uniswapV4Ownership = new UniswapV4OwnershipRepository(database.db);
   const webSocketFactory = options.webSocketFactory === false
     ? createNodeMarketWebSocket
     : options.webSocketFactory ?? createNodeMarketWebSocket;
@@ -130,9 +140,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     webSocketFactory,
     options.aaveReserveCatalogReaderFactory,
     options.aaveCapabilityEventReaderFactory,
+    uniswapPools,
+    chainScanCursors,
+    uniswapV4Ownership,
   );
   const monitors = new MonitorRepository(database.db, integrations);
-  const uniswapV4Ownership = new UniswapV4OwnershipRepository(database.db);
   const rules = new RuleRepository(database.db);
   const ruleExecutionStore = new RuleExecutionRepository(database.db);
   const ruleExecution = new RuleExecutionService(ruleExecutionStore);
@@ -167,7 +179,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const aaveEventCoordinator = new AaveV3EventCoordinator(
     integrations,
     monitors,
-    new ChainScanCursorRepository(database.db),
+    chainScanCursors,
     metricPipeline,
     pollingScheduler,
     {
@@ -194,6 +206,22 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         ? {}
         : { v4OwnershipIndexerFactory: options.uniswapV4OwnershipIndexerFactory }),
       onError: (error) => app.log.warn({ err: error }, 'Uniswap position scan error'),
+    },
+  );
+  const uniswapPoolIndexCoordinator = new UniswapPoolIndexCoordinator(
+    integrations, integrationNetworkHealth, uniswapPools, chainScanCursors, pollingScheduler,
+    {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.uniswapPoolCatalogReaderFactory === undefined ? {} : { readerFactory: options.uniswapPoolCatalogReaderFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'Uniswap pool index error'),
+    },
+  );
+  const uniswapPoolCoordinator = new UniswapPoolCoordinator(
+    integrations, monitors, uniswapPools, chainScanCursors, metricPipeline, pollingScheduler,
+    {
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      ...(options.uniswapPoolReaderFactory === undefined ? {} : { readerFactory: options.uniswapPoolReaderFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'Uniswap pool monitor error'),
     },
   );
   const marketMetricService = options.webSocketFactory === false ? undefined : new MarketMetricService(
@@ -238,12 +266,16 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       aavePositionCoordinator.reconcile();
       aaveEventCoordinator.reconcile();
       uniswapV3PositionCoordinator.reconcile();
+      uniswapPoolIndexCoordinator.reconcile();
+      uniswapPoolCoordinator.reconcile();
     }
   });
   marketDataCoordinator?.reconcile();
   aavePositionCoordinator.reconcile();
   aaveEventCoordinator.reconcile();
   uniswapV3PositionCoordinator.reconcile();
+  uniswapPoolIndexCoordinator.reconcile();
+  uniswapPoolCoordinator.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
     database.sqlite.prepare('SELECT 1').get();
@@ -271,8 +303,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     aavePositionCoordinator.close();
     aaveEventCoordinator.close();
     uniswapV3PositionCoordinator.close();
+    uniswapPoolIndexCoordinator.close();
+    uniswapPoolCoordinator.close();
     await pollingScheduler.close();
     await marketMetricService?.close();
+    await integrationOperations.close();
     await metricPipeline.close();
     ruleExecution.close();
     database.close();

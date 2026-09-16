@@ -104,7 +104,18 @@ export interface UniswapV3Deployment {
   explorerUrl: string;
   factoryAddress: Address;
   positionManagerAddress: Address;
+  deploymentBlock: bigint;
 }
+
+export const ETHEREUM_UNISWAP_V3: UniswapV3Deployment = {
+  chainId: 1,
+  chainName: 'Ethereum',
+  rpcUrl: '',
+  explorerUrl: 'https://etherscan.io',
+  deploymentBlock: 12_369_621n,
+  factoryAddress: getAddress('0x1f98431c8ad98523631ae4a59f267346ea31f984'),
+  positionManagerAddress: getAddress('0xc36442b4a4522e871399cd717abdd847ab11fe88'),
+};
 
 export const ROBINHOOD_UNISWAP_V3: UniswapV3Deployment = {
   chainId: 4_663,
@@ -113,9 +124,11 @@ export const ROBINHOOD_UNISWAP_V3: UniswapV3Deployment = {
   explorerUrl: 'https://robinhoodchain.blockscout.com',
   factoryAddress: getAddress('0x1f7d7550b1b028f7571e69a784071f0205fd2efa'),
   positionManagerAddress: getAddress('0x73991a25c818bf1f1128deaab1492d45638de0d3'),
+  deploymentBlock: 0n,
 };
 
 export const supportedUniswapV3Deployments = new Map<number, UniswapV3Deployment>([
+  [ETHEREUM_UNISWAP_V3.chainId, ETHEREUM_UNISWAP_V3],
   [ROBINHOOD_UNISWAP_V3.chainId, ROBINHOOD_UNISWAP_V3],
 ]);
 

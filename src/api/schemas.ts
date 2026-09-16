@@ -105,7 +105,20 @@ export const uniswapPoolMonitorConfigSchema = z.object({
   version: z.enum(['v3', 'v4']),
   poolAddress: address.optional(),
   poolId: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
-}).strict();
+}).strict().superRefine((config, context) => {
+  if (config.version === 'v3' && config.poolAddress === undefined) {
+    context.addIssue({ code: 'custom', path: ['poolAddress'], message: 'V3 pools require poolAddress' });
+  }
+  if (config.version === 'v3' && config.poolId !== undefined) {
+    context.addIssue({ code: 'custom', path: ['poolId'], message: 'V3 pools do not use poolId' });
+  }
+  if (config.version === 'v4' && config.poolId === undefined) {
+    context.addIssue({ code: 'custom', path: ['poolId'], message: 'V4 pools require poolId' });
+  }
+  if (config.version === 'v4' && config.poolAddress !== undefined) {
+    context.addIssue({ code: 'custom', path: ['poolAddress'], message: 'V4 pools do not use poolAddress' });
+  }
+});
 
 export const monitorTypeSchema = z.enum([
   'market',

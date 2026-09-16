@@ -133,10 +133,66 @@ export const AAVE_POOL_RULE_METRICS: RuleMetricDefinition[] = [
   },
 ];
 
+function uniswapGauge(
+  id: string, name: string, units: string[], monitorTypes: string[],
+  options: { boolean?: boolean; window?: boolean; versions?: Array<'v3' | 'v4'> } = {},
+): RuleMetricDefinition {
+  return {
+    id, name, kind: 'gauge', valueType: options.boolean === true ? 'boolean' : 'decimal',
+    operators: options.boolean === true ? booleanOperators : numericOperators,
+    units, requiresWindow: options.window ?? false,
+    ...(options.window === true ? { windowSecondsMin: 20, windowSecondsMax: 86_400 } : {}),
+    monitorTypes, chainIds: [1, 4_663], versions: options.versions ?? ['v3', 'v4'],
+    labels: ['chainId', 'version', 'tokenId', 'resourceId', ...(options.window === true ? ['windowSeconds'] : [])],
+  };
+}
+
+function uniswapEvent(id: string, name: string, versions: Array<'v3' | 'v4'> = ['v3', 'v4']): RuleMetricDefinition {
+  return {
+    id, name, kind: 'event', valueType: 'decimal', operators: numericOperators, units: ['token'], requiresWindow: false,
+    monitorTypes: ['uniswap_pool'], chainIds: [1, 4_663], versions,
+    labels: ['chainId', 'version', 'resourceId', 'eventType', 'token0Address', 'token0Symbol', 'token1Address', 'token1Symbol'],
+  };
+}
+
+export const UNISWAP_POSITION_RULE_METRICS: RuleMetricDefinition[] = [
+  uniswapGauge('in_range', '是否在价格区间', ['boolean'], ['uniswap_position', 'uniswap_wallet'], { boolean: true }),
+  uniswapGauge('distance_to_nearest_boundary_percent', '距最近边界', ['percent'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('liquidity', '流动性', ['liquidity'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('token0_amount', 'Token0 数量', ['token0'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('token1_amount', 'Token1 数量', ['token1'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('fees_owed_token0', 'Token0 待领取手续费', ['token0'], ['uniswap_position', 'uniswap_wallet'], { versions: ['v3'] }),
+  uniswapGauge('fees_owed_token1', 'Token1 待领取手续费', ['token1'], ['uniswap_position', 'uniswap_wallet'], { versions: ['v3'] }),
+  uniswapGauge('position_value_usd', '仓位 USD 价值', ['USD'], ['uniswap_position', 'uniswap_wallet']),
+  uniswapGauge('fees_value_usd', '手续费 USD 价值', ['USD'], ['uniswap_position', 'uniswap_wallet'], { versions: ['v3'] }),
+  uniswapGauge('position_closed', '仓位已关闭', ['boolean'], ['uniswap_position', 'uniswap_wallet'], { boolean: true }),
+  uniswapGauge('position_count', '钱包仓位数', ['positions'], ['uniswap_wallet']),
+  uniswapGauge('in_range_count', '钱包区间内仓位数', ['positions'], ['uniswap_wallet']),
+  uniswapGauge('out_of_range_count', '钱包区间外仓位数', ['positions'], ['uniswap_wallet']),
+  uniswapGauge('failed_position_count', '钱包读取失败仓位数', ['positions'], ['uniswap_wallet']),
+  uniswapGauge('aggregate_value_usd', '钱包仓位总价值', ['USD'], ['uniswap_wallet']),
+  uniswapGauge('aggregate_fees_usd', '钱包手续费总价值', ['USD'], ['uniswap_wallet'], { versions: ['v3'] }),
+];
+
+export const UNISWAP_POOL_RULE_METRICS: RuleMetricDefinition[] = [
+  uniswapGauge('current_tick', '当前 Tick', ['tick'], ['uniswap_pool']),
+  uniswapGauge('token0_price', 'Token0 价格', ['token1'], ['uniswap_pool']),
+  uniswapGauge('token1_price', 'Token1 价格', ['token0'], ['uniswap_pool']),
+  uniswapGauge('active_liquidity', '活跃流动性', ['liquidity'], ['uniswap_pool']),
+  uniswapGauge('tvl_token0', 'Token0 TVL', ['token0'], ['uniswap_pool'], { versions: ['v3'] }),
+  uniswapGauge('tvl_token1', 'Token1 TVL', ['token1'], ['uniswap_pool'], { versions: ['v3'] }),
+  uniswapGauge('tvl_usd', 'Pool TVL USD', ['USD'], ['uniswap_pool'], { versions: ['v3'] }),
+  uniswapEvent('swap', 'Swap 事件'), uniswapEvent('mint', '增加流动性事件'),
+  uniswapEvent('burn', '移除流动性事件'), uniswapEvent('fee_collection', '领取手续费事件', ['v3']),
+];
+
 export const RULE_METRICS = {
   market: MARKET_RULE_METRICS,
   aave_account: AAVE_ACCOUNT_RULE_METRICS,
   aave_pool: AAVE_POOL_RULE_METRICS,
+  uniswap_position: UNISWAP_POSITION_RULE_METRICS,
+  uniswap_wallet: UNISWAP_POSITION_RULE_METRICS,
+  uniswap_pool: UNISWAP_POOL_RULE_METRICS,
 } as const;
 
 export function ruleMetricDefinition(monitorType: string, metricId: string): RuleMetricDefinition | undefined {

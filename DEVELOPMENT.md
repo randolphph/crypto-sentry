@@ -64,6 +64,12 @@
 - [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API
 - [x] Robinhood Chain Uniswap V4 PositionManager/PoolManager/StateView 仓位适配器
 - [x] V4 钱包 Transfer 日志分块索引、SQLite 检查点与 ownerOf 对账
+- [x] Ethereum/Robinhood Uniswap V3/V4 官方部署、逐链能力测试和 Readiness
+- [x] V3/V4 Pool 后台分片索引、重扫游标、token metadata 缓存、搜索与分页 API
+- [x] Position token 数量、边界距离、V3 fees owed、稳定币链上估值与跨链 tokenId 隔离
+- [x] Uniswap Pool Monitor 基础 gauge、事件去重、统一 Snapshot 和资源存在性校验
+- [ ] Uniswap Pool 窗口 volume/change 指标与持久样本
+- [ ] V4 可可靠归属的单池 TVL/完整手续费，以及非稳定币 Binance 估值回退
 - [ ] Uniswap V3 其他网络与 PancakeSwap V3 LP 适配器
 - [ ] LP 当前代币数量、价格方向和完整未领取手续费计算
 

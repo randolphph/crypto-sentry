@@ -10,13 +10,14 @@ import {
   validateMonitorConfig,
   monitorConfigSchema,
   uniswapPositionMonitorConfigSchema,
+  uniswapPoolMonitorConfigSchema,
   uniswapWalletMonitorConfigSchema,
 } from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
 import type { AppDatabase } from '../client.js';
-import { integrationMarkets, integrations, monitors, rules } from '../schema/index.js';
+import { integrationMarkets, integrations, monitors, rules, uniswapPools } from '../schema/index.js';
 import { ruleConditions } from '../schema/index.js';
 import type { IntegrationRepository } from './integration-repository.js';
 import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
@@ -46,6 +47,16 @@ export interface AavePoolRuntimeMonitor {
   rpcIntegrationId: string;
   chainId: 1;
   reserveAssetAddresses: string[];
+}
+
+export interface UniswapPoolRuntimeMonitor {
+  monitorId: string;
+  intervalSeconds: number;
+  maxStaleSeconds: number;
+  rpcIntegrationId: string;
+  chainId: number;
+  version: 'v3' | 'v4';
+  resourceId: string;
 }
 
 export class MonitorRepository implements MonitorRuntimeStateStore {
@@ -222,6 +233,22 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       });
   }
 
+  public listEnabledUniswapPoolMonitors(): UniswapPoolRuntimeMonitor[] {
+    return this.database.select({
+      id: monitors.id, configJson: monitors.configJson,
+      intervalSeconds: monitors.intervalSeconds, maxStaleSeconds: monitors.maxStaleSeconds,
+    }).from(monitors).where(and(eq(monitors.enabled, true), eq(monitors.type, 'uniswap_pool'))).all()
+      .flatMap((row) => {
+        const parsed = uniswapPoolMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
+        if (!parsed.success) return [];
+        return [{
+          monitorId: row.id, intervalSeconds: row.intervalSeconds, maxStaleSeconds: row.maxStaleSeconds,
+          rpcIntegrationId: parsed.data.rpcIntegrationId, chainId: parsed.data.chainId, version: parsed.data.version,
+          resourceId: (parsed.data.version === 'v3' ? parsed.data.poolAddress : parsed.data.poolId) as string,
+        }];
+      });
+  }
+
   public updateRuntimeState(id: string, state: MonitorRuntimeState): void {
     this.database
       .update(monitors)
@@ -288,9 +315,6 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
     monitorType: MonitorCreate['type'],
     config: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (monitorType === 'uniswap_pool') {
-      throw new AppError(409, 'MONITOR_TYPE_NOT_READY', `${monitorType} is planned but is not runnable yet`);
-    }
     const normalized = monitorConfigSchema(monitorType).parse(config) as Record<string, unknown>;
     if (monitorType === 'aave_pool') {
       const reserves = new Set((supportedAaveV3Markets.get(1)?.assets ?? []).map((asset) => asset.underlyingAddress.toLowerCase()));
@@ -301,9 +325,15 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
         });
       }
     }
-    if ((monitorType === 'uniswap_position' && normalized.chainId !== 4_663) ||
-      (monitorType === 'uniswap_wallet' && (normalized.chainIds as number[]).some((chainId) => chainId !== 4_663))) {
-      throw new AppError(409, 'PROTOCOL_NOT_READY', 'Ethereum Uniswap monitoring is planned but not implemented');
+    if (monitorType === 'uniswap_pool') {
+      const version = normalized.version as 'v3' | 'v4';
+      const resourceId = String(version === 'v3' ? normalized.poolAddress : normalized.poolId).toLowerCase();
+      const pool = this.database.select({ resourceId: uniswapPools.resourceId }).from(uniswapPools).where(and(
+        eq(uniswapPools.integrationId, String(normalized.rpcIntegrationId)),
+        eq(uniswapPools.chainId, normalized.chainId as number), eq(uniswapPools.version, version),
+        eq(uniswapPools.resourceId, resourceId),
+      )).get();
+      if (pool === undefined) throw new AppError(404, 'POOL_NOT_FOUND', 'Select a pool from the indexed Uniswap catalog');
     }
     this.validateIntegrationReference(monitorType, normalized);
     return normalized;
@@ -322,7 +352,6 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       }
       return;
     }
-    if (monitorType === 'uniswap_pool') return;
     const referenceKey = monitorType === 'market' ? 'integrationId' : 'rpcIntegrationId';
     const integrationId = config[referenceKey];
     if (typeof integrationId !== 'string') {

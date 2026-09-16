@@ -7,6 +7,7 @@ import {
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricSnapshotReader } from '../metrics/latest-metric-store.js';
+import { Decimal } from 'decimal.js';
 
 export type UniswapPositionSnapshotStatus = 'warming_up' | 'ok' | 'empty' | 'partial' | 'stale' | 'error';
 
@@ -34,7 +35,7 @@ function groupByTokenId(metrics: Metric[]): Map<string, Metric[]> {
   for (const metric of metrics) {
     const tokenId = metric.labels?.tokenId;
     if (tokenId === undefined) continue;
-    const key = `${metric.labels?.version ?? 'v3'}:${tokenId}`;
+    const key = `${metric.labels?.chainId ?? '4663'}:${metric.labels?.version ?? 'v3'}:${tokenId}`;
     const tokenMetrics = grouped.get(key) ?? [];
     tokenMetrics.push(metric);
     grouped.set(key, tokenMetrics);
@@ -73,7 +74,7 @@ export class UniswapV3PositionSnapshotService {
     const groups = groupByTokenId(metrics);
     const positions = [...groups.entries()]
       .filter(([, positionMetrics]) => byName(positionMetrics, 'read_status')?.value === true)
-      .map(([key, positionMetrics]) => this.position(key.slice(key.indexOf(':') + 1), positionMetrics))
+      .map(([key, positionMetrics]) => this.position(key.slice(key.lastIndexOf(':') + 1), positionMetrics))
       .sort((left, right) => {
         const leftId = BigInt(left.tokenId);
         const rightId = BigInt(right.tokenId);
@@ -101,7 +102,7 @@ export class UniswapV3PositionSnapshotService {
       versions: 'version' in config ? [config.version] : config.versions,
       chainId: 'chainId' in config ? config.chainId : config.chainIds[0],
       chainIds: 'chainId' in config ? [config.chainId] : config.chainIds,
-      chainName: scanStatus?.labels?.chainName ?? 'Robinhood Chain',
+      chainName: scanStatus?.labels?.chainName ?? null,
       walletAddress: 'walletAddress' in config ? config.walletAddress : null,
       requestedTokenId: 'tokenId' in config ? config.tokenId : null,
       status,
@@ -116,6 +117,12 @@ export class UniswapV3PositionSnapshotService {
       summary: {
         positionCount: positions.length,
         failedPositionCount,
+        inRangeCount: positions.filter((position) => position.inRange === true).length,
+        outOfRangeCount: positions.filter((position) => position.inRange === false && position.positionClosed !== true).length,
+        aggregateValueUsd: this.sumNullable(positions.map((position) => position.positionValueUsd)),
+        aggregateFeesUsd: this.sumNullable(positions.map((position) => position.feesValueUsd)),
+        valuationCoverage: positions.length > 0 && positions.every((position) => position.valuationStatus === 'ok')
+          ? 'full' : positions.some((position) => position.valuationStatus === 'ok') ? 'partial' : 'unavailable',
       },
       positions,
       error: scanFailed ? {
@@ -148,7 +155,7 @@ export class UniswapV3PositionSnapshotService {
       protocol: 'uniswap' as const,
       version,
       chainId: Number(labels.chainId),
-      chainName: labels.chainName ?? 'Robinhood Chain',
+      chainName: labels.chainName ?? `Chain ${labels.chainId ?? 'unknown'}`,
       tokenId,
       owner: stringValue(byName(metrics, 'position_owner')),
       positionManagerAddress: stringValue(byName(metrics, 'position_manager_address')),
@@ -181,6 +188,25 @@ export class UniswapV3PositionSnapshotService {
       inRange: booleanValue(byName(metrics, 'in_range')),
       tokensOwed0: stringValue(byName(metrics, 'tokens_owed0')),
       tokensOwed1: stringValue(byName(metrics, 'tokens_owed1')),
+      distanceToLowerTick: numberValue(byName(metrics, 'distance_to_lower_tick')),
+      distanceToUpperTick: numberValue(byName(metrics, 'distance_to_upper_tick')),
+      distanceToNearestBoundaryPercent: stringValue(byName(metrics, 'distance_to_nearest_boundary_percent')),
+      token0Amount: stringValue(byName(metrics, 'token0_amount')),
+      token1Amount: stringValue(byName(metrics, 'token1_amount')),
+      feesOwedToken0: stringValue(byName(metrics, 'fees_owed_token0')),
+      feesOwedToken1: stringValue(byName(metrics, 'fees_owed_token1')),
+      positionValueUsd: stringValue(byName(metrics, 'position_value_usd')),
+      feesValueUsd: stringValue(byName(metrics, 'fees_value_usd')),
+      valuationStatus: labels.valuationStatus === 'ok' ? 'ok' as const : 'unavailable' as const,
+      valuationSource: labels.valuationSource ?? null,
+      valuationObservedAt: labels.valuationObservedAt ?? null,
+      positionClosed: booleanValue(byName(metrics, 'position_closed')),
     };
+  }
+
+  private sumNullable(values: Array<string | null>): string | null {
+    const available = values.filter((value): value is string => value !== null);
+    if (available.length === 0) return null;
+    return available.reduce((sum, value) => sum.plus(value), new Decimal(0)).toSignificantDigits(30).toString();
   }
 }

@@ -1,5 +1,5 @@
-import { ROBINHOOD_UNISWAP_V3 } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
-import { ROBINHOOD_UNISWAP_V4 } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
+import { ROBINHOOD_UNISWAP_V3, supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
+import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { RULE_METRICS } from '../rules/rule-metric-catalog.js';
 import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
 
@@ -44,7 +44,7 @@ export const INTEGRATION_CATALOG = {
       { id: 'query', name: 'Query 选链' },
     ],
     networks: [
-      { chainId: 1, name: 'Ethereum', productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'planned', uniswapV4: 'planned' } },
+      { chainId: 1, name: 'Ethereum', productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'available', uniswapV4: 'available' } },
       { chainId: 42_161, name: 'Arbitrum', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       { chainId: 8_453, name: 'Base', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       { chainId: 56, name: 'BNB Chain', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
@@ -66,9 +66,9 @@ export const INTEGRATION_CATALOG = {
     { id: 'market', status: 'available' },
     { id: 'aave_account', status: 'available', chainIds: [1] },
     { id: 'aave_pool', status: 'available', chainIds: [1] },
-    { id: 'uniswap_position', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
-    { id: 'uniswap_wallet', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
-    { id: 'uniswap_pool', status: 'planned', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+    { id: 'uniswap_position', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+    { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+    { id: 'uniswap_pool', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
   ],
   aave: {
     deployments: [...supportedAaveV3Markets.values()].filter((market) => market.chainId === 1).map((market) => ({
@@ -82,25 +82,19 @@ export const INTEGRATION_CATALOG = {
     })),
   },
   uniswap: {
-    deployments: [{
-      chainId: ROBINHOOD_UNISWAP_V3.chainId,
-      chainName: ROBINHOOD_UNISWAP_V3.chainName,
-      version: 'v3',
-      factoryAddress: ROBINHOOD_UNISWAP_V3.factoryAddress,
-      positionManagerAddress: ROBINHOOD_UNISWAP_V3.positionManagerAddress,
-      monitorInput: ['rpcIntegrationId', 'walletAddress'],
-      legacyMonitorInput: ['rpcIntegrationId', 'tokenId'],
-    }, {
-      chainId: ROBINHOOD_UNISWAP_V4.chainId,
-      chainName: ROBINHOOD_UNISWAP_V4.chainName,
-      version: 'v4',
-      poolManagerAddress: ROBINHOOD_UNISWAP_V4.poolManagerAddress,
-      positionManagerAddress: ROBINHOOD_UNISWAP_V4.positionManagerAddress,
-      stateViewAddress: ROBINHOOD_UNISWAP_V4.stateViewAddress,
-      deploymentBlock: ROBINHOOD_UNISWAP_V4.deploymentBlock.toString(),
-      monitorInput: ['rpcIntegrationId', 'walletAddress'],
-      legacyMonitorInput: ['rpcIntegrationId', 'tokenId'],
-    }],
+    deployments: [
+      ...[...supportedUniswapV3Deployments.values()].map((deployment) => ({
+        chainId: deployment.chainId, chainName: deployment.chainName, version: 'v3' as const,
+        factoryAddress: deployment.factoryAddress, positionManagerAddress: deployment.positionManagerAddress,
+        deploymentBlock: deployment.deploymentBlock.toString(), explorerUrl: deployment.explorerUrl,
+      })),
+      ...[...supportedUniswapV4Deployments.values()].map((deployment) => ({
+        chainId: deployment.chainId, chainName: deployment.chainName, version: 'v4' as const,
+        poolManagerAddress: deployment.poolManagerAddress, positionManagerAddress: deployment.positionManagerAddress,
+        stateViewAddress: deployment.stateViewAddress, deploymentBlock: deployment.deploymentBlock.toString(),
+        explorerUrl: deployment.explorerUrl,
+      })),
+    ],
   },
 } as const;
 

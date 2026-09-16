@@ -15,6 +15,9 @@ import type { UniswapV4OwnershipRepository } from '../../db/repositories/uniswap
 import type { Metric } from '../metrics/metric.js';
 import type { MetricPipeline } from '../metrics/metric-pipeline.js';
 import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
+import { Decimal } from 'decimal.js';
+import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
+import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 
 type UniswapPosition = UniswapV3Position | UniswapV4Position;
 type UniswapMonitor = ReturnType<MonitorRepository['listEnabledUniswapMonitors']>[number];
@@ -169,7 +172,9 @@ export class UniswapV3PositionCoordinator {
     const target = 'walletAddress' in monitor ? monitor.walletAddress : monitor.tokenId;
     const baseLabels = {
       chainId: String(variant.chainId),
-      chainName: 'Robinhood Chain',
+      chainName: (variant.version === 'v3'
+        ? supportedUniswapV3Deployments.get(variant.chainId)?.chainName
+        : supportedUniswapV4Deployments.get(variant.chainId)?.chainName) ?? `Chain ${variant.chainId}`,
       protocol: 'uniswap',
       version: variant.version,
       ...('walletAddress' in monitor ? { walletAddress: getAddress(monitor.walletAddress) } : {}),
@@ -213,6 +218,46 @@ export class UniswapV3PositionCoordinator {
         timestamp,
         { status: scanStatus, labels: baseLabels },
       ));
+      if ('walletAddress' in monitor) {
+        const valuations = positions.map((position) => {
+          const amounts = this.positionAmounts(position);
+          return this.positionValuation(position, amounts);
+        });
+        const valuedPositions = valuations.filter((valuation) => valuation !== null);
+        const valuedFees = valuedPositions.filter((valuation) => valuation.feesValueUsd !== null);
+        const aggregationLabels = {
+          ...baseLabels,
+          valuationCoverage: valuedPositions.length === 0 ? 'unavailable'
+            : valuedPositions.length === positions.length ? 'full' : 'partial',
+        };
+        await this.metricPipeline.ingest(metric(
+          monitor.monitorId, target, 'in_range_count', String(positions.filter((position) => position.inRange).length), timestamp,
+          { status: scanStatus, unit: 'positions', labels: baseLabels },
+        ));
+        await this.metricPipeline.ingest(metric(
+          monitor.monitorId, target, 'out_of_range_count',
+          String(positions.filter((position) => !position.inRange && !new Decimal(position.liquidity).isZero()).length), timestamp,
+          { status: scanStatus, unit: 'positions', labels: baseLabels },
+        ));
+        await this.metricPipeline.ingest(metric(
+          monitor.monitorId, target, 'failed_position_count', String(failures.length), timestamp,
+          { status: scanStatus, unit: 'positions', labels: baseLabels },
+        ));
+        if (valuedPositions.length > 0) {
+          await this.metricPipeline.ingest(metric(
+            monitor.monitorId, target, 'aggregate_value_usd',
+            Decimal.sum(...valuedPositions.map((valuation) => valuation.positionValueUsd)).toSignificantDigits(30).toString(), timestamp,
+            { status: scanStatus, unit: 'USD', labels: aggregationLabels },
+          ));
+        }
+        if (valuedFees.length > 0) {
+          await this.metricPipeline.ingest(metric(
+            monitor.monitorId, target, 'aggregate_fees_usd',
+            Decimal.sum(...valuedFees.map((valuation) => valuation.feesValueUsd as string)).toSignificantDigits(30).toString(), timestamp,
+            { status: scanStatus, unit: 'USD', labels: aggregationLabels },
+          ));
+        }
+      }
       await this.metricPipeline.ingest(metric(
         monitor.monitorId,
         target,
@@ -340,7 +385,12 @@ export class UniswapV3PositionCoordinator {
     timestamp: string,
     monitorLabels: Record<string, string>,
   ): Promise<void> {
-    const labels = {
+    const currentPrice = new Decimal('1.0001').pow(position.currentTick);
+    const lowerPrice = new Decimal('1.0001').pow(position.tickLower);
+    const upperPrice = new Decimal('1.0001').pow(position.tickUpper);
+    const lowerDistancePercent = currentPrice.minus(lowerPrice).abs().div(currentPrice).mul(100);
+    const upperDistancePercent = upperPrice.minus(currentPrice).abs().div(currentPrice).mul(100);
+    const labels: Record<string, string> = {
       ...monitorLabels,
       tokenId: position.tokenId,
       token0Address: position.token0.address,
@@ -363,12 +413,34 @@ export class UniswapV3PositionCoordinator {
       ['current_tick', String(position.currentTick), 'tick'],
       ['liquidity', position.liquidity, 'liquidity'],
       ['in_range', position.inRange, 'boolean'],
+      ['distance_to_lower_tick', String(position.currentTick - position.tickLower), 'tick'],
+      ['distance_to_upper_tick', String(position.tickUpper - position.currentTick), 'tick'],
+      ['distance_to_nearest_boundary_percent', Decimal.min(lowerDistancePercent, upperDistancePercent)
+        .toSignificantDigits(30).toString(), 'percent'],
+      ['position_closed', new Decimal(position.liquidity).isZero(), 'boolean'],
     ];
+    const amounts = this.positionAmounts(position);
+    values.push(
+      ['token0_amount', amounts.token0, position.token0.symbol],
+      ['token1_amount', amounts.token1, position.token1.symbol],
+    );
+    const valuation = this.positionValuation(position, amounts);
+    if (valuation !== null) {
+      values.push(['position_value_usd', valuation.positionValueUsd, 'USD']);
+      if (valuation.feesValueUsd !== null) values.push(['fees_value_usd', valuation.feesValueUsd, 'USD']);
+      labels.valuationStatus = 'ok';
+      labels.valuationSource = 'onchain_stablecoin_pool';
+      labels.valuationObservedAt = timestamp;
+    } else {
+      labels.valuationStatus = 'unavailable';
+    }
     if (position.version === 'v3') {
       values.push(
         ['pool_address', position.poolAddress, 'address'],
         ['tokens_owed0', position.tokensOwed0, position.token0.symbol],
         ['tokens_owed1', position.tokensOwed1, position.token1.symbol],
+        ['fees_owed_token0', position.tokensOwed0, position.token0.symbol],
+        ['fees_owed_token1', position.tokensOwed1, position.token1.symbol],
       );
     } else {
       values.push(
@@ -386,6 +458,51 @@ export class UniswapV3PositionCoordinator {
         status: 'ok', unit, labels,
       }));
     }
+  }
+
+  private positionAmounts(position: UniswapPosition): { token0: string; token1: string } {
+    const liquidity = new Decimal(position.liquidity);
+    const sqrtLower = new Decimal('1.0001').pow(new Decimal(position.tickLower).div(2));
+    const sqrtUpper = new Decimal('1.0001').pow(new Decimal(position.tickUpper).div(2));
+    const sqrtCurrent = new Decimal('1.0001').pow(new Decimal(position.currentTick).div(2));
+    let raw0: Decimal;
+    let raw1: Decimal;
+    if (position.currentTick <= position.tickLower) {
+      raw0 = liquidity.mul(sqrtUpper.minus(sqrtLower)).div(sqrtLower.mul(sqrtUpper));
+      raw1 = new Decimal(0);
+    } else if (position.currentTick >= position.tickUpper) {
+      raw0 = new Decimal(0);
+      raw1 = liquidity.mul(sqrtUpper.minus(sqrtLower));
+    } else {
+      raw0 = liquidity.mul(sqrtUpper.minus(sqrtCurrent)).div(sqrtCurrent.mul(sqrtUpper));
+      raw1 = liquidity.mul(sqrtCurrent.minus(sqrtLower));
+    }
+    return {
+      token0: raw0.div(new Decimal(10).pow(position.token0.decimals)).toSignificantDigits(30).toString(),
+      token1: raw1.div(new Decimal(10).pow(position.token1.decimals)).toSignificantDigits(30).toString(),
+    };
+  }
+
+  private positionValuation(
+    position: UniswapPosition,
+    amounts: { token0: string; token1: string },
+  ): { positionValueUsd: string; feesValueUsd: string | null } | null {
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    const ratio = new Decimal('1.0001').pow(position.currentTick)
+      .mul(new Decimal(10).pow(position.token0.decimals - position.token1.decimals));
+    let price0: Decimal;
+    let price1: Decimal;
+    if (stable.has(position.token1.symbol.toUpperCase())) {
+      price0 = ratio; price1 = new Decimal(1);
+    } else if (stable.has(position.token0.symbol.toUpperCase()) && !ratio.isZero()) {
+      price0 = new Decimal(1); price1 = new Decimal(1).div(ratio);
+    } else return null;
+    const positionValueUsd = new Decimal(amounts.token0).mul(price0)
+      .plus(new Decimal(amounts.token1).mul(price1)).toSignificantDigits(30).toString();
+    if (position.version !== 'v3') return { positionValueUsd, feesValueUsd: null };
+    const feesValueUsd = new Decimal(position.tokensOwed0).mul(price0)
+      .plus(new Decimal(position.tokensOwed1).mul(price1)).toSignificantDigits(30).toString();
+    return { positionValueUsd, feesValueUsd };
   }
 
   private async checkStale(monitor: UniswapMonitor, signal: AbortSignal): Promise<void> {

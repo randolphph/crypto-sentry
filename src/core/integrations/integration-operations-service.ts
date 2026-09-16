@@ -11,6 +11,13 @@ import { resolveEvmRpcRequest } from './evm-rpc-config.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { MarketRepository } from '../../db/repositories/market-repository.js';
 import type { IntegrationNetworkHealthRepository } from '../../db/repositories/integration-network-health-repository.js';
+import type { UniswapPoolRepository } from '../../db/repositories/uniswap-pool-repository.js';
+import type { ChainScanCursorRepository } from '../../db/repositories/chain-scan-cursor-repository.js';
+import type { UniswapV4OwnershipRepository } from '../../db/repositories/uniswap-v4-ownership-repository.js';
+import { UniswapV3PositionReader } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
+import { UniswapV4PositionReader } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
+import { UniswapV4OwnershipIndexer } from '../../adapters/uniswap/uniswap-v4-ownership-indexer.js';
+import { getAddress } from 'viem';
 import { AaveV3PositionReader } from '../../adapters/aave/aave-v3-position-reader.js';
 import { AaveV3ReserveCatalogReader } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
 import type { AaveReserveCatalog } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
@@ -54,7 +61,12 @@ export class IntegrationOperationsService {
     private readonly aaveEventReaderFactory: AaveEventReaderFactory = {
       create: (options) => new AaveV3EventReader(options),
     },
+    private readonly uniswapPools?: UniswapPoolRepository,
+    private readonly scanCursors?: ChainScanCursorRepository,
+    private readonly uniswapV4Ownership?: UniswapV4OwnershipRepository,
   ) {}
+
+  private readonly walletIndexJobs = new Map<string, { controller: AbortController; promise: Promise<void> }>();
 
   public catalog() {
     return INTEGRATION_CATALOG;
@@ -89,7 +101,7 @@ export class IntegrationOperationsService {
             current.integrationIds.push(integration.id);
             aaveNetworks.set(chainId, current);
           }
-          if (chainId === 4_663 && health?.rpcStatus === 'ok' && (health.uniswapV3Status === 'ok' || health.uniswapV4Status === 'ok')) {
+          if ([1, 4_663].includes(chainId) && health?.rpcStatus === 'ok' && (health.uniswapV3Status === 'ok' || health.uniswapV4Status === 'ok')) {
             const current = uniswapNetworks.get(chainId) ?? {
               chainId,
               name: evmNetworkName(chainId),
@@ -161,7 +173,7 @@ export class IntegrationOperationsService {
         const connectivity: Record<string, 'ok' | 'error' | 'unknown'> = {
           rpc: 'unknown',
           ...(chainId === 1 ? { aaveV3: 'unknown' as const } : {}),
-          ...(chainId === 4_663 ? { uniswapV3: 'unknown' as const, uniswapV4: 'unknown' as const } : {}),
+          ...([1, 4_663].includes(chainId) ? { uniswapV3: 'unknown' as const, uniswapV4: 'unknown' as const } : {}),
         };
         let blockNumber: string | null = null;
         let errorResult: { code: string; message: string } | null = null;
@@ -214,8 +226,8 @@ export class IntegrationOperationsService {
           connectivity.aaveV3 = Object.values(aaveCapabilities).every((status) => status === 'ok') ? 'ok' : 'error';
           if (connectivity.aaveV3 === 'error') throw new Error('Aave capability probe failed');
         }
-        const uniswapV3 = chainId === 4_663 ? supportedUniswapV3Deployments.get(chainId) : undefined;
-        const uniswapV4 = chainId === 4_663 ? supportedUniswapV4Deployments.get(chainId) : undefined;
+        const uniswapV3 = supportedUniswapV3Deployments.get(chainId);
+        const uniswapV4 = supportedUniswapV4Deployments.get(chainId);
         if (uniswapV3 !== undefined) {
           const [factoryCode, positionManagerCode] = await Promise.all([
             rpcClient.publicClient.getBytecode({ address: uniswapV3.factoryAddress }),
@@ -245,7 +257,11 @@ export class IntegrationOperationsService {
           if (connectivity.rpc !== 'ok') connectivity.rpc = 'error';
           for (const capability of ['aaveV3', 'uniswapV3', 'uniswapV4'] as const) {
             if (connectivity[capability] === 'ok') continue;
-            const available = capability === 'aaveV3' ? chainId === 1 : chainId === 4_663;
+            const available = capability === 'aaveV3'
+              ? chainId === 1
+              : capability === 'uniswapV3'
+                ? supportedUniswapV3Deployments.has(chainId)
+                : supportedUniswapV4Deployments.has(chainId);
             if (available) connectivity[capability] = 'error';
           }
           const code = error instanceof Error && ['RPC_ROUTING_CONFIG_INVALID', 'RPC_CHAIN_UNSUPPORTED'].includes(error.message)
@@ -352,6 +368,140 @@ export class IntegrationOperationsService {
     } catch (error) {
       this.throwConnectionError(error, 'Binance integration connection failed');
     }
+  }
+
+  public uniswapPoolCatalog(id: string, input: {
+    chainId: number; version: 'v3' | 'v4'; q?: string | undefined; limit: number; cursor?: string | undefined;
+  }) {
+    if (this.uniswapPools === undefined || this.scanCursors === undefined) {
+      throw new AppError(409, 'RESOURCE_CATALOG_NOT_READY', 'Uniswap pool index is not configured');
+    }
+    const integration = this.integrations.getRuntime(id);
+    if (!integration.enabled || integration.type !== 'evm_rpc') {
+      throw new AppError(409, 'PROTOCOL_NOT_READY', 'An enabled EVM RPC integration is required');
+    }
+    const config = rpcIntegrationConfigSchema.parse(integration.config);
+    if (!config.chainIds.includes(input.chainId)) throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'RPC does not cover the selected chain');
+    if (![1, 4_663].includes(input.chainId)) throw new AppError(409, 'PROTOCOL_NOT_READY', 'Uniswap is not enabled on this chain');
+    const health = this.networkHealth.list().find((item) => item.integrationId === id && item.chainId === input.chainId);
+    const capability = input.version === 'v3' ? health?.uniswapV3Status : health?.uniswapV4Status;
+    if (health?.rpcStatus !== 'ok' || capability !== 'ok') {
+      throw new AppError(409, 'RESOURCE_CATALOG_NOT_READY', 'Test the selected Uniswap network and version before loading pools');
+    }
+    const result = this.uniswapPools.list({
+      integrationId: id, chainId: input.chainId, version: input.version, limit: input.limit,
+      ...(input.q === undefined ? {} : { q: input.q }),
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    });
+    const scanned = this.scanCursors.get(id, 'uniswap', input.chainId, `pools:${input.version}`);
+    const chainTip = health.blockNumber === null ? undefined : BigInt(health.blockNumber);
+    const caughtUp = scanned !== undefined && chainTip !== undefined && scanned >= (chainTip > 12n ? chainTip - 12n : 0n);
+    const partial = result.items.some((item) => item.token0Symbol === null || item.token1Symbol === null ||
+      item.token0Decimals === null || item.token1Decimals === null);
+    return {
+      status: scanned === undefined || !caughtUp ? 'warming_up' : partial ? 'partial' : 'ok',
+      discovery: {
+        caughtUp,
+        scannedThroughBlock: scanned?.toString() ?? null,
+        chainTipBlock: chainTip?.toString() ?? null,
+      },
+      items: result.items.map((item) => ({
+        chainId: item.chainId, chainName: evmNetworkName(item.chainId), version: item.version,
+        poolAddress: item.poolAddress, poolId: item.poolId,
+        token0: { address: item.token0Address, symbol: item.token0Symbol, decimals: item.token0Decimals, native: item.token0Native },
+        token1: { address: item.token1Address, symbol: item.token1Symbol, decimals: item.token1Decimals, native: item.token1Native },
+        feeTier: item.feeTier, tickSpacing: item.tickSpacing, hooksAddress: item.hooksAddress,
+      })),
+      nextCursor: result.nextCursor,
+      error: partial ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Some token metadata is unavailable' } : null,
+    };
+  }
+
+  public async uniswapWalletPositions(id: string, input: {
+    chainId: number; version: 'v3' | 'v4'; walletAddress: string; limit: number; cursor?: string | undefined; q?: string | undefined;
+  }) {
+    const integration = this.integrations.getRuntime(id);
+    if (!integration.enabled || integration.type !== 'evm_rpc') throw new AppError(409, 'PROTOCOL_NOT_READY', 'Enabled EVM RPC is required');
+    const config = rpcIntegrationConfigSchema.parse(integration.config);
+    if (!config.chainIds.includes(input.chainId)) throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'RPC does not cover the selected chain');
+    const health = this.networkHealth.list().find((item) => item.integrationId === id && item.chainId === input.chainId);
+    const capability = input.version === 'v3' ? health?.uniswapV3Status : health?.uniswapV4Status;
+    if (health?.rpcStatus !== 'ok' || capability !== 'ok') throw new AppError(409, 'PROTOCOL_NOT_READY', 'Test this Uniswap capability first');
+    const resolved = resolveEvmRpcRequest(config, input.chainId);
+    const wallet = getAddress(input.walletAddress);
+    let tokenIds: string[] = [];
+    let caughtUp = true;
+    let scannedThroughBlock: string | null = null;
+    const chainTipBlock = health.blockNumber;
+    if (input.version === 'v3') {
+      try {
+        const discovered = await new UniswapV3PositionReader({
+          rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
+          fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+        }).discover(wallet);
+        tokenIds = discovered.tokenIds;
+        scannedThroughBlock = discovered.blockNumber.toString();
+      } catch {
+        throw new AppError(502, 'INDEXER_PARTIAL_FAILURE', 'Uniswap V3 wallet discovery failed');
+      }
+    } else {
+      if (this.uniswapV4Ownership === undefined) throw new AppError(409, 'INDEXER_WARMING_UP', 'V4 ownership index is unavailable');
+      const deployment = supportedUniswapV4Deployments.get(input.chainId);
+      if (deployment === undefined) throw new AppError(409, 'PROTOCOL_NOT_READY', 'V4 deployment is unavailable');
+      const key = { integrationId: id, walletAddress: wallet, positionManagerAddress: deployment.positionManagerAddress };
+      tokenIds = this.uniswapV4Ownership.listOwnedTokenIds(key);
+      const checkpoint = this.uniswapV4Ownership.getLastScannedBlock(key);
+      scannedThroughBlock = checkpoint?.toString() ?? null;
+      caughtUp = checkpoint !== undefined && chainTipBlock !== null && checkpoint >= BigInt(chainTipBlock) - 12n;
+      this.startWalletIndexJob(id, input.chainId, wallet, resolved, config.timeoutMilliseconds);
+    }
+    const query = input.q?.toLowerCase();
+    const after = input.cursor === undefined ? undefined : BigInt(input.cursor);
+    const filtered = tokenIds.filter((tokenId) => (after === undefined || BigInt(tokenId) > after) &&
+      (query === undefined || tokenId.includes(query)));
+    const page = filtered.slice(0, input.limit);
+    const reader = input.version === 'v3'
+      ? new UniswapV3PositionReader({ rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
+        fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds })
+      : new UniswapV4PositionReader({ rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
+        fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds });
+    const results = await Promise.allSettled(page.map(async (tokenId) => reader.read(tokenId)));
+    const items = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    const failedPositionCount = results.length - items.length;
+    return {
+      status: !caughtUp ? 'warming_up' : failedPositionCount > 0 ? 'partial' : items.length === 0 ? 'empty' : 'ok',
+      discovery: { caughtUp, scannedThroughBlock, chainTipBlock }, items,
+      failedPositionCount,
+      nextCursor: filtered.length > input.limit ? page.at(-1) ?? null : null,
+      error: failedPositionCount > 0 ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Some positions could not be read' } : null,
+    };
+  }
+
+  public async close(): Promise<void> {
+    for (const job of this.walletIndexJobs.values()) job.controller.abort();
+    await Promise.allSettled([...this.walletIndexJobs.values()].map((job) => job.promise));
+    this.walletIndexJobs.clear();
+  }
+
+  private startWalletIndexJob(
+    integrationId: string,
+    chainId: number,
+    walletAddress: `0x${string}`,
+    resolved: { rpcUrl: string; headers: Record<string, string> },
+    timeoutMilliseconds: number,
+  ): void {
+    if (this.uniswapV4Ownership === undefined) return;
+    const jobKey = `${integrationId}:${chainId}:${walletAddress.toLowerCase()}`;
+    if (this.walletIndexJobs.has(jobKey)) return;
+    const controller = new AbortController();
+    const promise = new UniswapV4OwnershipIndexer({
+      rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId, integrationId,
+      repository: this.uniswapV4Ownership, fetch: this.fetchImplementation, timeoutMilliseconds,
+      maximumChunksPerSync: 1,
+    }).sync(walletAddress, controller.signal).then(() => undefined).catch(() => undefined).finally(() => {
+      this.walletIndexJobs.delete(jobKey);
+    });
+    this.walletIndexJobs.set(jobKey, { controller, promise });
   }
 
   public listMarkets(id: string) {

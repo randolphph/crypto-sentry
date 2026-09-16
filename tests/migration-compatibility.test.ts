@@ -58,6 +58,10 @@ describe('compatible database migrations', () => {
       .toEqual({ name: 'chain_scan_cursors' });
     expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='protocol_metric_samples'").get())
       .toEqual({ name: 'protocol_metric_samples' });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='uniswap_pools'").get())
+      .toEqual({ name: 'uniswap_pools' });
+    expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='token_metadata_cache'").get())
+      .toEqual({ name: 'token_metadata_cache' });
     expect(sqlite.prepare("PRAGMA table_info('integration_network_health')").all()).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'aave_account_read_status' }),
       expect.objectContaining({ name: 'aave_reserve_catalog_status' }),

@@ -185,7 +185,7 @@ GET /api/v1/integrations/catalog
     "providers": [{ "id": "alchemy", "name": "Alchemy" }, { "id": "infura", "name": "Infura" }, { "id": "quicknode", "name": "QuickNode" }, { "id": "custom", "name": "Custom RPC" }],
     "routingModes": [{ "id": "fixed", "name": "单链" }, { "id": "url_template", "name": "URL 模板" }, { "id": "header", "name": "Header 选链" }, { "id": "query", "name": "Query 选链" }],
     "networks": [
-      { "chainId": 1, "name": "Ethereum", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "planned", "uniswapV4": "planned" } },
+      { "chainId": 1, "name": "Ethereum", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "available", "uniswapV4": "available" } },
       { "chainId": 4663, "name": "Robinhood Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "available", "uniswapV4": "available" } }
     ],
     "configDefaults": { "timeoutMilliseconds": 5000, "multicallBatchSizeBytes": 8192 }
@@ -194,9 +194,9 @@ GET /api/v1/integrations/catalog
     { "id": "market", "status": "available" },
     { "id": "aave_account", "status": "available", "chainIds": [1] },
     { "id": "aave_pool", "status": "available", "chainIds": [1] },
-    { "id": "uniswap_position", "status": "available", "chainIds": [4663], "versions": ["v3", "v4"] },
-    { "id": "uniswap_wallet", "status": "available", "chainIds": [4663], "versions": ["v3", "v4"] },
-    { "id": "uniswap_pool", "status": "planned", "chainIds": [1, 4663], "versions": ["v3", "v4"] }
+    { "id": "uniswap_position", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
+    { "id": "uniswap_wallet", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
+    { "id": "uniswap_pool", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] }
   ]
 }
 ```
@@ -235,7 +235,7 @@ Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`�
 
 Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、抵押/债务窗口变化，以及 `account_supply`、`account_withdraw`、`account_borrow`、`account_repay`、`account_liquidation`、`account_position_opened`、`account_position_closed` 事件。仓位开关事件仅在持久化的账户状态发生变化且能关联到新链上事件时产生。Aave Pool 使用 `aave_event_amount_token` 与 `aave_event_amount_usd`，用 `labels.eventType` 区分五类事件；Oracle 不可用时只产生 token amount，绝不把 USD 金额伪装为 0。
 
-Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Ethereum Uniswap 和 Uniswap Pool 在 2C 完成前不会伪装成 available。
+Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Uniswap deployment 目录同时返回 Ethereum/Robinhood V3 Factory 与 V4 PoolManager、PositionManager、StateView、deploymentBlock 和 explorerUrl。
 
 ### Aave Reserve 资源目录
 
@@ -336,7 +336,7 @@ DELETE /api/v1/monitors/:id
 
 Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停。
 
-创建和 PATCH 更新使用同一套类型、协议能力和 RPC chainId 校验。PATCH `config` 可以只提交要修改的字段，后端先与当前配置合并，再验证最终配置并一次性写入；验证失败不会修改 Monitor，也不会发布配置变更事件。当前将 Uniswap 配置更新为 Ethereum 仍返回 `409 PROTOCOL_NOT_READY`，引用未覆盖目标链的 RPC 返回 `RPC_CHAIN_UNSUPPORTED`。
+创建和 PATCH 更新使用同一套类型、资源和 RPC chainId 校验。PATCH `config` 可以只提交要修改的字段，后端先与当前配置合并，再验证最终配置并一次性写入；验证失败不会修改 Monitor，也不会发布配置变更事件。引用未覆盖目标链的 RPC 返回 `RPC_CHAIN_UNSUPPORTED`；Pool 不在本地资源目录时返回 `POOL_NOT_FOUND`。
 
 ### 当前 available
 
@@ -362,22 +362,36 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 }
 ```
 
-`uniswap_position` 目前支持 Robinhood V3/V4：
+`uniswap_position` 支持 Ethereum/Robinhood V3/V4：
 
 ```json
-{ "rpcIntegrationId": "int_rpc", "chainId": 4663, "version": "v3", "tokenId": "123" }
+{ "rpcIntegrationId": "int_rpc", "chainId": 1, "version": "v3", "tokenId": "123" }
 ```
 
 `uniswap_wallet` 的数组会去重；同轮按链与版本展开，部分失败保留成功结果：
 
 ```json
-{ "rpcIntegrationId": "int_rpc", "chainIds": [4663], "versions": ["v3", "v4"], "walletAddress": "0x0000000000000000000000000000000000001234" }
+{ "rpcIntegrationId": "int_rpc", "chainIds": [1, 4663], "versions": ["v3", "v4"], "walletAddress": "0x0000000000000000000000000000000000001234" }
 ```
 
-### 当前 planned
+`uniswap_pool` 必须使用资源目录返回的标识：
 
-- `uniswap_pool`：创建返回 `409 MONITOR_TYPE_NOT_READY`。
-- Ethereum Uniswap：创建返回 `409 PROTOCOL_NOT_READY`。
+```json
+{ "rpcIntegrationId": "int_rpc", "chainId": 1, "version": "v3", "poolAddress": "0x..." }
+```
+
+```json
+{ "rpcIntegrationId": "int_rpc", "chainId": 1, "version": "v4", "poolId": "0x...64 hex..." }
+```
+
+### Uniswap 资源 API
+
+```http
+GET /api/v1/integrations/:id/uniswap/pools?chainId=1&version=v3&q=ETH%2FUSDC&limit=50&cursor=...
+GET /api/v1/integrations/:id/uniswap/wallet-positions?chainId=1&version=v4&walletAddress=0x...&limit=50&cursor=...
+```
+
+Pool 目录从本地 SQLite 返回，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；`discovery` 返回 caughtUp、scannedThroughBlock、chainTipBlock。token metadata 单项失败返回 partial，不丢弃其他 Pool。Wallet V3 直接枚举 ERC-721，V4 使用后台、可恢复的 Transfer 索引；单个 Position 读取失败只增加 failedPositionCount。
 
 ### Legacy / deprecated
 
@@ -481,7 +495,8 @@ type MonitorSnapshot = {
 - market：`data.metrics` 为真实最新 Metric。
 - Aave Account：`data.networkScans`、`data.positions` 与钱包信息复用现有结构化仓位数据。无借款时 `healthFactor:null`、`healthFactorInfinite:true`，底层 `health_factor` Metric 为 `unsupported`，不会因无限值误告警。
 - Aave Pool：`data.discovery` 返回扫描块高，`data.recentEvents` 返回最近的去重事件；token/USD 数量分别可空，`summary.eventCount` 按 eventId 计数。
-- Uniswap：`data.positions`、发现进度、链/版本选择为真实当前数据；多版本可返回 `partial`。
+- Uniswap Position/Wallet：`data.positions`、发现进度、链/版本选择为真实当前数据；分组键包含 chainId/version/tokenId，多版本可返回 `partial`。返回 token 数量、边界距离、关闭状态和可靠时的 USD 估值；不可估值字段为 `null`。
+- Uniswap Pool：`data.pool` 返回 tick、双向价格、active liquidity、可用 TVL/fee 字段、估值状态；`data.recentEvents` 返回 swap/mint/burn，V3 还可返回 fee_collection；`data.discovery` 返回同步块高。
 - planned 类型返回 `unsupported` 与 `capability.available=false`，不生成伪造协议字段。
 - 链上整数、tokenId、blockNumber、金额与 liquidity 保持字符串。
 
@@ -508,7 +523,7 @@ GET /api/v1/monitors/:id/metrics
 }
 ```
 
-稳定码包括：`RPC_ROUTING_CONFIG_INVALID`、`RPC_CHAIN_UNSUPPORTED`、`RPC_CHAIN_ID_MISMATCH`、`RPC_PARTIAL_FAILURE`、`MONITOR_TYPE_NOT_READY`、`PROTOCOL_NOT_READY`、`RULE_CONDITION_INVALID`、`METRIC_NOT_AVAILABLE`、`RESOURCE_CATALOG_NOT_READY`、`RESOURCE_NOT_FOUND`、`INDEXER_WARMING_UP`、`INDEXER_PARTIAL_FAILURE`、`VALUATION_UNAVAILABLE`、`RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID`、`EVENT_RULE_DURATION_UNSUPPORTED`。
+稳定码包括：`RPC_ROUTING_CONFIG_INVALID`、`RPC_CHAIN_UNSUPPORTED`、`RPC_CHAIN_ID_MISMATCH`、`RPC_PARTIAL_FAILURE`、`MONITOR_TYPE_NOT_READY`、`PROTOCOL_NOT_READY`、`RULE_CONDITION_INVALID`、`METRIC_NOT_AVAILABLE`、`RESOURCE_CATALOG_NOT_READY`、`RESOURCE_NOT_FOUND`、`POSITION_NOT_FOUND`、`POOL_NOT_FOUND`、`INDEXER_WARMING_UP`、`INDEXER_PARTIAL_FAILURE`、`VALUATION_UNAVAILABLE`、`RULE_METRIC_UNSUPPORTED`、`RULE_LABEL_INVALID`、`EVENT_RULE_DURATION_UNSUPPORTED`。
 
 前端处理 `204` 时不要调用 `response.json()`：
 
@@ -517,10 +532,10 @@ if (response.status === 204) return null;
 const body = await response.json();
 ```
 
-## 9. 2C 与第三阶段待实现（当前不可视为 ready）
+## 9. 后续能力（当前不可视为 ready）
 
-- Ethereum Uniswap V3/V4 读取器。
-- Uniswap Pool 指标。
-- LP USD 估值与完整手续费计算。
+- Uniswap Pool 窗口成交量与变化率。
+- V4 单池完整 TVL/手续费归属。
+- 不含可信稳定币时的 Binance 价格回退和完整手续费计算。
 - Telegram 实际投递。
 - 新告警提醒去重与恢复通知。

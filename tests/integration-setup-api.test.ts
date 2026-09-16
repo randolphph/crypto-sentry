@@ -71,19 +71,21 @@ describe('Integration setup API', () => {
       },
     });
     expect(catalogBody.uniswap.deployments.map(({ chainId, version }) => ({ chainId, version }))).toEqual([
+      { chainId: 1, version: 'v3' },
       { chainId: 4_663, version: 'v3' },
+      { chainId: 1, version: 'v4' },
       { chainId: 4_663, version: 'v4' },
     ]);
     expect(catalogBody.evmRpc.routingModes.map(({ id }) => id)).toEqual(['fixed', 'url_template', 'header', 'query']);
     expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 1)).toMatchObject({
-      productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'planned', uniswapV4: 'planned' },
+      productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'available', uniswapV4: 'available' },
     });
     expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 4_663)).toMatchObject({
       productEnabled: true, capabilities: { aaveV3: 'unsupported', uniswapV3: 'available', uniswapV4: 'available' },
     });
     expect(catalogBody.monitorTypes).toEqual(expect.arrayContaining([
       { id: 'aave_pool', status: 'available', chainIds: [1] },
-      { id: 'uniswap_wallet', status: 'available', chainIds: [4_663], versions: ['v3', 'v4'] },
+      { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
     ]));
     expect(catalogBody.samplingPresets).toEqual([
       { id: 'realtime', intervalSeconds: 5 },

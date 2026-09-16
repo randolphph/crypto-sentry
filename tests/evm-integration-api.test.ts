@@ -132,7 +132,7 @@ describe('EVM RPC integration API', () => {
         chainName: 'Ethereum',
         ok: true,
         blockNumber: '100',
-        connectivity: { rpc: 'ok', aaveV3: 'ok' },
+        connectivity: { rpc: 'ok', aaveV3: 'ok', uniswapV3: 'ok', uniswapV4: 'ok' },
         aaveCapabilities: { accountRead: 'ok', reserveCatalog: 'ok', eventLogs: 'ok' },
         error: null,
       }],
@@ -145,6 +145,18 @@ describe('EVM RPC integration API', () => {
     expect(reserves.json()).toMatchObject({
       chainId: 1, chainName: 'Ethereum', protocol: 'aave', version: 'v3', status: 'ok', stale: false,
     });
+    const pools = await app.inject({
+      method: 'GET', url: `/api/v1/integrations/${integrationId}/uniswap/pools?chainId=1&version=v3&limit=50`, headers: authorization,
+    });
+    expect(pools.statusCode).toBe(200);
+    expect(pools.json()).toMatchObject({ status: 'warming_up', items: [], nextCursor: null });
+    const walletPositions = await app.inject({
+      method: 'GET',
+      url: `/api/v1/integrations/${integrationId}/uniswap/wallet-positions?chainId=1&version=v3&walletAddress=0x0000000000000000000000000000000000001234&limit=50`,
+      headers: authorization,
+    });
+    expect(walletPositions.statusCode).toBe(200);
+    expect(walletPositions.json()).toMatchObject({ status: 'empty', items: [], failedPositionCount: 0 });
     const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
     expect(readiness.json()).toMatchObject({
       aave: {
@@ -154,6 +166,7 @@ describe('EVM RPC integration API', () => {
           capabilities: { accountRead: true, reserveCatalog: true, eventLogs: true },
         }],
       },
+      uniswap: { ready: true, networks: [{ chainId: 1, versions: { v3: true, v4: true }, integrationIds: [integrationId] }] },
     });
     await app.inject({
       method: 'PATCH', url: `/api/v1/integrations/${integrationId}`, headers: authorization,

@@ -9,6 +9,15 @@ import { AppError } from '../errors.js';
 import { idParamsSchema, integrationCreateSchema, integrationPatchSchema } from '../schemas.js';
 
 const aaveReserveQuerySchema = z.object({ chainId: z.coerce.number().int().min(1) });
+const uniswapPoolQuerySchema = z.object({
+  chainId: z.coerce.number().int().min(1), version: z.enum(['v3', 'v4']), q: z.string().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().min(1).optional(),
+});
+const uniswapWalletPositionsQuerySchema = z.object({
+  chainId: z.coerce.number().int().min(1), version: z.enum(['v3', 'v4']),
+  walletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/), q: z.string().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().regex(/^\d+$/).optional(),
+});
 
 export function registerIntegrationRoutes(
   app: FastifyInstance,
@@ -37,6 +46,22 @@ export function registerIntegrationRoutes(
     const { id } = idParamsSchema.parse(request.params);
     const { chainId } = aaveReserveQuerySchema.parse(request.query);
     return operations.aaveReserves(id, chainId);
+  });
+
+  app.get('/api/v1/integrations/:id/uniswap/pools', { schema: {
+    tags: ['integrations', 'uniswap'], summary: 'Search the asynchronously indexed Uniswap pool catalog',
+    params: openApiSchema(idParamsSchema), querystring: openApiSchema(uniswapPoolQuerySchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return operations.uniswapPoolCatalog(id, uniswapPoolQuerySchema.parse(request.query));
+  });
+
+  app.get('/api/v1/integrations/:id/uniswap/wallet-positions', { schema: {
+    tags: ['integrations', 'uniswap'], summary: 'Discover readable Uniswap positions before creating a monitor',
+    params: openApiSchema(idParamsSchema), querystring: openApiSchema(uniswapWalletPositionsQuerySchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return operations.uniswapWalletPositions(id, uniswapWalletPositionsQuerySchema.parse(request.query));
   });
 
   app.post('/api/v1/integrations/binance/default', { schema: {
@@ -94,7 +119,9 @@ export function registerIntegrationRoutes(
 
   app.post('/api/v1/integrations/:id/test', { schema: { tags: ['integrations'], params: openApiSchema(idParamsSchema) } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
-    return operations.test(id);
+    const result = await operations.test(id);
+    events.publish({ entity: 'integration', operation: 'updated', id });
+    return result;
   });
 
   app.post('/api/v1/integrations/:id/sync-markets', { schema: { tags: ['integrations'], params: openApiSchema(idParamsSchema) } }, async (request) => {

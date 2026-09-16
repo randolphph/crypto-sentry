@@ -226,6 +226,48 @@ export const protocolMetricSamples = sqliteTable(
   (table) => [primaryKey({ columns: [table.monitorId, table.metricName, table.observedAt] })],
 );
 
+export const uniswapPools = sqliteTable(
+  'uniswap_pools',
+  {
+    integrationId: text('integration_id').notNull().references(() => integrations.id, { onDelete: 'cascade' }),
+    chainId: integer('chain_id').notNull(),
+    version: text('version').notNull(),
+    resourceId: text('resource_id').notNull(),
+    poolAddress: text('pool_address'),
+    poolId: text('pool_id'),
+    token0Address: text('token0_address').notNull(),
+    token0Symbol: text('token0_symbol'),
+    token0Decimals: integer('token0_decimals'),
+    token0Native: integer('token0_native', { mode: 'boolean' }).notNull().default(false),
+    token1Address: text('token1_address').notNull(),
+    token1Symbol: text('token1_symbol'),
+    token1Decimals: integer('token1_decimals'),
+    token1Native: integer('token1_native', { mode: 'boolean' }).notNull().default(false),
+    feeTier: integer('fee_tier').notNull(),
+    tickSpacing: integer('tick_spacing').notNull(),
+    hooksAddress: text('hooks_address'),
+    discoveredAtBlock: text('discovered_at_block').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.integrationId, table.chainId, table.version, table.resourceId] }),
+    index('uniswap_pools_search_idx').on(table.integrationId, table.chainId, table.version, table.token0Symbol, table.token1Symbol),
+  ],
+);
+
+export const tokenMetadataCache = sqliteTable(
+  'token_metadata_cache',
+  {
+    chainId: integer('chain_id').notNull(),
+    address: text('address').notNull(),
+    symbol: text('symbol'),
+    decimals: integer('decimals'),
+    status: text('status').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.chainId, table.address] })],
+);
+
 export const uniswapV4ScanCheckpoints = sqliteTable(
   'uniswap_v4_scan_checkpoints',
   {
