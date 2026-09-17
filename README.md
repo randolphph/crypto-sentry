@@ -69,6 +69,8 @@ npm run dev
 - OpenAPI JSON：`GET /docs/json`
 - 业务 API：`/api/v1/*`
 
+EVM RPC 请求会经过统一的脱敏观测层：失败请求和耗时超过 2 秒的请求按 warn 记录；需要排查请求数量或慢请求时，把 `LOG_LEVEL=debug` 写入 `.env`，日志会额外记录每次 JSON-RPC 的方法、耗时、HTTP 状态和成功结果。日志不会记录 RPC URL、认证 Header、Token 或请求参数。
+
 除 `/health` 和 API 文档外，业务接口需要认证：
 
 ```http

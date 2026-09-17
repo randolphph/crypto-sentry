@@ -56,6 +56,7 @@ import type { UniswapPoolReaderFactory } from './core/integrations/uniswap-pool-
 import { UniswapPoolSwapSampleRepository } from './db/repositories/uniswap-pool-swap-sample-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
 import { MonitorService } from './core/monitors/monitor-service.js';
+import { createRpcObservabilityFetch } from './adapters/evm/evm-rpc-client.js';
 
 export interface CreateAppOptions {
   config?: AppConfig;
@@ -86,6 +87,21 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
         censor: '[REDACTED]',
       },
     },
+  });
+  const baseFetch = options.fetch ?? globalThis.fetch;
+  const rpcFetch = createRpcObservabilityFetch(baseFetch, (event) => {
+    const payload = {
+      methods: event.methods,
+      durationMilliseconds: event.durationMilliseconds,
+      statusCode: event.statusCode,
+      ok: event.ok,
+      ...(event.errorName === undefined ? {} : { errorName: event.errorName }),
+    };
+    if (!event.ok || event.durationMilliseconds >= 2_000) {
+      app.log.warn(payload, 'EVM RPC request failed or was slow');
+    } else if (config.logLevel === 'debug' || config.logLevel === 'trace') {
+      app.log.debug(payload, 'EVM RPC request');
+    }
   });
 
   await app.register(swagger, {
@@ -138,7 +154,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     integrations,
     markets,
     integrationNetworkHealth,
-    options.fetch,
+    rpcFetch,
     webSocketFactory,
     options.aaveReserveCatalogReaderFactory,
     options.aaveCapabilityEventReaderFactory,
@@ -149,7 +165,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     options.uniswapV4PositionReaderFactory,
   );
   const monitors = new MonitorRepository(database.db, integrations);
-  const monitorService = new MonitorService(monitors, integrations, integrationNetworkHealth, options.fetch, {
+  const monitorService = new MonitorService(monitors, integrations, integrationNetworkHealth, rpcFetch, {
     ...(options.uniswapV3PositionReaderFactory === undefined ? {} : { v3Factory: options.uniswapV3PositionReaderFactory }),
     ...(options.uniswapV4PositionReaderFactory === undefined ? {} : { v4Factory: options.uniswapV4PositionReaderFactory }),
   });
@@ -178,7 +194,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     metricPipeline,
     pollingScheduler,
     {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      fetch: rpcFetch,
       ...(options.aavePositionReaderFactory === undefined ? {} : { readerFactory: options.aavePositionReaderFactory }),
       samples: new ProtocolMetricSampleRepository(database.db),
       onError: (error) => app.log.warn({ err: error }, 'Aave V3 position scan error'),
@@ -191,7 +207,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     metricPipeline,
     pollingScheduler,
     {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      fetch: rpcFetch,
       ...(options.aaveEventReaderFactory === undefined ? {} : { readerFactory: options.aaveEventReaderFactory }),
       onError: (error) => app.log.warn({ err: error }, 'Aave V3 event scan error'),
     },
@@ -203,7 +219,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     metricPipeline,
     pollingScheduler,
     {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      fetch: rpcFetch,
       ...(options.uniswapV3PositionReaderFactory === undefined
         ? {}
         : { readerFactory: options.uniswapV3PositionReaderFactory }),
@@ -219,7 +235,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const uniswapPoolIndexCoordinator = new UniswapPoolIndexCoordinator(
     integrations, integrationNetworkHealth, uniswapPools, chainScanCursors, pollingScheduler,
     {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      fetch: rpcFetch,
       ...(options.uniswapPoolCatalogReaderFactory === undefined ? {} : { readerFactory: options.uniswapPoolCatalogReaderFactory }),
       onError: (error) => app.log.warn({ err: error }, 'Uniswap pool index error'),
     },
@@ -227,7 +243,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   const uniswapPoolCoordinator = new UniswapPoolCoordinator(
     integrations, monitors, uniswapPools, chainScanCursors, metricPipeline, pollingScheduler,
     {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      fetch: rpcFetch,
       ...(options.uniswapPoolReaderFactory === undefined ? {} : { readerFactory: options.uniswapPoolReaderFactory }),
       samples: new UniswapPoolSwapSampleRepository(database.db),
       onError: (error) => app.log.warn({ err: error }, 'Uniswap pool monitor error'),
@@ -237,7 +253,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     new PriceSampleRepository(database.db),
     metricPipeline,
     {
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      fetch: rpcFetch,
       ...(options.marketSampleIntervalMilliseconds === undefined
         ? {}
         : { sampleIntervalMilliseconds: options.marketSampleIntervalMilliseconds }),

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { EvmRpcClient, EvmRpcError } from '../src/adapters/evm/evm-rpc-client.js';
-import type { EvmChainMismatchError } from '../src/adapters/evm/evm-rpc-client.js';
+import { createRpcObservabilityFetch, EvmRpcClient, EvmRpcError } from '../src/adapters/evm/evm-rpc-client.js';
+import type { EvmChainMismatchError, RpcHttpRequestLog } from '../src/adapters/evm/evm-rpc-client.js';
 
 function rpcResponse(id: number, result: string): Response {
   return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
@@ -16,6 +16,23 @@ function rpcRequest(init?: RequestInit): { id: number; method: string } {
 }
 
 describe('EvmRpcClient', () => {
+  it('observes JSON-RPC methods without logging endpoint or request parameters', async () => {
+    const events: RpcHttpRequestLog[] = [];
+    const fetchMock = vi.fn(async () => rpcResponse(1, '0x1'));
+    const observedFetch = createRpcObservabilityFetch(fetchMock, (event) => events.push(event));
+
+    await observedFetch('https://rpc.example/private-token', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer secret' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: ['0xwallet'] }),
+    });
+
+    expect(events).toEqual([expect.objectContaining({ methods: ['eth_call'], statusCode: 200, ok: true })]);
+    expect(JSON.stringify(events)).not.toContain('private-token');
+    expect(JSON.stringify(events)).not.toContain('secret');
+    expect(JSON.stringify(events)).not.toContain('0xwallet');
+  });
+
   it('limits concurrent requests shared by clients for the same RPC endpoint', async () => {
     let active = 0;
     let maximumActive = 0;

@@ -3,6 +3,16 @@ import type { PublicClient } from 'viem';
 
 type RpcFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+export interface RpcHttpRequestLog {
+  methods: string[];
+  durationMilliseconds: number;
+  statusCode: number | null;
+  ok: boolean;
+  errorName?: string;
+}
+
+export type RpcHttpRequestLogger = (event: RpcHttpRequestLog) => void;
+
 const MAX_CONCURRENT_RPC_REQUESTS = 8;
 
 class RpcRequestLimiter {
@@ -36,6 +46,59 @@ class RpcRequestLimiter {
 }
 
 const requestLimiters = new Map<string, RpcRequestLimiter>();
+
+function jsonRpcMethods(init: RequestInit | undefined): string[] {
+  if (typeof init?.body !== 'string') return [];
+  try {
+    const parsed: unknown = JSON.parse(init.body);
+    if (Array.isArray(parsed)) {
+      return parsed.flatMap((item: unknown) => (
+        typeof item === 'object' && item !== null && 'method' in item && typeof item.method === 'string'
+          ? [item.method]
+          : []
+      ));
+    }
+    return typeof parsed === 'object' && parsed !== null && 'method' in parsed && typeof parsed.method === 'string'
+      ? [parsed.method]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Adds safe JSON-RPC request observability without logging URL, headers or params.
+ * Only JSON-RPC requests are observed; Binance REST and other HTTP traffic passes through.
+ */
+export function createRpcObservabilityFetch(
+  fetchImplementation: RpcFetch,
+  logger: RpcHttpRequestLogger,
+): RpcFetch {
+  return async (input, init) => {
+    const methods = jsonRpcMethods(init);
+    if (methods.length === 0) return fetchImplementation(input, init);
+    const startedAt = Date.now();
+    try {
+      const response = await fetchImplementation(input, init);
+      logger({
+        methods,
+        durationMilliseconds: Math.max(0, Date.now() - startedAt),
+        statusCode: response.status,
+        ok: response.ok,
+      });
+      return response;
+    } catch (error) {
+      logger({
+        methods,
+        durationMilliseconds: Math.max(0, Date.now() - startedAt),
+        statusCode: null,
+        ok: false,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      });
+      throw error;
+    }
+  };
+}
 
 function limiterKey(rpcUrl: string, headers: Record<string, string> | undefined): string {
   const headerFingerprint = Object.entries(headers ?? {}).sort(([left], [right]) => left.localeCompare(right))
