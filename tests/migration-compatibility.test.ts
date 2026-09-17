@@ -62,7 +62,7 @@ describe('compatible database migrations', () => {
       .toEqual({ name: 'uniswap_pools' });
     expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='token_metadata_cache'").get())
       .toEqual({ name: 'token_metadata_cache' });
-    for (const name of ['rule_event_commits', 'uniswap_indexer_states', 'uniswap_pool_swap_samples']) {
+    for (const name of ['rule_event_commits', 'uniswap_indexer_states', 'uniswap_pool_swap_samples', 'rpc_request_logs']) {
       expect(sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(name)).toEqual({ name });
     }
     expect(sqlite.prepare("PRAGMA table_info('integration_network_health')").all()).toEqual(expect.arrayContaining([

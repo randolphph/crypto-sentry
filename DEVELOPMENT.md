@@ -70,6 +70,10 @@
 - [x] Ethereum/Robinhood Uniswap V3/V4 官方部署、逐链能力测试和 Readiness
 - [x] 旧 V3/V4 Pool 缓存、搜索与分页 API（不自动启动或恢复全链索引）
 - [x] 停止后台全链 Pool `eth_getLogs` 扫描；用户指定 Pool ID 后直接监听
+- [x] 端口绑定失败时关闭已初始化的 Scheduler/连接器，避免半启动进程继续请求 RPC
+- [x] V4 钱包首次 Transfer 历史扫描默认限为单个 50,000 区块分片，并在 provider 拒绝范围时自适应缩小
+- [x] 相同 RPC/链/版本/钱包或 Pool 的读取合并，避免重复 Monitor 线性放大 RPC 请求
+- [x] 脱敏 RPC 传输审计持久化到 SQLite，并按调度任务 ID 查询最近 7 天请求量与失败
 - [x] Position token 数量、边界距离、V3 fees owed、稳定币链上估值与跨链 tokenId 隔离
 - [x] Uniswap Pool Monitor 基础 gauge、事件去重、统一 Snapshot 和直接 Pool ID 校验
 - [x] Uniswap Pool 窗口 token/USD volume、相邻窗口 change 与持久样本

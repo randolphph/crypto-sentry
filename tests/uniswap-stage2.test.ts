@@ -133,6 +133,10 @@ describe('Uniswap phase 2 resources and pool monitor', () => {
       name: 'Direct WETH/USDC', type: 'uniswap_pool', enabled: true, intervalSeconds: 20, maxStaleSeconds: 90,
       config: { rpcIntegrationId: integration.id, chainId: 1, version: 'v3', poolAddress },
     });
+    const duplicateMonitor = monitors.create({
+      name: 'Same direct WETH/USDC', type: 'uniswap_pool', enabled: true, intervalSeconds: 60, maxStaleSeconds: 90,
+      config: { rpcIntegrationId: integration.id, chainId: 1, version: 'v3', poolAddress },
+    });
     const latest = new LatestMetricStore();
     const pipeline = new MetricPipeline(monitors, latest, [], new MetricEventRepository(database.db));
     const scheduler = new CapturingScheduler();
@@ -142,26 +146,37 @@ describe('Uniswap phase 2 resources and pool monitor', () => {
       token1Address: '0x0000000000000000000000000000000000000020', token1Symbol: 'USDC', token1Decimals: 6,
       feeTier: 500, tickSpacing: 10,
     }));
+    const read = vi.fn(async () => ({
+      blockNumber: '188', currentTick: 100, token0Price: '2000', token1Price: '0.0005', activeLiquidity: '1000',
+      tvlToken0: '10', tvlToken1: '20000', lpFee: '500', protocolFee: '0', events: [],
+    }));
     const coordinator = new UniswapPoolCoordinator(
       integrations, monitors, new UniswapPoolRepository(database.db), new ChainScanCursorRepository(database.db),
       pipeline, scheduler as unknown as PollingScheduler,
       { readerFactory: { create: () => ({
         latestBlock: async () => 200n,
         describeV3,
-        read: async () => ({
-          blockNumber: '188', currentTick: 100, token0Price: '2000', token1Price: '0.0005', activeLiquidity: '1000',
-          tvlToken0: '10', tvlToken1: '20000', lpFee: '500', protocolFee: '0', events: [],
-        }),
+        read,
       }) }, now: () => new Date('2026-09-16T00:00:00.000Z') },
     );
     coordinator.reconcile();
     const task = scheduler.tasks.get(`uniswap-pool:${monitor.id}`);
     if (task === undefined) throw new Error('Direct pool monitor task missing');
-    await task.run(new AbortController().signal);
+    const duplicateTask = scheduler.tasks.get(`uniswap-pool:${duplicateMonitor.id}`);
+    if (duplicateTask === undefined) throw new Error('Duplicate pool monitor task missing');
+    await Promise.all([
+      task.run(new AbortController().signal),
+      duplicateTask.run(new AbortController().signal),
+    ]);
     expect(describeV3).toHaveBeenCalledWith(poolAddress, expect.any(AbortSignal));
+    expect(describeV3).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
     expect(latest.list(monitor.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'current_tick', value: '100', status: 'ok' }),
       expect.objectContaining({ name: 'sync_status', value: true, status: 'ok' }),
+    ]));
+    expect(latest.list(duplicateMonitor.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'current_tick', value: '100', status: 'ok' }),
     ]));
     coordinator.close();
     await pipeline.close();

@@ -7,6 +7,7 @@ export interface PollingTask {
 export interface PollingSchedulerOptions {
   onError(taskId: string, error: Error): void;
   minimumIntervalMilliseconds?: number;
+  runWithContext?<T>(taskId: string, operation: () => Promise<T>): Promise<T>;
 }
 
 interface TaskState {
@@ -75,7 +76,12 @@ export class PollingScheduler {
       const controller = new AbortController();
       state.controller = controller;
       const running = Promise.resolve()
-        .then(async () => state.task.run(controller.signal))
+        .then(async () => {
+          const operation = () => state.task.run(controller.signal);
+          return this.options.runWithContext === undefined
+            ? operation()
+            : this.options.runWithContext(state.task.id, operation);
+        })
         .catch((error: unknown) => {
           if (!controller.signal.aborted) this.options.onError(state.task.id, toError(error));
         })

@@ -306,6 +306,23 @@ CREATE INDEX uniswap_pool_swap_samples_time_idx
   ON uniswap_pool_swap_samples(monitor_id, observed_at);
 `,
   },
+  {
+    name: '0009_rpc_request_audit_logs',
+    sql: `
+CREATE TABLE rpc_request_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  observed_at TEXT NOT NULL,
+  task_id TEXT,
+  methods_json TEXT NOT NULL,
+  duration_milliseconds INTEGER NOT NULL,
+  status_code INTEGER,
+  ok INTEGER NOT NULL,
+  error_name TEXT
+);
+CREATE INDEX rpc_request_logs_observed_at_idx ON rpc_request_logs(observed_at DESC);
+CREATE INDEX rpc_request_logs_task_observed_at_idx ON rpc_request_logs(task_id, observed_at DESC);
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

@@ -73,5 +73,63 @@ describe('Uniswap closed position cache', () => {
     coordinator.close();
     await pipeline.close();
   });
-});
 
+  it('fans one wallet acquisition out to multiple monitors of the same resource', async () => {
+    const database = createDatabase(':memory:');
+    databases.push(database);
+    const integrations = new IntegrationRepository(database.db, new EncryptionService(Buffer.alloc(32, 7)));
+    const integration = integrations.create({
+      name: 'Robinhood RPC', type: 'evm_rpc', provider: 'custom', enabled: true,
+      config: { chainId: 4_663, rpcUrl: 'https://rpc.example' },
+    });
+    const monitors = new MonitorRepository(database.db, integrations);
+    const sharedConfig = {
+      rpcIntegrationId: integration.id, chainIds: [4_663], versions: ['v3'] as const,
+      walletAddress: '0x0000000000000000000000000000000000001234',
+    };
+    const first = monitors.create({
+      name: 'LP health', type: 'uniswap_wallet', enabled: true, intervalSeconds: 20, maxStaleSeconds: 90,
+      config: sharedConfig,
+    });
+    const second = monitors.create({
+      name: 'LP value', type: 'uniswap_wallet', enabled: true, intervalSeconds: 60, maxStaleSeconds: 90,
+      config: sharedConfig,
+    });
+    const openPosition: UniswapV3Position = {
+      protocol: 'uniswap', version: 'v3', chainId: 4_663, chainName: 'Robinhood Chain', blockNumber: '100',
+      tokenId: '42', owner: '0x0000000000000000000000000000000000001234',
+      positionManagerAddress: '0x0000000000000000000000000000000000000001',
+      poolAddress: '0x0000000000000000000000000000000000000002',
+      token0: { address: '0x0000000000000000000000000000000000000010', symbol: 'USDG', decimals: 6 },
+      token1: { address: '0x0000000000000000000000000000000000000020', symbol: 'WETH', decimals: 18 },
+      feeTier: 500, tickLower: -100, tickUpper: 100, currentTick: 0, liquidity: '1', inRange: true,
+      tokensOwed0: '0', tokensOwed1: '0',
+    };
+    const discover = vi.fn(async () => ({ blockNumber: 100n, tokenIds: ['42'] }));
+    const read = vi.fn(async () => openPosition);
+    const scheduler = new CapturingScheduler();
+    const pipeline = new MetricPipeline(monitors, new LatestMetricStore());
+    const coordinator = new UniswapV3PositionCoordinator(
+      integrations, monitors, new UniswapV4OwnershipRepository(database.db), pipeline,
+      scheduler as unknown as PollingScheduler,
+      {
+        now: () => new Date('2026-09-17T00:00:00.000Z'),
+        readerFactory: { create: () => ({ discover, read }) },
+      },
+    );
+    coordinator.reconcile();
+    const firstTask = scheduler.tasks.get(`uniswap:${first.id}`);
+    const secondTask = scheduler.tasks.get(`uniswap:${second.id}`);
+    if (firstTask === undefined || secondTask === undefined) throw new Error('Expected Uniswap tasks');
+    await Promise.all([
+      firstTask.run(new AbortController().signal),
+      secondTask.run(new AbortController().signal),
+    ]);
+    expect(discover).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+    expect(pipeline.list(first.id)).toContainEqual(expect.objectContaining({ name: 'position_count', value: '1' }));
+    expect(pipeline.list(second.id)).toContainEqual(expect.objectContaining({ name: 'position_count', value: '1' }));
+    coordinator.close();
+    await pipeline.close();
+  });
+});

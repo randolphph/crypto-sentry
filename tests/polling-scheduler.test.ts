@@ -3,6 +3,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PollingScheduler } from '../src/core/scheduling/polling-scheduler.js';
 
 describe('PollingScheduler', () => {
+  it('runs each task in the supplied RPC audit context', async () => {
+    const contexts: string[] = [];
+    const scheduler = new PollingScheduler({
+      onError: () => undefined,
+      minimumIntervalMilliseconds: 1,
+      runWithContext: async (taskId, operation) => {
+        contexts.push(taskId);
+        return operation();
+      },
+    });
+    let resolveRun: (() => void) | undefined;
+    const completed = new Promise<void>((resolve) => { resolveRun = resolve; });
+    scheduler.upsert({
+      id: 'uniswap:mon_rpc', intervalMilliseconds: 1,
+      run: async () => { resolveRun?.(); },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await completed;
+    expect(contexts).toEqual(['uniswap:mon_rpc']);
+    await scheduler.close();
+  });
+
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 

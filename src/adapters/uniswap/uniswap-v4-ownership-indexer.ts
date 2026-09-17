@@ -29,6 +29,11 @@ export interface UniswapV4OwnershipIndexerOptions {
   maximumChunksPerSync?: number;
 }
 
+/** A V4 wallet scan is deliberately conservative: every chunk issues two filtered getLogs calls. */
+export const DEFAULT_UNISWAP_V4_OWNERSHIP_CHUNK_SIZE = 50_000n;
+export const DEFAULT_UNISWAP_V4_OWNERSHIP_MINIMUM_CHUNK_SIZE = 1_000n;
+export const DEFAULT_UNISWAP_V4_OWNERSHIP_MAXIMUM_CHUNKS_PER_SYNC = 1;
+
 export interface UniswapV4OwnershipSyncResult {
   tokenIds: string[];
   scannedThroughBlock: bigint;
@@ -42,13 +47,15 @@ export class UniswapV4OwnershipIndexer {
   private readonly desiredChunkSize: bigint;
   private readonly minimumChunkSize: bigint;
   private readonly maximumChunksPerSync: number;
+  private currentChunkSize: bigint;
 
   public constructor(private readonly options: UniswapV4OwnershipIndexerOptions) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
     this.confirmations = BigInt(options.confirmations ?? 12);
-    this.desiredChunkSize = options.chunkSize ?? 5_000_000n;
-    this.minimumChunkSize = options.minimumChunkSize ?? 1_000n;
-    this.maximumChunksPerSync = options.maximumChunksPerSync ?? 32;
+    this.desiredChunkSize = options.chunkSize ?? DEFAULT_UNISWAP_V4_OWNERSHIP_CHUNK_SIZE;
+    this.minimumChunkSize = options.minimumChunkSize ?? DEFAULT_UNISWAP_V4_OWNERSHIP_MINIMUM_CHUNK_SIZE;
+    this.maximumChunksPerSync = options.maximumChunksPerSync ?? DEFAULT_UNISWAP_V4_OWNERSHIP_MAXIMUM_CHUNKS_PER_SYNC;
+    this.currentChunkSize = this.desiredChunkSize;
   }
 
   public async sync(walletAddress: Address, signal?: AbortSignal): Promise<UniswapV4OwnershipSyncResult> {
@@ -68,7 +75,7 @@ export class UniswapV4OwnershipIndexer {
     const chainTipBlock = latestBlock > this.confirmations ? latestBlock - this.confirmations : 0n;
     let scannedThroughBlock = this.options.repository.getLastScannedBlock(key) ?? deployment.deploymentBlock - 1n;
     let fromBlock = scannedThroughBlock + 1n;
-    let chunkSize = this.desiredChunkSize;
+    let chunkSize = this.currentChunkSize;
     let completedChunks = 0;
 
     while (fromBlock <= chainTipBlock && completedChunks < this.maximumChunksPerSync) {
@@ -88,14 +95,15 @@ export class UniswapV4OwnershipIndexer {
         scannedThroughBlock = toBlock;
         fromBlock = toBlock + 1n;
         completedChunks += 1;
-        if (chunkSize < this.desiredChunkSize) {
-          chunkSize = chunkSize * 2n > this.desiredChunkSize ? this.desiredChunkSize : chunkSize * 2n;
-        }
+        // Keep the last provider-accepted range. Raising it automatically caused
+        // a repeated reject/bisect pattern on providers with strict log limits.
+        this.currentChunkSize = chunkSize;
       } catch (error) {
         signal?.throwIfAborted();
         if (chunkSize <= this.minimumChunkSize) throw error;
         const halved = chunkSize / 2n;
         chunkSize = halved < this.minimumChunkSize ? this.minimumChunkSize : halved;
+        this.currentChunkSize = chunkSize;
       }
     }
 

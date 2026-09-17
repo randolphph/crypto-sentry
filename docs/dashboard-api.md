@@ -9,6 +9,32 @@ Content-Type: application/json
 
 Swagger UI：`GET /docs/`；OpenAPI JSON：`GET /docs/json`。
 
+## RPC 请求审计
+
+```http
+GET /api/v1/status/rpc-requests?limit=100&taskId=uniswap:mon_abc
+```
+
+该接口供 Dashboard 的运行诊断页查询最近 RPC HTTP 传输记录。`limit` 默认 `100`，范围 `1–500`；可选 `taskId` 过滤某个调度 Monitor。记录保留 7 天：
+
+```json
+{
+  "items": [
+    {
+      "observedAt": "2026-09-17T09:41:20.123Z",
+      "taskId": "uniswap:mon_abc",
+      "methods": ["eth_call"],
+      "durationMilliseconds": 118,
+      "statusCode": 200,
+      "ok": true,
+      "errorName": null
+    }
+  ]
+}
+```
+
+此接口只保存和返回安全的传输元数据，绝不返回 RPC URL、静态 Header、Token、JSON-RPC 参数或返回内容。没有调度上下文的请求 `taskId` 为 `null`。Dashboard 的 Snapshot、Metric 和 Status 读取只读取本地 SQLite 缓存，不会额外发起 RPC。
+
 ## 1. EVM RPC Integration
 
 完整配置类型：
@@ -406,6 +432,8 @@ GET /api/v1/integrations/:id/uniswap/wallet-positions?chainId=1&version=v4&walle
 `/uniswap/pools` 仅查询先前写入 SQLite 的 legacy Pool 缓存，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；它不会启动、恢复或等待任何全链索引，因此不得作为创建 `uniswap_pool` 的前置步骤。Dashboard 应直接提交用户确认的 V3 poolAddress 或 V4 poolId。V3 首次扫描只读取该 Pool 的链上 token/fee 元数据并缓存；V4 poolId 不能反推出 PoolKey，故仅凭 poolId 时 token/价格/TVL/金额估值会明确保持 unavailable/null，tick、liquidity、费用和按 poolId 过滤的事件仍可监控。
 
 Wallet V3 直接枚举 ERC-721，V4 使用后台、可恢复的 Transfer 索引；单个 Position 读取失败只增加 failedPositionCount。`q` 支持 tokenId、poolAddress/poolId、token0/token1 symbol、token address，以及正向或反向 `TOKEN0/TOKEN1` 币对；过滤后再分页。
+
+相同 `rpcIntegrationId + chainId + version + walletAddress` 的 Position/Wallet 读取在短暂缓存窗口内会合并为一轮链上读取；同一 `rpcIntegrationId + chainId + version + poolAddress/poolId` 的多个 Pool Monitor 也会按其中最短 `intervalSeconds` 合并一次读取、分别生成各 Monitor 的 Metrics。V4 钱包首次历史发现默认每轮最多一个 50,000 块日志分片；若节点以范围/结果过大或超时拒绝，会自动二分并在之后保持已验证的较小区间。未完成历史同步是 `warming_up`，不是 RPC 错误。
 
 ### Legacy / deprecated
 

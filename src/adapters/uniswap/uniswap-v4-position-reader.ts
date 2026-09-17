@@ -5,6 +5,7 @@ import { createEvmPublicClient } from '../evm/evm-rpc-client.js';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
 const DEFAULT_OWNERSHIP_CACHE_TTL_MILLISECONDS = 5 * 60 * 1_000;
+const DEFAULT_SHARED_READ_CACHE_TTL_MILLISECONDS = 5_000;
 
 const positionManagerAbi = [
   {
@@ -156,6 +157,8 @@ export interface UniswapV4PositionReaderOptions {
   timeoutMilliseconds?: number;
   /** NFT ownership changes infrequently; refresh the owner after this TTL. */
   ownershipCacheTtlMilliseconds?: number;
+  /** Coalesce an identical short-lived LP read used by multiple monitors. */
+  sharedReadCacheTtlMilliseconds?: number;
   now?: () => number;
   publicClient?: PublicClient;
 }
@@ -169,13 +172,21 @@ export class UniswapV4PositionReader {
   private deploymentPromise: Promise<UniswapV4Deployment> | undefined;
   private readonly tokenMetadata = new Map<string, { symbol: string; decimals: number }>();
   private readonly ownersByTokenId = new Map<string, { owner: Address; expiresAt: number }>();
+  private readonly positions = new Map<string, { position: UniswapV4Position; expiresAt: number }>();
+  private readonly positionReads = new Map<string, Promise<UniswapV4Position>>();
+  private readonly poolSlots = new Map<string, { slot: readonly [bigint, number, number, number]; expiresAt: number }>();
+  private latestBlock: { value: bigint; expiresAt: number } | undefined;
+  private latestBlockRequest: Promise<bigint> | undefined;
   private readonly ownershipCacheTtlMilliseconds: number;
+  private readonly sharedReadCacheTtlMilliseconds: number;
   private readonly now: () => number;
 
   public constructor(private readonly options: UniswapV4PositionReaderOptions) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
     this.ownershipCacheTtlMilliseconds = options.ownershipCacheTtlMilliseconds
       ?? DEFAULT_OWNERSHIP_CACHE_TTL_MILLISECONDS;
+    this.sharedReadCacheTtlMilliseconds = options.sharedReadCacheTtlMilliseconds
+      ?? DEFAULT_SHARED_READ_CACHE_TTL_MILLISECONDS;
     this.now = options.now ?? Date.now;
   }
 
@@ -184,10 +195,29 @@ export class UniswapV4PositionReader {
     signal?: AbortSignal,
     requestedBlockNumber?: bigint,
   ): Promise<UniswapV4Position> {
+    await this.deployment();
+    const blockNumber = requestedBlockNumber ?? await this.readLatestBlock(signal);
+    const key = `${tokenId}:${blockNumber}`;
+    const cached = this.positions.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.position;
+    const inflight = this.positionReads.get(key);
+    if (inflight !== undefined) return inflight;
+    const request = this.readAt(tokenId, blockNumber, signal);
+    this.positionReads.set(key, request);
+    try {
+      const position = await request;
+      this.positions.set(key, { position, expiresAt: this.now() + this.sharedReadCacheTtlMilliseconds });
+      this.pruneSharedReads();
+      return position;
+    } finally {
+      this.positionReads.delete(key);
+    }
+  }
+
+  private async readAt(tokenId: string, blockNumber: bigint, signal?: AbortSignal): Promise<UniswapV4Position> {
     const deployment = await this.deployment();
     const chainId = deployment.chainId;
     signal?.throwIfAborted();
-    const blockNumber = requestedBlockNumber ?? await this.publicClient.getBlockNumber({ cacheTime: 0 });
     const numericTokenId = BigInt(tokenId);
     const [owner, position, liquidity] = await Promise.all([
       this.readOwner(deployment.positionManagerAddress, numericTokenId, blockNumber),
@@ -210,13 +240,7 @@ export class UniswapV4PositionReader {
     const [poolKey, packedInfo] = position;
     const poolId = keccak256(encodeAbiParameters(poolKeyAbi, [poolKey]));
     const [slot0, token0, token1] = await Promise.all([
-      this.publicClient.readContract({
-        address: deployment.stateViewAddress,
-        abi: stateViewAbi,
-        functionName: 'getSlot0',
-        args: [poolId],
-        blockNumber,
-      }),
+      this.readPoolSlot0(deployment.stateViewAddress, poolId, blockNumber),
       this.readCurrency(poolKey.currency0, blockNumber),
       this.readCurrency(poolKey.currency1, blockNumber),
     ]);
@@ -249,6 +273,44 @@ export class UniswapV4PositionReader {
       liquidity: liquidity.toString(),
       inRange: liquidity > 0n && currentTick >= tickLower && currentTick < tickUpper,
     };
+  }
+
+  private async readLatestBlock(signal?: AbortSignal): Promise<bigint> {
+    signal?.throwIfAborted();
+    if (this.latestBlock !== undefined && this.latestBlock.expiresAt > this.now()) return this.latestBlock.value;
+    if (this.latestBlockRequest !== undefined) return this.latestBlockRequest;
+    const request = this.publicClient.getBlockNumber({ cacheTime: 0 });
+    this.latestBlockRequest = request;
+    try {
+      const value = await request;
+      this.latestBlock = { value, expiresAt: this.now() + this.sharedReadCacheTtlMilliseconds };
+      return value;
+    } finally {
+      this.latestBlockRequest = undefined;
+    }
+  }
+
+  private async readPoolSlot0(
+    stateViewAddress: Address,
+    poolId: Hex,
+    blockNumber: bigint,
+  ): Promise<readonly [bigint, number, number, number]> {
+    const key = `${poolId}:${blockNumber}`;
+    const cached = this.poolSlots.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.slot;
+    const result = await this.publicClient.readContract({
+      address: stateViewAddress, abi: stateViewAbi, functionName: 'getSlot0', args: [poolId], blockNumber,
+    });
+    const slot = result;
+    this.poolSlots.set(key, { slot, expiresAt: this.now() + this.sharedReadCacheTtlMilliseconds });
+    this.pruneSharedReads();
+    return slot;
+  }
+
+  private pruneSharedReads(): void {
+    const now = this.now();
+    for (const [key, value] of this.positions) if (value.expiresAt <= now) this.positions.delete(key);
+    for (const [key, value] of this.poolSlots) if (value.expiresAt <= now) this.poolSlots.delete(key);
   }
 
   private async readOwner(positionManagerAddress: Address, tokenId: bigint, blockNumber: bigint): Promise<Address> {

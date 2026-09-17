@@ -94,4 +94,30 @@ describe('UniswapV4OwnershipIndexer', () => {
     readContract.mockResolvedValueOnce(other);
     await expect(indexer.sync(wallet)).resolves.toMatchObject({ tokenIds: [], caughtUp: true });
   });
+
+  it('keeps a provider-accepted reduced log range for later incremental scans', async () => {
+    const ranges: bigint[] = [];
+    const getLogs = vi.fn(async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+      const size = toBlock - fromBlock + 1n;
+      ranges.push(size);
+      if (size > 20n) throw new Error('log range too large');
+      return [];
+    });
+    const publicClient = {
+      getChainId: vi.fn(async () => 4_663),
+      getBlockNumber: vi.fn(async () => 9_172n),
+      getLogs,
+      readContract: vi.fn(async () => wallet),
+    } as unknown as PublicClient;
+    const indexer = new UniswapV4OwnershipIndexer({
+      rpcUrl: 'https://rpc.example', expectedChainId: 4_663, integrationId: 'int_rpc', repository, publicClient,
+      confirmations: 0, chunkSize: 40n, minimumChunkSize: 5n, maximumChunksPerSync: 1,
+    });
+
+    await indexer.sync(wallet);
+    expect(ranges).toEqual([40n, 40n, 20n, 20n]);
+    ranges.splice(0);
+    await indexer.sync(wallet);
+    expect(ranges).toEqual([20n, 20n]);
+  });
 });

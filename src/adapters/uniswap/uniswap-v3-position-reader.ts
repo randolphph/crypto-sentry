@@ -6,6 +6,7 @@ import { createEvmPublicClient } from '../evm/evm-rpc-client.js';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as Address;
 const DEFAULT_TOKEN_ID_CACHE_TTL_MILLISECONDS = 5 * 60 * 1_000;
+const DEFAULT_SHARED_READ_CACHE_TTL_MILLISECONDS = 5_000;
 
 const positionManagerAbi = [
   {
@@ -165,6 +166,8 @@ export interface UniswapV3PositionReaderOptions {
   multicallBatchSizeBytes?: number;
   /** Wallet NFT ownership changes infrequently; discovery is refreshed after this TTL. */
   tokenIdCacheTtlMilliseconds?: number;
+  /** Coalesce an identical short-lived LP read used by multiple monitors. */
+  sharedReadCacheTtlMilliseconds?: number;
   now?: () => number;
   publicClient?: PublicClient;
 }
@@ -181,26 +184,48 @@ export class UniswapV3PositionReader {
   private readonly tokenMetadata = new Map<string, { symbol: string; decimals: number }>();
   private readonly tokenIdsByWallet = new Map<string, { tokenIds: string[]; expiresAt: number }>();
   private readonly ownersByTokenId = new Map<string, { owner: Address; expiresAt: number }>();
+  private readonly discoveries = new Map<string, Promise<UniswapV3OwnedPositions>>();
+  private readonly positions = new Map<string, { position: UniswapV3Position; expiresAt: number }>();
+  private readonly positionReads = new Map<string, Promise<UniswapV3Position>>();
+  private readonly poolSlots = new Map<string, { slot: readonly [bigint, number]; expiresAt: number }>();
+  private latestBlock: { value: bigint; expiresAt: number } | undefined;
+  private latestBlockRequest: Promise<bigint> | undefined;
   private readonly tokenIdCacheTtlMilliseconds: number;
+  private readonly sharedReadCacheTtlMilliseconds: number;
   private readonly now: () => number;
 
   public constructor(private readonly options: UniswapV3PositionReaderOptions) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
     this.tokenIdCacheTtlMilliseconds = options.tokenIdCacheTtlMilliseconds
       ?? DEFAULT_TOKEN_ID_CACHE_TTL_MILLISECONDS;
+    this.sharedReadCacheTtlMilliseconds = options.sharedReadCacheTtlMilliseconds
+      ?? DEFAULT_SHARED_READ_CACHE_TTL_MILLISECONDS;
     this.now = options.now ?? Date.now;
   }
 
   public async discover(walletAddress: Address, signal?: AbortSignal): Promise<UniswapV3OwnedPositions> {
-    const deployment = await this.deployment();
-    signal?.throwIfAborted();
-    const blockNumber = await this.publicClient.getBlockNumber({ cacheTime: 0 });
+    await this.deployment();
     const wallet = getAddress(walletAddress);
     const cacheKey = wallet.toLowerCase();
+    const blockNumber = await this.readLatestBlock(signal);
     const cached = this.tokenIdsByWallet.get(cacheKey);
     if (cached !== undefined && cached.expiresAt > this.now()) {
       return { blockNumber, tokenIds: [...cached.tokenIds] };
     }
+    const inflight = this.discoveries.get(cacheKey);
+    if (inflight !== undefined) return inflight;
+    const request = this.discoverAt(wallet, blockNumber, signal);
+    this.discoveries.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      this.discoveries.delete(cacheKey);
+    }
+  }
+
+  private async discoverAt(wallet: Address, blockNumber: bigint, signal?: AbortSignal): Promise<UniswapV3OwnedPositions> {
+    const deployment = await this.deployment();
+    signal?.throwIfAborted();
     const balance = await this.publicClient.readContract({
       address: deployment.positionManagerAddress,
       abi: positionManagerAbi,
@@ -209,7 +234,7 @@ export class UniswapV3PositionReader {
       blockNumber,
     });
     const tokenIds = await this.readTokenIds(wallet, balance, blockNumber, signal);
-    this.tokenIdsByWallet.set(cacheKey, {
+    this.tokenIdsByWallet.set(wallet.toLowerCase(), {
       tokenIds,
       expiresAt: this.now() + Math.max(0, this.tokenIdCacheTtlMilliseconds),
     });
@@ -258,9 +283,28 @@ export class UniswapV3PositionReader {
     signal?: AbortSignal,
     requestedBlockNumber?: bigint,
   ): Promise<UniswapV3Position> {
+    await this.deployment();
+    const blockNumber = requestedBlockNumber ?? await this.readLatestBlock(signal);
+    const key = `${tokenId}:${blockNumber}`;
+    const cached = this.positions.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.position;
+    const inflight = this.positionReads.get(key);
+    if (inflight !== undefined) return inflight;
+    const request = this.readAt(tokenId, blockNumber, signal);
+    this.positionReads.set(key, request);
+    try {
+      const position = await request;
+      this.positions.set(key, { position, expiresAt: this.now() + this.sharedReadCacheTtlMilliseconds });
+      this.pruneSharedReads();
+      return position;
+    } finally {
+      this.positionReads.delete(key);
+    }
+  }
+
+  private async readAt(tokenId: string, blockNumber: bigint, signal?: AbortSignal): Promise<UniswapV3Position> {
     const deployment = await this.deployment();
     signal?.throwIfAborted();
-    const blockNumber = requestedBlockNumber ?? await this.publicClient.getBlockNumber({ cacheTime: 0 });
     const numericTokenId = BigInt(tokenId);
     const [owner, position] = await Promise.all([
       this.readOwner(deployment.positionManagerAddress, numericTokenId, blockNumber),
@@ -286,7 +330,7 @@ export class UniswapV3PositionReader {
     if (poolAddress.toLowerCase() === ZERO_ADDRESS) throw new Error(`Uniswap V3 pool was not found for position ${tokenId}`);
     signal?.throwIfAborted();
     const [slot0, metadata0, metadata1] = await Promise.all([
-      this.publicClient.readContract({ address: poolAddress, abi: poolAbi, functionName: 'slot0', blockNumber }),
+      this.readPoolSlot0(poolAddress, blockNumber),
       this.readTokenMetadata(token0Address, blockNumber),
       this.readTokenMetadata(token1Address, blockNumber),
     ]);
@@ -313,6 +357,39 @@ export class UniswapV3PositionReader {
       tokensOwed0: formatUnits(owed0, metadata0.decimals),
       tokensOwed1: formatUnits(owed1, metadata1.decimals),
     };
+  }
+
+  private async readLatestBlock(signal?: AbortSignal): Promise<bigint> {
+    signal?.throwIfAborted();
+    if (this.latestBlock !== undefined && this.latestBlock.expiresAt > this.now()) return this.latestBlock.value;
+    const inflight = this.latestBlockRequest;
+    if (inflight !== undefined) return inflight;
+    const request = this.publicClient.getBlockNumber({ cacheTime: 0 });
+    this.latestBlockRequest = request;
+    try {
+      const value = await request;
+      this.latestBlock = { value, expiresAt: this.now() + this.sharedReadCacheTtlMilliseconds };
+      return value;
+    } finally {
+      this.latestBlockRequest = undefined;
+    }
+  }
+
+  private async readPoolSlot0(poolAddress: Address, blockNumber: bigint): Promise<readonly [bigint, number]> {
+    const key = `${poolAddress.toLowerCase()}:${blockNumber}`;
+    const cached = this.poolSlots.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.slot;
+    const result = await this.publicClient.readContract({ address: poolAddress, abi: poolAbi, functionName: 'slot0', blockNumber });
+    const slot = result as unknown as readonly [bigint, number];
+    this.poolSlots.set(key, { slot, expiresAt: this.now() + this.sharedReadCacheTtlMilliseconds });
+    this.pruneSharedReads();
+    return slot;
+  }
+
+  private pruneSharedReads(): void {
+    const now = this.now();
+    for (const [key, value] of this.positions) if (value.expiresAt <= now) this.positions.delete(key);
+    for (const [key, value] of this.poolSlots) if (value.expiresAt <= now) this.poolSlots.delete(key);
   }
 
   private async readOwner(positionManagerAddress: Address, tokenId: bigint, blockNumber: bigint): Promise<Address> {

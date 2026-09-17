@@ -23,9 +23,21 @@ export interface UniswapPoolReaderFactory {
   }): UniswapPoolReaderPort;
 }
 
+interface SharedPoolRead {
+  target: UniswapPoolTarget;
+  labels: Record<string, string>;
+  tip: bigint;
+  confirmed: bigint;
+  result: UniswapPoolReadResult;
+  observedAt: string;
+}
+
 export class UniswapPoolCoordinator {
   private readonly monitorIds = new Set<string>();
   private readonly directTargets = new Map<string, { fingerprint: string; target: UniswapPoolTarget }>();
+  private readonly readers = new Map<string, UniswapPoolReaderPort>();
+  private readonly sharedReads = new Map<string, { expiresAt: number; read: Promise<SharedPoolRead> }>();
+  private readonly resourceIntervals = new Map<string, number>();
   private readonly readerFactory: UniswapPoolReaderFactory;
   private readonly now: () => Date;
   private readonly onError: (error: Error) => void;
@@ -53,13 +65,27 @@ export class UniswapPoolCoordinator {
   private readonly samples: UniswapPoolSwapSampleRepository | undefined;
 
   public reconcile(): void {
+    // Reconciliation follows Monitor/Integration config events. A previous
+    // RPC route must never remain eligible after its config generation changed.
+    this.sharedReads.clear();
+    this.readers.clear();
     const monitors = this.monitors.listEnabledUniswapPoolMonitors();
     const desired = new Set(monitors.map((monitor) => monitor.monitorId));
+    const desiredResources = new Set<string>();
+    this.resourceIntervals.clear();
+    for (const monitor of monitors) {
+      const resource = this.resourceKey(monitor);
+      desiredResources.add(resource);
+      const interval = monitor.intervalSeconds * 1_000;
+      const current = this.resourceIntervals.get(resource);
+      this.resourceIntervals.set(resource, current === undefined ? interval : Math.min(current, interval));
+    }
     for (const id of this.monitorIds) {
       if (desired.has(id)) continue;
       this.scheduler.remove(this.taskId(id));
-      this.directTargets.delete(id);
     }
+    for (const resource of this.directTargets.keys()) if (!desiredResources.has(resource)) this.directTargets.delete(resource);
+    for (const resource of this.sharedReads.keys()) if (!desiredResources.has(resource)) this.sharedReads.delete(resource);
     this.monitorIds.clear();
     for (const monitor of monitors) {
       this.scheduler.upsert({
@@ -74,9 +100,16 @@ export class UniswapPoolCoordinator {
     for (const id of this.monitorIds) this.scheduler.remove(this.taskId(id));
     this.monitorIds.clear();
     this.directTargets.clear();
+    this.readers.clear();
+    this.sharedReads.clear();
+    this.resourceIntervals.clear();
   }
 
   private taskId(id: string) { return `uniswap-pool:${id}`; }
+
+  private resourceKey(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number]): string {
+    return `${monitor.rpcIntegrationId}:${monitor.chainId}:${monitor.version}:${monitor.resourceId.toLowerCase()}`;
+  }
 
   private async resolveTarget(
     monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
@@ -99,7 +132,8 @@ export class UniswapPoolCoordinator {
       version: monitor.version,
       resourceId: monitor.resourceId,
     });
-    const cached = this.directTargets.get(monitor.monitorId);
+    const resource = this.resourceKey(monitor);
+    const cached = this.directTargets.get(resource);
     if (cached?.fingerprint === fingerprint) return cached.target;
     if (monitor.version === 'v3') {
       if (reader.describeV3 === undefined) throw new Error('Uniswap V3 pool metadata reader is unavailable');
@@ -107,7 +141,7 @@ export class UniswapPoolCoordinator {
       if (described.chainId !== monitor.chainId || described.poolAddress?.toLowerCase() !== monitor.resourceId.toLowerCase()) {
         throw new Error('Uniswap V3 pool identity mismatch');
       }
-      this.directTargets.set(monitor.monitorId, { fingerprint, target: described });
+      this.directTargets.set(resource, { fingerprint, target: described });
       return described;
     }
     // A V4 pool ID is a hash of the PoolKey and cannot be reversed to token
@@ -121,32 +155,42 @@ export class UniswapPoolCoordinator {
       token1Address: null, token1Symbol: null, token1Decimals: null,
       feeTier: null, tickSpacing: null,
     };
-    this.directTargets.set(monitor.monitorId, { fingerprint, target: direct });
+    this.directTargets.set(resource, { fingerprint, target: direct });
     return direct;
   }
 
-  private async scan(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number], signal: AbortSignal) {
+  private async readShared(
+    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    signal: AbortSignal,
+  ): Promise<SharedPoolRead> {
+    const resource = this.resourceKey(monitor);
+    const cached = this.sharedReads.get(resource);
+    if (cached !== undefined && cached.expiresAt > this.now().getTime()) return cached.read;
+    const read = this.readPool(monitor, signal);
+    const interval = this.resourceIntervals.get(resource) ?? monitor.intervalSeconds * 1_000;
+    this.sharedReads.set(resource, { read, expiresAt: this.now().getTime() + interval });
+    try {
+      return await read;
+    } catch (error) {
+      if (this.sharedReads.get(resource)?.read === read) this.sharedReads.delete(resource);
+      throw error;
+    }
+  }
+
+  private async readPool(
+    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    signal: AbortSignal,
+  ): Promise<SharedPoolRead> {
     const integration = this.integrations.getRuntime(monitor.rpcIntegrationId);
     const config = rpcIntegrationConfigSchema.parse(integration.config);
     const resolved = resolveEvmRpcRequest(config, monitor.chainId);
-    const reader = this.readerFactory.create({
+    const readerKey = `${monitor.rpcIntegrationId}:${monitor.chainId}:${config.timeoutMilliseconds}:${resolved.rpcUrl}:${JSON.stringify(resolved.headers)}`;
+    const reader = this.readers.get(readerKey) ?? this.readerFactory.create({
       rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: monitor.chainId,
       timeoutMilliseconds: config.timeoutMilliseconds,
     });
-    const timestamp = this.now().toISOString();
-    let target: UniswapPoolTarget;
-    try {
-      target = await this.resolveTarget(monitor, reader, signal);
-    } catch {
-      if (signal.aborted) return;
-      this.onError(new Error(`Uniswap ${monitor.version} pool metadata lookup failed on chain ${monitor.chainId}`));
-      await this.pipeline.ingest({
-        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: false,
-        observedAt: timestamp, receivedAt: timestamp, status: 'error',
-        labels: { chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId },
-      });
-      return;
-    }
+    this.readers.set(readerKey, reader);
+    const target = await this.resolveTarget(monitor, reader, signal);
     const labels = {
       chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
       ...(target.token0Address === null ? {} : { token0Address: target.token0Address }),
@@ -154,13 +198,25 @@ export class UniswapPoolCoordinator {
       ...(target.token1Address === null ? {} : { token1Address: target.token1Address }),
       ...(target.token1Symbol === null ? {} : { token1Symbol: target.token1Symbol }),
     };
+    const tip = await reader.latestBlock(signal);
+    const confirmed = tip > 12n ? tip - 12n : 0n;
+    const stream = `resource:${monitor.version}:${monitor.resourceId.toLowerCase()}`;
+    const saved = this.cursors.get(monitor.rpcIntegrationId, `uniswap_${monitor.version}_pool`, monitor.chainId, stream);
+    const from = saved === undefined ? (confirmed > 2_000n ? confirmed - 2_000n : 0n) : (saved > 12n ? saved - 11n : 0n);
+    const result = await reader.read(target, from, confirmed, signal);
+    return { target, labels, tip, confirmed, result, observedAt: this.now().toISOString() };
+  }
+
+  private async scan(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number], signal: AbortSignal) {
+    let labels: Record<string, string> = {
+      chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
+    };
+    let timestamp = this.now().toISOString();
     try {
-      const tip = await reader.latestBlock(signal);
-      const confirmed = tip > 12n ? tip - 12n : 0n;
-      const stream = `monitor:${monitor.monitorId}`;
-      const saved = this.cursors.get(monitor.rpcIntegrationId, `uniswap_${monitor.version}_pool`, monitor.chainId, stream);
-      const from = saved === undefined ? (confirmed > 2_000n ? confirmed - 2_000n : 0n) : (saved > 12n ? saved - 11n : 0n);
-      const result = await reader.read(target, from, confirmed, signal);
+      const shared = await this.readShared(monitor, signal);
+      const { target, tip, confirmed, result } = shared;
+      labels = shared.labels;
+      timestamp = shared.observedAt;
       this.pipeline.forgetMonitor(monitor.monitorId);
       const gauges: Array<[string, string, string]> = [
         ['current_tick', String(result.currentTick), 'tick'], ['active_liquidity', result.activeLiquidity, 'liquidity'],
@@ -203,7 +259,13 @@ export class UniswapPoolCoordinator {
         });
       }
       await this.emitWindowVolumes(monitor, labels, target.token0Symbol, target.token1Symbol, timestamp);
-      this.cursors.save(monitor.rpcIntegrationId, `uniswap_${monitor.version}_pool`, monitor.chainId, stream, confirmed);
+      this.cursors.save(
+        monitor.rpcIntegrationId,
+        `uniswap_${monitor.version}_pool`,
+        monitor.chainId,
+        `resource:${monitor.version}:${monitor.resourceId.toLowerCase()}`,
+        confirmed,
+      );
       await this.pipeline.ingest({
         monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: true,
         observedAt: timestamp, receivedAt: timestamp, status: 'ok',

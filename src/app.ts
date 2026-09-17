@@ -52,9 +52,12 @@ import { UniswapPoolRepository } from './db/repositories/uniswap-pool-repository
 import { UniswapPoolCoordinator } from './core/integrations/uniswap-pool-coordinator.js';
 import type { UniswapPoolReaderFactory } from './core/integrations/uniswap-pool-coordinator.js';
 import { UniswapPoolSwapSampleRepository } from './db/repositories/uniswap-pool-swap-sample-repository.js';
+import { RpcRequestLogRepository } from './db/repositories/rpc-request-log-repository.js';
 import { EncryptionService } from './security/encryption/encryption-service.js';
 import { MonitorService } from './core/monitors/monitor-service.js';
 import { createRpcObservabilityFetch } from './adapters/evm/evm-rpc-client.js';
+import { RpcRequestAuditService } from './core/observability/rpc-request-audit-service.js';
+import { RpcRequestContextStore } from './core/observability/rpc-request-context.js';
 import { redactLogValue } from './observability/safe-log.js';
 
 export interface CreateAppOptions {
@@ -77,6 +80,9 @@ export interface CreateAppOptions {
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
   const database = createDatabase(config.databasePath);
+  const rpcRequestLogs = new RpcRequestLogRepository(database.db);
+  const rpcRequestContext = new RpcRequestContextStore();
+  const rpcRequestAudit = new RpcRequestAuditService(rpcRequestLogs);
   const app = Fastify({
     logger: options.logger === false ? false : {
       level: config.logLevel,
@@ -88,6 +94,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   });
   const baseFetch = options.fetch ?? globalThis.fetch;
   const rpcFetch = createRpcObservabilityFetch(baseFetch, (event) => {
+    rpcRequestAudit.record(event, rpcRequestContext.taskId());
     const payload = {
       methods: event.methods,
       durationMilliseconds: event.durationMilliseconds,
@@ -199,6 +206,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   app.decorate('metricPipeline', metricPipeline);
   const pollingScheduler = new PollingScheduler({
     onError: (taskId, error) => app.log.warn({ err: error, taskId }, 'Polling task failed'),
+    runWithContext: (taskId, operation) => rpcRequestContext.run(taskId, operation),
     ...(options.pollingMinimumIntervalMilliseconds === undefined
       ? {}
       : { minimumIntervalMilliseconds: options.pollingMinimumIntervalMilliseconds }),
@@ -327,7 +335,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   registerMonitorRoutes(app, monitors, events, latestMetrics, rules, monitorService);
   registerRuleRoutes(app, rules, events);
   registerAlertRoutes(app, alerts);
-  registerStatusRoutes(app, status);
+  registerStatusRoutes(app, status, rpcRequestLogs);
 
   const heartbeat = setInterval(() => status.heartbeat(), 5_000);
   heartbeat.unref();
@@ -344,10 +352,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await integrationOperations.close();
     await metricPipeline.close();
     ruleExecution.close();
+    rpcRequestAudit.close();
     database.close();
   });
 
   return app;
+}
+
+export async function listenWithCleanup(
+  app: Pick<FastifyInstance, 'listen' | 'close'>,
+  config: Pick<AppConfig, 'host' | 'port'>,
+): Promise<void> {
+  try {
+    await app.listen({ host: config.host, port: config.port });
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {
@@ -362,7 +383,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', () => void shutdown('SIGINT'));
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
-  await app.listen({ host: config.host, port: config.port });
+  await listenWithCleanup(app, config);
 }
 
 const isEntryPoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;

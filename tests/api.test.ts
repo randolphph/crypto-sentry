@@ -31,6 +31,7 @@ describe('HTTP API foundation', () => {
     expect((await app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: '/api/v1/status/summary' })).statusCode).toBe(401);
     expect((await app.inject({ method: 'GET', url: '/api/v1/status/summary', headers: { authorization: 'Bearer wrong' } })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/status/rpc-requests' })).statusCode).toBe(401);
     const summaryResponse = await app.inject({ method: 'GET', url: '/api/v1/status/summary', headers: authorization });
     expect(summaryResponse.statusCode).toBe(200);
     expect(summaryResponse.json<{ components: Array<{ name: string; status: string }> }>().components).toEqual([
@@ -44,10 +45,16 @@ describe('HTTP API foundation', () => {
       components: { schemas: Record<string, unknown> };
     }>();
     expect(specification.paths).toHaveProperty('/api/v1/monitors');
+    expect(specification.paths).toHaveProperty('/api/v1/status/rpc-requests');
     expect(specification.paths['/api/v1/monitors']?.post?.requestBody).toBeDefined();
     expect(specification.paths['/api/v1/alerts']?.get?.parameters).toBeDefined();
     expect(specification.paths).toHaveProperty('/api/v1/monitors/{id}/snapshot');
     expect(specification.components.schemas).toHaveProperty('StableErrorCode');
+    const rpcAudit = await app.inject({
+      method: 'GET', url: '/api/v1/status/rpc-requests?limit=1&taskId=uniswap:mon_missing', headers: authorization,
+    });
+    expect(rpcAudit.statusCode).toBe(200);
+    expect(rpcAudit.json<{ items: unknown[] }>().items).toEqual([]);
   });
 
   it('creates, encrypts, masks, updates, and deletes an integration', async () => {

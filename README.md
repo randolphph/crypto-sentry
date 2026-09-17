@@ -69,7 +69,7 @@ npm run dev
 - OpenAPI JSON：`GET /docs/json`
 - 业务 API：`/api/v1/*`
 
-EVM RPC 请求会经过统一的脱敏观测层：失败请求和耗时超过 2 秒的请求按 warn 记录；需要排查请求数量或慢请求时，把 `LOG_LEVEL=debug` 写入 `.env`，日志会额外记录每次 JSON-RPC 的方法、耗时、HTTP 状态和成功结果。日志不会记录 RPC URL、认证 Header、Token 或请求参数。
+EVM RPC 请求会经过统一的脱敏观测层：失败请求和耗时超过 2 秒的请求按 warn 记录；需要排查请求数量或慢请求时，把 `LOG_LEVEL=debug` 写入 `.env`，日志会额外记录每次 JSON-RPC 的方法、耗时、HTTP 状态和成功结果。安全的传输审计（时间、调度任务 ID、方法、耗时、状态）还会批量保留到 SQLite 7 天，可用 `GET /api/v1/status/rpc-requests?limit=100&taskId=...` 查询；不会记录 RPC URL、认证 Header、Token、调用参数或返回内容。
 
 前端 API 请求和 Integration/Monitor/Rule 配置变更也会写入结构化日志，包含请求路径、脱敏后的参数、响应状态、耗时和配置事件。日志字段与查看方式见 [`docs/observability.md`](docs/observability.md)。
 
@@ -88,6 +88,7 @@ Authorization: Bearer <API_TOKEN>
 /api/v1/alerts
 /api/v1/status/summary
 /api/v1/status/monitors
+/api/v1/status/rpc-requests
 ```
 
 当前可以通过 API 创建、查询、修改和删除配置。尚未接入的外部适配器操作会返回明确的 `ADAPTER_NOT_READY`，不会伪造成功结果。
@@ -266,7 +267,9 @@ GET /api/v1/monitors/:id/uniswap-positions
 
 `status` 为 `warming_up`、`ok`、`empty`、`partial`、`stale` 或 `error`。响应的 `positions` 数组包含钱包中发现的全部目标版本 LP；公共字段包括 NFT owner、币对地址/符号/decimals、费率、上下界 tick、当前 tick、流动性和是否处于价格区间。V3 额外返回池地址和 PositionManager 已记账的 `tokensOwed0/1`；V4 额外返回 `poolId`、PoolManager、StateView、实际 LP fee、protocol fee、tick spacing 和 hooks 地址。所有单轮仓位读取固定在同一个块高。
 
-V3 使用 PositionManager 的 `balanceOf` 与 `tokenOfOwnerByIndex` 自动枚举。V4 PositionManager 不支持 Enumerable，因此后端从官方部署块开始按钱包过滤 `Transfer` 日志，分块同步并把每个成功区块范围的检查点和当前 token 所有权写入 SQLite；后续轮询只扫描增量区块，再用 `ownerOf` 对账。`discovery.caughtUp` 为 `false` 时状态保持 `warming_up`，并返回 `scannedThroughBlock` 和 `chainTipBlock` 供 Dashboard 展示同步进度。RPC 报错不会推进检查点。
+V3 使用 PositionManager 的 `balanceOf` 与 `tokenOfOwnerByIndex` 自动枚举。V4 PositionManager 不支持 Enumerable，因此后端从官方部署块开始按钱包过滤 `Transfer` 日志，分块同步并把每个成功区块范围的检查点和当前 token 所有权写入 SQLite；后续轮询只扫描增量区块，再用 `ownerOf` 对账。首次 V4 历史同步默认每轮最多扫描一个 50,000 块区间；节点拒绝日志范围或超时时自动缩小区间，并记住较小区间，避免单个 20 秒 Monitor 反复触发大范围 `eth_getLogs`。`discovery.caughtUp` 为 `false` 时状态保持 `warming_up`，并返回 `scannedThroughBlock` 和 `chainTipBlock` 供 Dashboard 展示同步进度。RPC 报错不会推进检查点。
+
+同一 RPC Integration、链、版本和钱包的 Position/Wallet 读取会在短暂缓存窗口内合并；同一 Pool 的多个 Monitor 则按其中最短 interval 合并一次链上读取，再分别写入各自的 Metric/Rule 流。新增同资源 Monitor 不会按 Monitor 数量线性增加 RPC 请求。
 
 新 `uniswap_position` 创建时，以及修改 RPC/chain/version/tokenId 时，会先要求对应能力测试 ready，再实际读取并验证 tokenId；不存在返回 `POSITION_NOT_FOUND`，RPC 临时故障返回 `RPC_CONNECTION_FAILED`，验证失败不写配置。钱包发现接口的 `q` 支持 tokenId、Pool 标识、token symbol/address 和正反向币对。
 

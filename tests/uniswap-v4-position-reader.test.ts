@@ -67,8 +67,12 @@ describe('UniswapV4PositionReader', () => {
       expect(parameters).toEqual(expect.objectContaining({ blockNumber: 54_321n }));
     }
 
-    await reader.read('9', undefined, 54_321n);
+    await Promise.all([
+      reader.read('9', undefined, 54_321n),
+      reader.read('9', undefined, 54_321n),
+    ]);
     expect(publicClient.getChainId).toHaveBeenCalledTimes(1);
-    expect(readContract).toHaveBeenCalledTimes(9);
+    // Same-token reads are coalesced when two monitors reach the same block.
+    expect(readContract).toHaveBeenCalledTimes(6);
   });
 });

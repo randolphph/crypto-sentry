@@ -352,6 +352,25 @@ export const uniswapV4OwnedTokens = sqliteTable(
   ],
 );
 
+/** Safe RPC transport audit data only. URLs, headers and JSON-RPC parameters are deliberately never stored. */
+export const rpcRequestLogs = sqliteTable(
+  'rpc_request_logs',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    observedAt: text('observed_at').notNull(),
+    taskId: text('task_id'),
+    methodsJson: text('methods_json').notNull(),
+    durationMilliseconds: integer('duration_milliseconds').notNull(),
+    statusCode: integer('status_code'),
+    ok: integer('ok', { mode: 'boolean' }).notNull(),
+    errorName: text('error_name'),
+  },
+  (table) => [
+    index('rpc_request_logs_observed_at_idx').on(table.observedAt),
+    index('rpc_request_logs_task_observed_at_idx').on(table.taskId, table.observedAt),
+  ],
+);
+
 export const schemaMigrations = sqliteTable('schema_migrations', {
   name: text('name').primaryKey(),
   checksum: text('checksum').notNull(),

@@ -126,9 +126,13 @@ describe('UniswapV3PositionReader', () => {
       expect(parameters).toEqual(expect.objectContaining({ blockNumber: 54_321n }));
     }
 
-    await reader.read('42', undefined, 54_321n);
+    await Promise.all([
+      reader.read('42', undefined, 54_321n),
+      reader.read('42', undefined, 54_321n),
+    ]);
     expect(publicClient.getChainId).toHaveBeenCalledTimes(1);
-    expect(readContract).toHaveBeenCalledTimes(10);
+    // Two monitors consuming the same wallet/token share the current block result.
+    expect(readContract).toHaveBeenCalledTimes(8);
   });
 
   it('rejects a mismatched RPC network', async () => {
