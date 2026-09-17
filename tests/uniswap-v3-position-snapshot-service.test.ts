@@ -103,6 +103,25 @@ describe('UniswapV3PositionSnapshotService', () => {
     expect(snapshot.dataAgeSeconds).toBe(120);
   });
 
+  it('ignores an older stale status after a newer successful scan status', () => {
+    const snapshot = serviceWith([
+      {
+        ...metric('scan_status', true),
+        observedAt: '2026-09-15T10:03:00.000Z',
+        receivedAt: '2026-09-15T10:03:00.000Z',
+      },
+      {
+        ...metric('data_age_seconds', '104', 'stale'),
+        observedAt: '2026-09-15T10:02:00.000Z',
+        receivedAt: '2026-09-15T10:02:00.000Z',
+        labels: undefined,
+      },
+      metric('read_status', true),
+    ], '2026-09-15T10:03:10.000Z').get('mon_uniswap');
+
+    expect(snapshot.status).toBe('ok');
+  });
+
   it('keeps the last readable position while reporting a transient read failure', () => {
     const snapshot = serviceWith([
       metric('read_status', true),

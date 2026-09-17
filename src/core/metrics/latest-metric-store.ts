@@ -4,10 +4,36 @@ export interface MetricSnapshotReader {
   list(monitorId: string): Metric[];
 }
 
+const STATUS_METRIC_NAMES = new Set(['scan_status', 'read_status', 'read_error', 'data_age_seconds']);
+const STATUS_LABEL_NAMES = ['chainId', 'version', 'tokenId'] as const;
+
+function stableStatusLabels(metric: Metric): Array<[string, string]> {
+  const labels = metric.labels ?? {};
+  return STATUS_LABEL_NAMES
+    .filter((name) => labels[name] !== undefined)
+    .map((name) => [name, labels[name] as string]);
+}
+
 function metricKey(metric: Metric): string {
   if (metric.kind === 'event') return JSON.stringify(['event', metric.eventId, metric.name]);
+  if (STATUS_METRIC_NAMES.has(metric.name)) {
+    // Status metrics must survive changes to descriptive token metadata. The
+    // data-age watchdog is monitor-level and intentionally has no label identity.
+    const labels = metric.name === 'data_age_seconds' ? [] : stableStatusLabels(metric);
+    return JSON.stringify([metric.source, metric.target, metric.name, labels]);
+  }
   const labels = Object.entries(metric.labels ?? {}).sort(([left], [right]) => left.localeCompare(right));
   return JSON.stringify([metric.source, metric.target, metric.name, labels]);
+}
+
+function sameMetricIdentity(left: Metric, right: Metric): boolean {
+  if (left.kind === 'event' || right.kind === 'event') return false;
+  if (left.source !== right.source || left.target !== right.target || left.name !== right.name) return false;
+  if (STATUS_METRIC_NAMES.has(left.name) && left.name === 'data_age_seconds') return true;
+  if (STATUS_METRIC_NAMES.has(left.name)) {
+    return JSON.stringify(stableStatusLabels(left)) === JSON.stringify(stableStatusLabels(right));
+  }
+  return metricKey(left) === metricKey(right);
 }
 
 function cloneMetric(metric: Metric): Metric {
@@ -23,6 +49,11 @@ export class LatestMetricStore implements MetricSnapshotReader {
   public put(metric: Metric): boolean {
     const metrics = this.metricsByMonitor.get(metric.monitorId) ?? new Map<string, Metric>();
     const key = metricKey(metric);
+    // Remove entries written by older versions that used descriptive labels in
+    // the status key. This makes recovery work without requiring a process restart.
+    for (const [existingKey, current] of metrics) {
+      if (existingKey !== key && sameMetricIdentity(metric, current)) metrics.delete(existingKey);
+    }
     const current = metrics.get(key);
     if (current !== undefined && Date.parse(metric.observedAt) <= Date.parse(current.observedAt)) return false;
 

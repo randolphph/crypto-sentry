@@ -63,12 +63,19 @@ export class UniswapV3PositionSnapshotService {
       : walletConfig.success ? walletConfig.data : uniswapWalletMonitorConfigSchema.parse(monitor.config);
     const metrics = this.metrics.list(monitorId).filter((metric) => metric.source.startsWith('uniswap'));
     const scanStatuses = metrics.filter((metric) => metric.name === 'scan_status' || metric.name === 'read_status');
-    const scanStatus = scanStatuses.sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt))[0];
+    const scanStatusMetrics = metrics.filter((metric) => metric.name === 'scan_status');
+    const scanStatus = (scanStatusMetrics.length > 0 ? scanStatusMetrics : scanStatuses)
+      .sort((left, right) => Date.parse(right.observedAt) - Date.parse(left.observedAt))[0];
     const observedAt = scanStatus?.observedAt ?? null;
     const dataAgeSeconds = observedAt === null
       ? null
       : Math.max(0, Math.round((this.now().getTime() - Date.parse(observedAt)) / 100) / 10);
-    const isStale = metrics.some((metric) => metric.status === 'stale') || (
+    const latestScanObservedAt = scanStatus?.observedAt === undefined ? null : Date.parse(scanStatus.observedAt);
+    const isStale = metrics.some((metric) => (
+      ['scan_status', 'read_status', 'read_error', 'data_age_seconds'].includes(metric.name) &&
+      metric.status === 'stale' &&
+      (latestScanObservedAt === null || Date.parse(metric.observedAt) >= latestScanObservedAt)
+    )) || (
       dataAgeSeconds !== null && dataAgeSeconds > monitor.maxStaleSeconds
     );
     const groups = groupByTokenId(metrics);

@@ -287,6 +287,16 @@ export class UniswapV3PositionCoordinator {
         timestamp,
         { status: scanStatus, labels: baseLabels },
       ));
+      if (scanStatus === 'ok') {
+        await this.metricPipeline.ingest(metric(
+          monitor.monitorId,
+          target,
+          'data_age_seconds',
+          '0',
+          timestamp,
+          { status: 'ok', unit: 'seconds', labels: {} },
+        ));
+      }
       if ('walletAddress' in monitor) {
         const valuations = positions.map((position) => {
           const amounts = this.positionAmounts(position);
