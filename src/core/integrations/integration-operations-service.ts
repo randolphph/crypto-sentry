@@ -76,6 +76,11 @@ export class IntegrationOperationsService {
     result: UniswapWalletPositionsResult;
   }>();
   private readonly walletPositionInflight = new Map<string, Promise<UniswapWalletPositionsResult>>();
+  private readonly walletPositionReads = new Map<string, {
+    expiresAt: number;
+    position: UniswapWalletPosition;
+  }>();
+  private readonly walletPositionReadInflight = new Map<string, Promise<UniswapWalletPosition>>();
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -538,7 +543,9 @@ export class IntegrationOperationsService {
     const readConcurrency = 2;
     for (let offset = 0; offset < candidates.length; offset += readConcurrency) {
       const batch = candidates.slice(offset, offset + readConcurrency);
-      results.push(...await Promise.allSettled(batch.map(async (tokenId) => reader.read(tokenId))));
+      results.push(...await Promise.allSettled(batch.map(async (tokenId) => (
+        this.readWalletPosition(`${readerKey}:${tokenId}`, tokenId, reader)
+      ))));
     }
     const readable = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
     const failedPositionCount = results.length - readable.length;
@@ -569,6 +576,8 @@ export class IntegrationOperationsService {
     this.uniswapV4Readers.clear();
     this.walletPositionResponses.clear();
     this.walletPositionInflight.clear();
+    this.walletPositionReads.clear();
+    this.walletPositionReadInflight.clear();
   }
 
   private getUniswapV3Reader(
@@ -616,6 +625,35 @@ export class IntegrationOperationsService {
     }
     for (const key of this.walletPositionInflight.keys()) {
       if (key.startsWith(`["${integrationId}"`)) this.walletPositionInflight.delete(key);
+    }
+    for (const key of this.walletPositionReads.keys()) {
+      if (key.startsWith(`${integrationId}:`)) this.walletPositionReads.delete(key);
+    }
+    for (const key of this.walletPositionReadInflight.keys()) {
+      if (key.startsWith(`${integrationId}:`)) this.walletPositionReadInflight.delete(key);
+    }
+  }
+
+  private async readWalletPosition(
+    cacheKey: string,
+    tokenId: string,
+    reader: UniswapV3PositionReaderPort | UniswapV4PositionReaderPort,
+  ): Promise<UniswapWalletPosition> {
+    const cached = this.walletPositionReads.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.position;
+    const inflight = this.walletPositionReadInflight.get(cacheKey);
+    if (inflight !== undefined) return inflight;
+    const request = reader.read(tokenId);
+    this.walletPositionReadInflight.set(cacheKey, request);
+    try {
+      const position = await request;
+      this.walletPositionReads.set(cacheKey, {
+        expiresAt: Date.now() + WALLET_POSITION_RESPONSE_CACHE_TTL_MILLISECONDS,
+        position,
+      });
+      return position;
+    } finally {
+      this.walletPositionReadInflight.delete(cacheKey);
     }
   }
 
