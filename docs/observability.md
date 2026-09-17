@@ -67,6 +67,8 @@ LOG_LEVEL=debug
 
 Multicall 在 HTTP 层通常显示为一个 `eth_call`；合约内部子调用数量仍由节点服务商自己的 CU 规则计算。
 
+HTTP transport 默认只在首次失败后重试 1 次；Aave Account 的上层 endpoint failover 会接管自己的完整读取重试，并将 transport retry 设为 0，避免 viem transport 与 coordinator 双重重试把一次扫描放大成 6 次请求。其他链上读取最多为一次 transport 重试，下一轮由 Monitor interval 再采集。
+
 每个 RPC HTTP 请求还会被批量写入 SQLite（不是只存在终端输出），保留最近 7 天。用于排查请求量与失败率的接口为：
 
 ```http

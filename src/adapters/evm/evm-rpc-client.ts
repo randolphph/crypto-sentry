@@ -119,6 +119,8 @@ export interface EvmRpcClientOptions {
   fetch?: typeof globalThis.fetch;
   headers?: Record<string, string>;
   timeoutMilliseconds?: number;
+  /** Number of transport retries after the initial JSON-RPC request. */
+  retryCount?: number;
 }
 
 export interface EvmRpcProbeResult {
@@ -147,8 +149,8 @@ export function createEvmPublicClient(options: EvmRpcClientOptions): PublicClien
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   return createPublicClient({
     transport: http(options.rpcUrl, {
-      retryCount: 2,
       retryDelay: 250,
+      retryCount: options.retryCount ?? 1,
       timeout: options.timeoutMilliseconds ?? 5_000,
       fetchFn: limitedFetch(options.rpcUrl, options.headers, fetchImplementation),
       ...(options.headers === undefined ? {} : { fetchOptions: { headers: options.headers } }),

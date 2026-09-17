@@ -22,6 +22,7 @@ export interface AaveV3PositionReaderFactory {
     timeoutMilliseconds: number;
     multicallBatchSizeBytes: number;
     headers?: Record<string, string>;
+    retryCount?: number;
   }): AaveV3PositionReaderPort;
 }
 
@@ -295,6 +296,7 @@ export class AaveV3PositionCoordinator {
         timeoutMilliseconds: endpoint.timeoutMilliseconds,
         multicallBatchSizeBytes: endpoint.multicallBatchSizeBytes,
         headers: endpoint.headers,
+        retryCount: 0,
       });
       try {
         const position = await this.readWithRetry(reader, walletAddress, signal);

@@ -73,6 +73,22 @@ describe('EvmRpcClient', () => {
     expect(methods).toEqual(['eth_chainId', 'eth_blockNumber']);
   });
 
+  it('bounds transport retries so upper-layer failover does not multiply them', async () => {
+    const fetchMock = vi.fn(async () => { throw new Error('temporary'); });
+    const transportRetry = new EvmRpcClient({
+      rpcUrl: 'https://rpc.example/retry-once', expectedChainId: 1, fetch: fetchMock, retryCount: 1,
+    });
+    await expect(transportRetry.testConnectivity()).rejects.toBeInstanceOf(EvmRpcError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockClear();
+    const coordinatorRetry = new EvmRpcClient({
+      rpcUrl: 'https://rpc.example/no-transport-retry', expectedChainId: 1, fetch: fetchMock, retryCount: 0,
+    });
+    await expect(coordinatorRetry.testConnectivity()).rejects.toBeInstanceOf(EvmRpcError);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('adds routed authentication and chain-selection headers to every request', async () => {
     const headers: Array<Headers> = [];
     const client = new EvmRpcClient({

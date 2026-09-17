@@ -35,6 +35,8 @@ GET /api/v1/status/rpc-requests?limit=100&taskId=uniswap:mon_abc
 
 此接口只保存和返回安全的传输元数据，绝不返回 RPC URL、静态 Header、Token、JSON-RPC 参数或返回内容。没有调度上下文的请求 `taskId` 为 `null`。Dashboard 的 Snapshot、Metric 和 Status 读取只读取本地 SQLite 缓存，不会额外发起 RPC。
 
+EVM transport 默认在首次失败后最多重试一次。Aave Account 的 endpoint failover 由协调器统一负责，transport 层不会再重复重试；这样一次失败最多进入明确的 endpoint 重试路径，不会因为两层 retry 叠加而成倍增加 CU。
+
 ## 1. EVM RPC Integration
 
 完整配置类型：

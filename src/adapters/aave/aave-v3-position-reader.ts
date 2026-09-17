@@ -178,6 +178,8 @@ export interface AaveV3PositionReaderOptions {
   headers?: Record<string, string>;
   timeoutMilliseconds?: number;
   multicallBatchSizeBytes?: number;
+  /** The coordinator owns endpoint retries, so avoid multiplying them in viem. */
+  retryCount?: number;
   publicClient?: PublicClient;
 }
 
