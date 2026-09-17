@@ -57,6 +57,7 @@ import { UniswapPoolSwapSampleRepository } from './db/repositories/uniswap-pool-
 import { EncryptionService } from './security/encryption/encryption-service.js';
 import { MonitorService } from './core/monitors/monitor-service.js';
 import { createRpcObservabilityFetch } from './adapters/evm/evm-rpc-client.js';
+import { redactLogValue } from './observability/safe-log.js';
 
 export interface CreateAppOptions {
   config?: AppConfig;
@@ -102,6 +103,23 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     } else if (config.logLevel === 'debug' || config.logLevel === 'trace') {
       app.log.debug(payload, 'EVM RPC request');
     }
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    if (!request.url.startsWith('/api/v1/')) return;
+    const payload = {
+      requestId: request.id,
+      method: request.method,
+      route: request.routeOptions.url ?? request.url.split('?')[0],
+      statusCode: reply.statusCode,
+      durationMilliseconds: Math.max(0, reply.elapsedTime),
+      request: {
+        params: redactLogValue(request.params),
+        query: redactLogValue(request.query),
+        body: redactLogValue(request.body),
+      },
+    };
+    if (reply.statusCode >= 400) request.log.warn(payload, 'API request completed with error');
+    else request.log.info(payload, 'API request completed');
   });
 
   await app.register(swagger, {
@@ -271,6 +289,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     );
 
   const unsubscribeConfigEvents = events.subscribe((event) => {
+    app.log.info({ entity: event.entity, operation: event.operation, id: event.id }, 'Configuration changed');
     if (event.entity === 'monitor') {
       if (event.operation === 'deleted') {
         metricPipeline.removeMonitor(event.id);

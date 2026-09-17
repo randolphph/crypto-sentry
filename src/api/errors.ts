@@ -45,6 +45,12 @@ export function registerErrorHandler(app: FastifyInstance): void {
     }
 
     if (error instanceof AppError) {
+      request.log.warn({
+        requestId: request.id,
+        statusCode: error.statusCode,
+        code: error.code,
+        fields: error.fields,
+      }, 'API request rejected');
       return reply.status(error.statusCode).send({
         error: {
           code: error.code,
@@ -54,7 +60,10 @@ export function registerErrorHandler(app: FastifyInstance): void {
       });
     }
 
-    request.log.error({ err: error }, 'Unhandled request error');
+    request.log.error({
+      requestId: request.id,
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    }, 'Unhandled request error');
     return reply.status(500).send({
       error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' },
     });

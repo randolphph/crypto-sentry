@@ -71,6 +71,8 @@ npm run dev
 
 EVM RPC 请求会经过统一的脱敏观测层：失败请求和耗时超过 2 秒的请求按 warn 记录；需要排查请求数量或慢请求时，把 `LOG_LEVEL=debug` 写入 `.env`，日志会额外记录每次 JSON-RPC 的方法、耗时、HTTP 状态和成功结果。日志不会记录 RPC URL、认证 Header、Token 或请求参数。
 
+前端 API 请求和 Integration/Monitor/Rule 配置变更也会写入结构化日志，包含请求路径、脱敏后的参数、响应状态、耗时和配置事件。日志字段与查看方式见 [`docs/observability.md`](docs/observability.md)。
+
 除 `/health` 和 API 文档外，业务接口需要认证：
 
 ```http
