@@ -51,8 +51,11 @@ describe('Uniswap position identity validation API', () => {
       tokensOwed0: '0', tokensOwed1: '0',
     };
   });
+  const createReader = vi.fn(() => ({
+    discover: async () => ({ blockNumber: 100n, tokenIds: ['42', '43', '404'] }), read,
+  }));
   const readerFactory: UniswapV3PositionReaderFactory = {
-    create: () => ({ discover: async () => ({ blockNumber: 100n, tokenIds: ['42', '43', '404'] }), read }),
+    create: createReader,
   };
   const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
     if (rpcFails) throw new Error('temporary provider outage');
@@ -66,6 +69,7 @@ describe('Uniswap position identity validation API', () => {
   beforeEach(async () => {
     rpcFails = false;
     read.mockClear();
+    createReader.mockClear();
     fetchMock.mockClear();
     app = await createApp({
       config, logger: false, webSocketFactory: false, fetch: fetchMock,
@@ -164,5 +168,24 @@ describe('Uniswap position identity validation API', () => {
       status: 'partial', items: [{ tokenId: '43', token0: { symbol: 'WBTC' }, token1: { symbol: 'USDC' } }],
       nextCursor: null, failedPositionCount: 1,
     });
+  });
+
+  it('reuses the wallet reader and deduplicates an identical concurrent/short-lived request', async () => {
+    const rpcIntegrationId = await readyIntegration();
+    const url = `/api/v1/integrations/${rpcIntegrationId}/uniswap/wallet-positions` +
+      `?chainId=4663&version=v3&walletAddress=${owner}&limit=50`;
+    const [first, second] = await Promise.all([
+      app.inject({ method: 'GET', url, headers: authorization }),
+      app.inject({ method: 'GET', url, headers: authorization }),
+    ]);
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(createReader).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(3);
+
+    const cached = await app.inject({ method: 'GET', url, headers: authorization });
+    expect(cached.statusCode).toBe(200);
+    expect(createReader).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(3);
   });
 });

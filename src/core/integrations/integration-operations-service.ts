@@ -26,6 +26,8 @@ import { AaveV3EventReader } from '../../adapters/aave/aave-v3-event-reader.js';
 import type { AaveV3EventReaderOptions } from '../../adapters/aave/aave-v3-event-reader.js';
 import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
+import type { UniswapV3Position } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
+import type { UniswapV4Position } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import {
   BINANCE_DEFAULT_CONFIG,
   INTEGRATION_CATALOG,
@@ -33,11 +35,24 @@ import {
   isEvmRpcProvider,
 } from './integration-catalog.js';
 import type {
+  UniswapV3PositionReaderPort,
   UniswapV3PositionReaderFactory,
+  UniswapV4PositionReaderPort,
   UniswapV4PositionReaderFactory,
 } from './uniswap-v3-position-coordinator.js';
 
 const ZERO_EVM_ADDRESS = '0x0000000000000000000000000000000000000000';
+const WALLET_POSITION_RESPONSE_CACHE_TTL_MILLISECONDS = 10_000;
+
+type UniswapWalletPosition = UniswapV3Position | UniswapV4Position;
+type UniswapWalletPositionsResult = {
+  status: 'warming_up' | 'partial' | 'empty' | 'ok';
+  discovery: { caughtUp: boolean; scannedThroughBlock: string | null; chainTipBlock: string | null };
+  items: UniswapWalletPosition[];
+  failedPositionCount: number;
+  nextCursor: string | null;
+  error: { code: string; message: string } | null;
+};
 
 export interface AaveReserveCatalogReaderFactory {
   create(options: AaveReserveCatalogReaderOptions): { read(signal?: AbortSignal): Promise<AaveReserveCatalog> };
@@ -54,6 +69,13 @@ export class IntegrationOperationsService {
   private readonly aaveReserveCache = new Map<string, AaveReserveCatalog>();
   private readonly uniswapV3ReaderFactory: UniswapV3PositionReaderFactory;
   private readonly uniswapV4ReaderFactory: UniswapV4PositionReaderFactory;
+  private readonly uniswapV3Readers = new Map<string, UniswapV3PositionReaderPort>();
+  private readonly uniswapV4Readers = new Map<string, UniswapV4PositionReaderPort>();
+  private readonly walletPositionResponses = new Map<string, {
+    expiresAt: number;
+    result: UniswapWalletPositionsResult;
+  }>();
+  private readonly walletPositionInflight = new Map<string, Promise<UniswapWalletPositionsResult>>();
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -329,6 +351,7 @@ export class IntegrationOperationsService {
   public invalidateTestResults(integrationId: string): void {
     this.networkHealth.removeIntegration(integrationId);
     this.aaveReserveCache.delete(integrationId);
+    this.clearUniswapWalletCaches(integrationId);
   }
 
   public async aaveReserves(id: string, chainId: number): Promise<AaveReserveCatalog & { stale: boolean }> {
@@ -434,7 +457,35 @@ export class IntegrationOperationsService {
 
   public async uniswapWalletPositions(id: string, input: {
     chainId: number; version: 'v3' | 'v4'; walletAddress: string; limit: number; cursor?: string | undefined; q?: string | undefined;
-  }) {
+  }): Promise<UniswapWalletPositionsResult> {
+    // The Dashboard can refresh the list and detail panes at the same time. Deduplicate
+    // identical requests so both panes share one discovery/read operation instead of
+    // creating another burst of RPC calls.
+    const cacheKey = JSON.stringify([
+      id, input.chainId, input.version, input.walletAddress.toLowerCase(), input.limit,
+      input.cursor ?? null, input.q ?? null,
+    ]);
+    const cached = this.walletPositionResponses.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.result;
+    const inflight = this.walletPositionInflight.get(cacheKey);
+    if (inflight !== undefined) return inflight;
+    const request = this.loadUniswapWalletPositions(id, input);
+    this.walletPositionInflight.set(cacheKey, request);
+    try {
+      const result = await request;
+      this.walletPositionResponses.set(cacheKey, {
+        expiresAt: Date.now() + WALLET_POSITION_RESPONSE_CACHE_TTL_MILLISECONDS,
+        result,
+      });
+      return result;
+    } finally {
+      this.walletPositionInflight.delete(cacheKey);
+    }
+  }
+
+  private async loadUniswapWalletPositions(id: string, input: {
+    chainId: number; version: 'v3' | 'v4'; walletAddress: string; limit: number; cursor?: string | undefined; q?: string | undefined;
+  }): Promise<UniswapWalletPositionsResult> {
     const integration = this.integrations.getRuntime(id);
     if (!integration.enabled || integration.type !== 'evm_rpc') throw new AppError(409, 'PROTOCOL_NOT_READY', 'Enabled EVM RPC is required');
     const config = rpcIntegrationConfigSchema.parse(integration.config);
@@ -448,13 +499,16 @@ export class IntegrationOperationsService {
     let caughtUp = true;
     let scannedThroughBlock: string | null = null;
     const chainTipBlock = health.blockNumber;
+    const readerOptions = {
+      rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
+      timeoutMilliseconds: config.timeoutMilliseconds,
+      multicallBatchSizeBytes: config.multicallBatchSizeBytes,
+    };
+    const readerKey = `${id}:${input.chainId}:${input.version}`;
     if (input.version === 'v3') {
       try {
-        const discovered = await this.uniswapV3ReaderFactory.create({
-          rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
-          timeoutMilliseconds: config.timeoutMilliseconds,
-          multicallBatchSizeBytes: config.multicallBatchSizeBytes,
-        }).discover(wallet);
+        const reader = this.getUniswapV3Reader(readerKey, readerOptions);
+        const discovered = await reader.discover(wallet);
         tokenIds = discovered.tokenIds;
         scannedThroughBlock = discovered.blockNumber.toString();
       } catch {
@@ -474,14 +528,9 @@ export class IntegrationOperationsService {
     const after = input.cursor === undefined ? undefined : BigInt(input.cursor);
     const candidates = tokenIds.filter((tokenId) => after === undefined || BigInt(tokenId) > after)
       .sort((left, right) => BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0);
-    const readerOptions = {
-      rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
-      timeoutMilliseconds: config.timeoutMilliseconds,
-      multicallBatchSizeBytes: config.multicallBatchSizeBytes,
-    };
     const reader = input.version === 'v3'
-      ? this.uniswapV3ReaderFactory.create(readerOptions)
-      : this.uniswapV4ReaderFactory.create(readerOptions);
+      ? this.getUniswapV3Reader(readerKey, readerOptions)
+      : this.getUniswapV4Reader(readerKey, readerOptions);
     const results: Array<PromiseSettledResult<Awaited<ReturnType<typeof reader.read>>>> = [];
     // Keep wallet discovery below provider burst limits. The reader itself performs
     // a small Promise.all for metadata, so eight concurrent positions can fan out
@@ -516,6 +565,58 @@ export class IntegrationOperationsService {
     for (const job of this.walletIndexJobs.values()) job.controller.abort();
     await Promise.allSettled([...this.walletIndexJobs.values()].map((job) => job.promise));
     this.walletIndexJobs.clear();
+    this.uniswapV3Readers.clear();
+    this.uniswapV4Readers.clear();
+    this.walletPositionResponses.clear();
+    this.walletPositionInflight.clear();
+  }
+
+  private getUniswapV3Reader(
+    key: string,
+    options: {
+      rpcUrl: string;
+      headers?: Record<string, string>;
+      expectedChainId: number;
+      timeoutMilliseconds: number;
+      multicallBatchSizeBytes: number;
+    },
+  ): UniswapV3PositionReaderPort {
+    const existing = this.uniswapV3Readers.get(key);
+    if (existing !== undefined) return existing;
+    const reader = this.uniswapV3ReaderFactory.create(options);
+    this.uniswapV3Readers.set(key, reader);
+    return reader;
+  }
+
+  private getUniswapV4Reader(
+    key: string,
+    options: {
+      rpcUrl: string;
+      headers?: Record<string, string>;
+      expectedChainId: number;
+      timeoutMilliseconds: number;
+    },
+  ): UniswapV4PositionReaderPort {
+    const existing = this.uniswapV4Readers.get(key);
+    if (existing !== undefined) return existing;
+    const reader = this.uniswapV4ReaderFactory.create(options);
+    this.uniswapV4Readers.set(key, reader);
+    return reader;
+  }
+
+  private clearUniswapWalletCaches(integrationId: string): void {
+    for (const key of this.uniswapV3Readers.keys()) {
+      if (key.startsWith(`${integrationId}:`)) this.uniswapV3Readers.delete(key);
+    }
+    for (const key of this.uniswapV4Readers.keys()) {
+      if (key.startsWith(`${integrationId}:`)) this.uniswapV4Readers.delete(key);
+    }
+    for (const key of this.walletPositionResponses.keys()) {
+      if (key.startsWith(`["${integrationId}"`)) this.walletPositionResponses.delete(key);
+    }
+    for (const key of this.walletPositionInflight.keys()) {
+      if (key.startsWith(`["${integrationId}"`)) this.walletPositionInflight.delete(key);
+    }
   }
 
   private startWalletIndexJob(
