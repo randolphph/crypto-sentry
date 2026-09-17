@@ -22,6 +22,7 @@ import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4
 type UniswapPosition = UniswapV3Position | UniswapV4Position;
 type UniswapMonitor = ReturnType<MonitorRepository['listEnabledUniswapMonitors']>[number];
 type UniswapVariant = UniswapMonitor['variants'][number];
+const DEFAULT_CLOSED_POSITION_REFRESH_MILLISECONDS = 15 * 60 * 1_000;
 
 export interface UniswapV3PositionReaderPort {
   discover(walletAddress: Address, signal?: AbortSignal): Promise<UniswapV3OwnedPositions>;
@@ -66,6 +67,7 @@ export interface UniswapV3PositionCoordinatorOptions {
   v4ReaderFactory?: UniswapV4PositionReaderFactory;
   v4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
   now?: () => Date;
+  closedPositionRefreshMilliseconds?: number;
   onError?: (error: Error) => void;
 }
 
@@ -95,10 +97,12 @@ export class UniswapV3PositionCoordinator {
   private readonly v3Readers = new Map<string, UniswapV3PositionReaderPort>();
   private readonly v4Readers = new Map<string, UniswapV4PositionReaderPort>();
   private readonly v4OwnershipIndexers = new Map<string, UniswapV4OwnershipIndexerPort>();
+  private readonly closedPositions = new Map<string, { position: UniswapPosition; refreshAt: number }>();
   private readonly readerFactory: UniswapV3PositionReaderFactory;
   private readonly v4ReaderFactory: UniswapV4PositionReaderFactory;
   private readonly v4OwnershipIndexerFactory: UniswapV4OwnershipIndexerFactory;
   private readonly now: () => Date;
+  private readonly closedPositionRefreshMilliseconds: number;
   private readonly onError: (error: Error) => void;
 
   public constructor(
@@ -129,6 +133,8 @@ export class UniswapV3PositionCoordinator {
       }),
     };
     this.now = options.now ?? (() => new Date());
+    this.closedPositionRefreshMilliseconds = options.closedPositionRefreshMilliseconds
+      ?? DEFAULT_CLOSED_POSITION_REFRESH_MILLISECONDS;
     this.onError = options.onError ?? (() => undefined);
   }
 
@@ -139,6 +145,7 @@ export class UniswapV3PositionCoordinator {
       if (desiredIds.has(monitorId)) continue;
       this.scheduler.remove(this.taskId(monitorId));
       this.scheduler.remove(this.staleTaskId(monitorId));
+      this.clearClosedPositions(monitorId);
       this.scheduledMonitorIds.delete(monitorId);
     }
     for (const monitor of monitors) {
@@ -163,6 +170,7 @@ export class UniswapV3PositionCoordinator {
     }
     this.scheduledMonitorIds.clear();
     this.monitorVariantFingerprints.clear();
+    this.closedPositions.clear();
     this.v3Readers.clear();
     this.v4Readers.clear();
     this.v4OwnershipIndexers.clear();
@@ -176,6 +184,17 @@ export class UniswapV3PositionCoordinator {
     return `uniswap-stale:${monitorId}`;
   }
 
+  private closedPositionKey(monitorId: string, variant: UniswapVariant, tokenId: string): string {
+    return `${monitorId}:${variant.chainId}:${variant.version}:${tokenId}`;
+  }
+
+  private clearClosedPositions(monitorId: string): void {
+    const prefix = `${monitorId}:`;
+    for (const key of this.closedPositions.keys()) {
+      if (key.startsWith(prefix)) this.closedPositions.delete(key);
+    }
+  }
+
   private async scan(monitor: UniswapMonitor, signal: AbortSignal): Promise<void> {
     // Keep the last complete gauge snapshot available while the next RPC scan is in flight.
     // Clearing here made every HTTP snapshot observe an empty/partial intermediate state.
@@ -186,6 +205,7 @@ export class UniswapV3PositionCoordinator {
     });
     if (this.monitorVariantFingerprints.get(monitor.monitorId) !== fingerprint) {
       this.metricPipeline.forgetMonitor(monitor.monitorId);
+      this.clearClosedPositions(monitor.monitorId);
       this.monitorVariantFingerprints.set(monitor.monitorId, fingerprint);
     }
     await Promise.all(monitor.variants.map(async (variant) => this.scanVariant(monitor, variant, signal)));
@@ -237,14 +257,19 @@ export class UniswapV3PositionCoordinator {
       for (const tokenId of discovery.tokenIds) {
         signal.throwIfAborted();
         try {
-          const position = await this.readPosition(
-            variant.version,
-            tokenId,
-            signal,
-            discovery.blockNumber,
-            v3Reader,
-            v4Reader,
-          );
+          const closedCacheKey = this.closedPositionKey(monitor.monitorId, variant, tokenId);
+          const cachedClosed = this.closedPositions.get(closedCacheKey);
+          const position = cachedClosed !== undefined && cachedClosed.refreshAt > this.now().getTime()
+            ? cachedClosed.position
+            : await this.readPosition(variant.version, tokenId, signal, discovery.blockNumber, v3Reader, v4Reader);
+          if (new Decimal(position.liquidity).isZero()) {
+            this.closedPositions.set(closedCacheKey, {
+              position,
+              refreshAt: this.now().getTime() + Math.max(0, this.closedPositionRefreshMilliseconds),
+            });
+          } else {
+            this.closedPositions.delete(closedCacheKey);
+          }
           if ('walletAddress' in monitor && position.owner.toLowerCase() !== monitor.walletAddress.toLowerCase()) continue;
           positions.push(position);
         } catch {
