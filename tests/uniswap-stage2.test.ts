@@ -118,4 +118,52 @@ describe('Uniswap phase 2 resources and pool monitor', () => {
     indexer.close();
     await pipeline.close();
   });
+
+  it('monitors a directly supplied V3 pool address without any pool catalog entry', async () => {
+    const database = createDatabase(':memory:');
+    databases.push(database);
+    const integrations = new IntegrationRepository(database.db, new EncryptionService(Buffer.alloc(32, 4)));
+    const integration = integrations.create({
+      name: 'Ethereum', type: 'evm_rpc', provider: 'custom', enabled: true,
+      config: { chainId: 1, rpcUrl: 'https://rpc.invalid' },
+    });
+    const monitors = new MonitorRepository(database.db, integrations);
+    const poolAddress = '0x00000000000000000000000000000000000000aa';
+    const monitor = monitors.create({
+      name: 'Direct WETH/USDC', type: 'uniswap_pool', enabled: true, intervalSeconds: 20, maxStaleSeconds: 90,
+      config: { rpcIntegrationId: integration.id, chainId: 1, version: 'v3', poolAddress },
+    });
+    const latest = new LatestMetricStore();
+    const pipeline = new MetricPipeline(monitors, latest, [], new MetricEventRepository(database.db));
+    const scheduler = new CapturingScheduler();
+    const describeV3 = vi.fn(async () => ({
+      chainId: 1, version: 'v3' as const, resourceId: poolAddress, poolAddress, poolId: null,
+      token0Address: '0x0000000000000000000000000000000000000010', token0Symbol: 'WETH', token0Decimals: 18,
+      token1Address: '0x0000000000000000000000000000000000000020', token1Symbol: 'USDC', token1Decimals: 6,
+      feeTier: 500, tickSpacing: 10,
+    }));
+    const coordinator = new UniswapPoolCoordinator(
+      integrations, monitors, new UniswapPoolRepository(database.db), new ChainScanCursorRepository(database.db),
+      pipeline, scheduler as unknown as PollingScheduler,
+      { readerFactory: { create: () => ({
+        latestBlock: async () => 200n,
+        describeV3,
+        read: async () => ({
+          blockNumber: '188', currentTick: 100, token0Price: '2000', token1Price: '0.0005', activeLiquidity: '1000',
+          tvlToken0: '10', tvlToken1: '20000', lpFee: '500', protocolFee: '0', events: [],
+        }),
+      }) }, now: () => new Date('2026-09-16T00:00:00.000Z') },
+    );
+    coordinator.reconcile();
+    const task = scheduler.tasks.get(`uniswap-pool:${monitor.id}`);
+    if (task === undefined) throw new Error('Direct pool monitor task missing');
+    await task.run(new AbortController().signal);
+    expect(describeV3).toHaveBeenCalledWith(poolAddress, expect.any(AbortSignal));
+    expect(latest.list(monitor.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'current_tick', value: '100', status: 'ok' }),
+      expect.objectContaining({ name: 'sync_status', value: true, status: 'ok' }),
+    ]));
+    coordinator.close();
+    await pipeline.close();
+  });
 });

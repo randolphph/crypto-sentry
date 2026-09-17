@@ -194,6 +194,29 @@ describe('EVM RPC integration API', () => {
     expect(invalidated.json()).toMatchObject({ aave: { ready: false, networks: [] } });
   });
 
+  it('creates a direct Uniswap pool monitor without waiting for a global pool catalog scan', async () => {
+    const created = await createRpcIntegration();
+    const integrationId = created.json<{ id: string }>().id;
+    expect((await app.inject({
+      method: 'POST', url: `/api/v1/integrations/${integrationId}/test`, headers: authorization,
+    })).statusCode).toBe(200);
+
+    const monitor = await app.inject({
+      method: 'POST', url: '/api/v1/monitors', headers: authorization,
+      payload: {
+        name: 'Direct V3 pool', type: 'uniswap_pool', enabled: false,
+        config: {
+          rpcIntegrationId: integrationId, chainId: 1, version: 'v3',
+          poolAddress: '0x00000000000000000000000000000000000000aa',
+        },
+      },
+    });
+    expect(monitor.statusCode).toBe(201);
+    expect(monitor.json()).toMatchObject({
+      type: 'uniswap_pool', config: { chainId: 1, version: 'v3', poolAddress: '0x00000000000000000000000000000000000000aa' },
+    });
+  });
+
   it('rejects an RPC that answers basic probes but cannot read Aave contracts', async () => {
     const created = await createRpcIntegration();
     const integrationId = created.json<{ id: string }>().id;

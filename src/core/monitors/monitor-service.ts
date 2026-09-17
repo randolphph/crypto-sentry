@@ -2,7 +2,11 @@ import { EvmRpcClient } from '../../adapters/evm/evm-rpc-client.js';
 import { UniswapV3PositionReader } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { UniswapV4PositionReader } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { AppError } from '../../api/errors.js';
-import { rpcIntegrationConfigSchema, uniswapPositionMonitorConfigSchema } from '../../api/schemas.js';
+import {
+  rpcIntegrationConfigSchema,
+  uniswapPoolMonitorConfigSchema,
+  uniswapPositionMonitorConfigSchema,
+} from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import type { IntegrationNetworkHealthRepository } from '../../db/repositories/integration-network-health-repository.js';
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
@@ -39,6 +43,9 @@ export class MonitorService {
     if (input.type === 'uniswap_position') {
       await this.validateUniswapPosition(uniswapPositionMonitorConfigSchema.parse(input.config));
     }
+    if (input.type === 'uniswap_pool') {
+      this.validateUniswapCapability(uniswapPoolMonitorConfigSchema.parse(input.config));
+    }
     return this.monitors.create(input);
   }
 
@@ -52,12 +59,18 @@ export class MonitorService {
         await this.validateUniswapPosition(after);
       }
     }
+    if (current.type === 'uniswap_pool' && input.config !== undefined) {
+      const before = uniswapPoolMonitorConfigSchema.parse(current.config);
+      const after = uniswapPoolMonitorConfigSchema.parse({ ...current.config, ...input.config });
+      if (before.rpcIntegrationId !== after.rpcIntegrationId || before.chainId !== after.chainId ||
+        before.version !== after.version || before.poolAddress !== after.poolAddress || before.poolId !== after.poolId) {
+        this.validateUniswapCapability(after);
+      }
+    }
     return this.monitors.update(id, input);
   }
 
-  private async validateUniswapPosition(config: {
-    rpcIntegrationId: string; chainId: number; version: 'v3' | 'v4'; tokenId: string;
-  }): Promise<void> {
+  private validateUniswapCapability(config: { rpcIntegrationId: string; chainId: number; version: 'v3' | 'v4' }): void {
     const integration = this.integrations.getRuntime(config.rpcIntegrationId);
     if (!integration.enabled || integration.type !== 'evm_rpc') {
       throw new AppError(400, 'INVALID_MONITOR_CONFIG', 'An enabled EVM RPC integration is required');
@@ -71,6 +84,14 @@ export class MonitorService {
     if (health?.rpcStatus !== 'ok' || capability !== 'ok') {
       throw new AppError(409, 'PROTOCOL_NOT_READY', 'Test the selected Uniswap network and version before creating this monitor');
     }
+  }
+
+  private async validateUniswapPosition(config: {
+    rpcIntegrationId: string; chainId: number; version: 'v3' | 'v4'; tokenId: string;
+  }): Promise<void> {
+    this.validateUniswapCapability(config);
+    const integration = this.integrations.getRuntime(config.rpcIntegrationId);
+    const rpc = rpcIntegrationConfigSchema.parse(integration.config);
     const resolved = resolveEvmRpcRequest(rpc, config.chainId);
     const options = {
       rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: config.chainId,

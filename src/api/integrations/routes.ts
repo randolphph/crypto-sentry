@@ -49,7 +49,7 @@ export function registerIntegrationRoutes(
   });
 
   app.get('/api/v1/integrations/:id/uniswap/pools', { schema: {
-    tags: ['integrations', 'uniswap'], summary: 'Search the asynchronously indexed Uniswap pool catalog',
+    tags: ['integrations', 'uniswap'], summary: 'Search the legacy cached Uniswap pool catalog; this endpoint does not start indexing',
     params: openApiSchema(idParamsSchema), querystring: openApiSchema(uniswapPoolQuerySchema),
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);

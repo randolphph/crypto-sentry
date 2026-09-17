@@ -49,8 +49,6 @@ import { UniswapV4OwnershipRepository } from './db/repositories/uniswap-v4-owner
 import { ChainScanCursorRepository } from './db/repositories/chain-scan-cursor-repository.js';
 import { ProtocolMetricSampleRepository } from './db/repositories/protocol-metric-sample-repository.js';
 import { UniswapPoolRepository } from './db/repositories/uniswap-pool-repository.js';
-import { UniswapPoolIndexCoordinator } from './core/integrations/uniswap-pool-index-coordinator.js';
-import type { UniswapPoolCatalogReaderFactory } from './core/integrations/uniswap-pool-index-coordinator.js';
 import { UniswapPoolCoordinator } from './core/integrations/uniswap-pool-coordinator.js';
 import type { UniswapPoolReaderFactory } from './core/integrations/uniswap-pool-coordinator.js';
 import { UniswapPoolSwapSampleRepository } from './db/repositories/uniswap-pool-swap-sample-repository.js';
@@ -73,7 +71,6 @@ export interface CreateAppOptions {
   uniswapV4PositionReaderFactory?: UniswapV4PositionReaderFactory;
   uniswapV4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
   pollingMinimumIntervalMilliseconds?: number;
-  uniswapPoolCatalogReaderFactory?: UniswapPoolCatalogReaderFactory;
   uniswapPoolReaderFactory?: UniswapPoolReaderFactory;
 }
 
@@ -250,14 +247,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       onError: (error) => app.log.warn({ err: error }, 'Uniswap position scan error'),
     },
   );
-  const uniswapPoolIndexCoordinator = new UniswapPoolIndexCoordinator(
-    integrations, integrationNetworkHealth, uniswapPools, chainScanCursors, pollingScheduler,
-    {
-      fetch: rpcFetch,
-      ...(options.uniswapPoolCatalogReaderFactory === undefined ? {} : { readerFactory: options.uniswapPoolCatalogReaderFactory }),
-      onError: (error) => app.log.warn({ err: error }, 'Uniswap pool index error'),
-    },
-  );
   const uniswapPoolCoordinator = new UniswapPoolCoordinator(
     integrations, monitors, uniswapPools, chainScanCursors, metricPipeline, pollingScheduler,
     {
@@ -314,7 +303,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       aavePositionCoordinator.reconcile();
       aaveEventCoordinator.reconcile();
       uniswapV3PositionCoordinator.reconcile();
-      uniswapPoolIndexCoordinator.reconcile();
       uniswapPoolCoordinator.reconcile();
     }
   });
@@ -322,7 +310,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   aavePositionCoordinator.reconcile();
   aaveEventCoordinator.reconcile();
   uniswapV3PositionCoordinator.reconcile();
-  uniswapPoolIndexCoordinator.reconcile();
   uniswapPoolCoordinator.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
@@ -351,7 +338,6 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     aavePositionCoordinator.close();
     aaveEventCoordinator.close();
     uniswapV3PositionCoordinator.close();
-    uniswapPoolIndexCoordinator.close();
     uniswapPoolCoordinator.close();
     await pollingScheduler.close();
     await marketMetricService?.close();

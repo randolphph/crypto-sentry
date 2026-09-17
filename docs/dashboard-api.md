@@ -346,7 +346,7 @@ DELETE /api/v1/monitors/:id
 
 Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停。
 
-创建和 PATCH 更新使用同一套类型、资源和 RPC chainId 校验。PATCH `config` 可以只提交要修改的字段，后端先与当前配置合并，再验证最终配置并一次性写入；验证失败不会修改 Monitor，也不会发布配置变更事件。引用未覆盖目标链的 RPC 返回 `RPC_CHAIN_UNSUPPORTED`；Pool 不在本地资源目录时返回 `POOL_NOT_FOUND`。
+创建和 PATCH 更新使用同一套类型和 RPC chainId/协议能力校验。PATCH `config` 可以只提交要修改的字段，后端先与当前配置合并，再验证最终配置并一次性写入；验证失败不会修改 Monitor，也不会发布配置变更事件。引用未覆盖目标链的 RPC 返回 `RPC_CHAIN_UNSUPPORTED`。`uniswap_pool` 不再依赖本地 Pool 目录：Dashboard 直接提交用户确认的 V3 poolAddress 或 V4 poolId，服务不会启动全链索引。
 
 ### 当前 available
 
@@ -386,7 +386,7 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 { "rpcIntegrationId": "int_rpc", "chainIds": [1, 4663], "versions": ["v3", "v4"], "walletAddress": "0x0000000000000000000000000000000000001234" }
 ```
 
-`uniswap_pool` 必须使用资源目录返回的标识：
+`uniswap_pool` 直接使用用户确认的标识，不需要先查询或等待 Pool 目录：
 
 ```json
 { "rpcIntegrationId": "int_rpc", "chainId": 1, "version": "v3", "poolAddress": "0x..." }
@@ -403,7 +403,7 @@ GET /api/v1/integrations/:id/uniswap/pools?chainId=1&version=v3&q=ETH%2FUSDC&lim
 GET /api/v1/integrations/:id/uniswap/wallet-positions?chainId=1&version=v4&walletAddress=0x...&limit=50&cursor=...
 ```
 
-Pool 目录从本地 SQLite 返回，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；`discovery` 返回 caughtUp、scannedThroughBlock、chainTipBlock、lastAttemptAt 和 lastError。后台索引初始使用大区间；Provider 因范围、结果数或 timeout 拒绝 `eth_getLogs` 时会递归二分，每个成功子区间立即保存游标，后续任务从最后成功位置并带 reorg rewind 继续。最小单块仍失败时 API 返回 `partial` 和稳定的 `INDEXER_PARTIAL_FAILURE`，而不是永久停留在 warming_up。token metadata 单项失败同样返回 partial，不丢弃 Pool。
+`/uniswap/pools` 仅查询先前写入 SQLite 的 legacy Pool 缓存，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；它不会启动、恢复或等待任何全链索引，因此不得作为创建 `uniswap_pool` 的前置步骤。Dashboard 应直接提交用户确认的 V3 poolAddress 或 V4 poolId。V3 首次扫描只读取该 Pool 的链上 token/fee 元数据并缓存；V4 poolId 不能反推出 PoolKey，故仅凭 poolId 时 token/价格/TVL/金额估值会明确保持 unavailable/null，tick、liquidity、费用和按 poolId 过滤的事件仍可监控。
 
 Wallet V3 直接枚举 ERC-721，V4 使用后台、可恢复的 Transfer 索引；单个 Position 读取失败只增加 failedPositionCount。`q` 支持 tokenId、poolAddress/poolId、token0/token1 symbol、token address，以及正向或反向 `TOKEN0/TOKEN1` 币对；过滤后再分页。
 

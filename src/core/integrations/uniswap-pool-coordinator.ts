@@ -13,6 +13,7 @@ import { Decimal } from 'decimal.js';
 
 export interface UniswapPoolReaderPort {
   latestBlock(signal?: AbortSignal): Promise<bigint>;
+  describeV3?(poolAddress: string, signal?: AbortSignal): Promise<UniswapPoolTarget>;
   read(target: UniswapPoolTarget, fromBlock: bigint, toBlock: bigint, signal?: AbortSignal): Promise<UniswapPoolReadResult>;
 }
 
@@ -24,6 +25,7 @@ export interface UniswapPoolReaderFactory {
 
 export class UniswapPoolCoordinator {
   private readonly monitorIds = new Set<string>();
+  private readonly directTargets = new Map<string, { fingerprint: string; target: UniswapPoolTarget }>();
   private readonly readerFactory: UniswapPoolReaderFactory;
   private readonly now: () => Date;
   private readonly onError: (error: Error) => void;
@@ -53,7 +55,11 @@ export class UniswapPoolCoordinator {
   public reconcile(): void {
     const monitors = this.monitors.listEnabledUniswapPoolMonitors();
     const desired = new Set(monitors.map((monitor) => monitor.monitorId));
-    for (const id of this.monitorIds) if (!desired.has(id)) this.scheduler.remove(this.taskId(id));
+    for (const id of this.monitorIds) {
+      if (desired.has(id)) continue;
+      this.scheduler.remove(this.taskId(id));
+      this.directTargets.delete(id);
+    }
     this.monitorIds.clear();
     for (const monitor of monitors) {
       this.scheduler.upsert({
@@ -67,20 +73,59 @@ export class UniswapPoolCoordinator {
   public close(): void {
     for (const id of this.monitorIds) this.scheduler.remove(this.taskId(id));
     this.monitorIds.clear();
+    this.directTargets.clear();
   }
 
   private taskId(id: string) { return `uniswap-pool:${id}`; }
 
-  private async scan(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number], signal: AbortSignal) {
-    const row = this.pools.get(monitor.rpcIntegrationId, monitor.chainId, monitor.version, monitor.resourceId);
-    if (row === undefined) return;
-    const target: UniswapPoolTarget = {
-      chainId: row.chainId, version: row.version as 'v3' | 'v4', resourceId: row.resourceId,
-      poolAddress: row.poolAddress, poolId: row.poolId,
-      token0Address: row.token0Address, token0Symbol: row.token0Symbol, token0Decimals: row.token0Decimals,
-      token1Address: row.token1Address, token1Symbol: row.token1Symbol, token1Decimals: row.token1Decimals,
-      feeTier: row.feeTier, tickSpacing: row.tickSpacing,
+  private async resolveTarget(
+    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    reader: UniswapPoolReaderPort,
+    signal: AbortSignal,
+  ): Promise<UniswapPoolTarget> {
+    const catalogTarget = this.pools.get(monitor.rpcIntegrationId, monitor.chainId, monitor.version, monitor.resourceId);
+    if (catalogTarget !== undefined) {
+      return {
+        chainId: catalogTarget.chainId, version: catalogTarget.version as 'v3' | 'v4', resourceId: catalogTarget.resourceId,
+        poolAddress: catalogTarget.poolAddress, poolId: catalogTarget.poolId,
+        token0Address: catalogTarget.token0Address, token0Symbol: catalogTarget.token0Symbol, token0Decimals: catalogTarget.token0Decimals,
+        token1Address: catalogTarget.token1Address, token1Symbol: catalogTarget.token1Symbol, token1Decimals: catalogTarget.token1Decimals,
+        feeTier: catalogTarget.feeTier, tickSpacing: catalogTarget.tickSpacing,
+      };
+    }
+    const fingerprint = JSON.stringify({
+      integrationId: monitor.rpcIntegrationId,
+      chainId: monitor.chainId,
+      version: monitor.version,
+      resourceId: monitor.resourceId,
+    });
+    const cached = this.directTargets.get(monitor.monitorId);
+    if (cached?.fingerprint === fingerprint) return cached.target;
+    if (monitor.version === 'v3') {
+      if (reader.describeV3 === undefined) throw new Error('Uniswap V3 pool metadata reader is unavailable');
+      const described = await reader.describeV3(monitor.resourceId, signal);
+      if (described.chainId !== monitor.chainId || described.poolAddress?.toLowerCase() !== monitor.resourceId.toLowerCase()) {
+        throw new Error('Uniswap V3 pool identity mismatch');
+      }
+      this.directTargets.set(monitor.monitorId, { fingerprint, target: described });
+      return described;
+    }
+    // A V4 pool ID is a hash of the PoolKey and cannot be reversed to token
+    // addresses. We can still monitor state, fees and filtered events directly;
+    // price/amount/TVL remain unavailable until metadata is supplied in a future
+    // direct PoolKey extension.
+    const direct: UniswapPoolTarget = {
+      chainId: monitor.chainId, version: 'v4', resourceId: monitor.resourceId,
+      poolAddress: null, poolId: monitor.resourceId,
+      token0Address: null, token0Symbol: null, token0Decimals: null,
+      token1Address: null, token1Symbol: null, token1Decimals: null,
+      feeTier: null, tickSpacing: null,
     };
+    this.directTargets.set(monitor.monitorId, { fingerprint, target: direct });
+    return direct;
+  }
+
+  private async scan(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number], signal: AbortSignal) {
     const integration = this.integrations.getRuntime(monitor.rpcIntegrationId);
     const config = rpcIntegrationConfigSchema.parse(integration.config);
     const resolved = resolveEvmRpcRequest(config, monitor.chainId);
@@ -89,10 +134,25 @@ export class UniswapPoolCoordinator {
       timeoutMilliseconds: config.timeoutMilliseconds,
     });
     const timestamp = this.now().toISOString();
+    let target: UniswapPoolTarget;
+    try {
+      target = await this.resolveTarget(monitor, reader, signal);
+    } catch {
+      if (signal.aborted) return;
+      this.onError(new Error(`Uniswap ${monitor.version} pool metadata lookup failed on chain ${monitor.chainId}`));
+      await this.pipeline.ingest({
+        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: false,
+        observedAt: timestamp, receivedAt: timestamp, status: 'error',
+        labels: { chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId },
+      });
+      return;
+    }
     const labels = {
       chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
-      token0Address: row.token0Address, token0Symbol: row.token0Symbol ?? 'UNKNOWN',
-      token1Address: row.token1Address, token1Symbol: row.token1Symbol ?? 'UNKNOWN',
+      ...(target.token0Address === null ? {} : { token0Address: target.token0Address }),
+      ...(target.token0Symbol === null ? {} : { token0Symbol: target.token0Symbol }),
+      ...(target.token1Address === null ? {} : { token1Address: target.token1Address }),
+      ...(target.token1Symbol === null ? {} : { token1Symbol: target.token1Symbol }),
     };
     try {
       const tip = await reader.latestBlock(signal);
@@ -103,15 +163,16 @@ export class UniswapPoolCoordinator {
       const result = await reader.read(target, from, confirmed, signal);
       this.pipeline.forgetMonitor(monitor.monitorId);
       const gauges: Array<[string, string, string]> = [
-        ['current_tick', String(result.currentTick), 'tick'], ['token0_price', result.token0Price, row.token1Symbol ?? 'token1'],
-        ['token1_price', result.token1Price, row.token0Symbol ?? 'token0'], ['active_liquidity', result.activeLiquidity, 'liquidity'],
+        ['current_tick', String(result.currentTick), 'tick'], ['active_liquidity', result.activeLiquidity, 'liquidity'],
         ['lp_fee', result.lpFee, 'hundredths_bps'], ['block_number', result.blockNumber, 'block'],
       ];
+      if (result.token0Price !== null) gauges.push(['token0_price', result.token0Price, target.token1Symbol ?? 'token1']);
+      if (result.token1Price !== null) gauges.push(['token1_price', result.token1Price, target.token0Symbol ?? 'token0']);
       if (result.protocolFee !== null) gauges.push(['protocol_fee', result.protocolFee, 'hundredths_bps']);
-      if (result.tvlToken0 !== null) gauges.push(['tvl_token0', result.tvlToken0, row.token0Symbol ?? 'token0']);
-      if (result.tvlToken1 !== null) gauges.push(['tvl_token1', result.tvlToken1, row.token1Symbol ?? 'token1']);
+      if (result.tvlToken0 !== null) gauges.push(['tvl_token0', result.tvlToken0, target.token0Symbol ?? 'token0']);
+      if (result.tvlToken1 !== null) gauges.push(['tvl_token1', result.tvlToken1, target.token1Symbol ?? 'token1']);
       const tvlUsd = this.usdValue(
-        result.tvlToken0, result.tvlToken1, row.token0Symbol, row.token1Symbol, result.token0Price, result.token1Price,
+        result.tvlToken0, result.tvlToken1, target.token0Symbol, target.token1Symbol, result.token0Price, result.token1Price,
       );
       if (tvlUsd !== null) gauges.push(['tvl_usd', tvlUsd, 'USD']);
       for (const [name, value, unit] of gauges) await this.pipeline.ingest({
@@ -122,8 +183,8 @@ export class UniswapPoolCoordinator {
         const amount0 = event.amount0 === null ? null : new Decimal(event.amount0).abs().toSignificantDigits(30).toString();
         const amount1 = event.amount1 === null ? null : new Decimal(event.amount1).abs().toSignificantDigits(30).toString();
         const amountUsd = event.eventType === 'swap'
-          ? this.swapUsdValue(amount0, amount1, row.token0Symbol, row.token1Symbol)
-          : this.usdValue(amount0, amount1, row.token0Symbol, row.token1Symbol, result.token0Price, result.token1Price);
+          ? this.swapUsdValue(amount0, amount1, target.token0Symbol, target.token1Symbol)
+          : this.usdValue(amount0, amount1, target.token0Symbol, target.token1Symbol, result.token0Price, result.token1Price);
         const eventObservedAt = event.observedAt ?? timestamp;
         if (event.eventType === 'swap' && amount0 !== null && amount1 !== null && monitor.volumeWindowSeconds.length > 0) {
           this.samples?.save(monitor.monitorId, {
@@ -134,14 +195,14 @@ export class UniswapPoolCoordinator {
         await this.pipeline.ingest({
           monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId,
           name: event.eventType === 'collect' ? 'fee_collection' : event.eventType,
-          value: amount0 ?? amount1 ?? '1', unit: amount0 === null ? row.token1Symbol ?? 'token1' : row.token0Symbol ?? 'token0',
+          value: amount0 ?? amount1 ?? '1', unit: amount0 === null ? target.token1Symbol ?? 'token1' : target.token0Symbol ?? 'token0',
           observedAt: eventObservedAt, receivedAt: timestamp, status: 'ok', kind: 'event', eventId: event.eventId,
           labels: { ...labels, eventType: event.eventType, amount0: amount0 ?? 'unavailable', amount1: amount1 ?? 'unavailable',
             amountUsd: amountUsd ?? 'unavailable', valuationStatus: amountUsd === null ? 'unavailable' : 'ok',
             transactionHash: event.transactionHash, logIndex: String(event.logIndex), blockNumber: event.blockNumber },
         });
       }
-      await this.emitWindowVolumes(monitor, labels, row.token0Symbol, row.token1Symbol, timestamp);
+      await this.emitWindowVolumes(monitor, labels, target.token0Symbol, target.token1Symbol, timestamp);
       this.cursors.save(monitor.rpcIntegrationId, `uniswap_${monitor.version}_pool`, monitor.chainId, stream, confirmed);
       await this.pipeline.ingest({
         monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: true,
@@ -168,10 +229,10 @@ export class UniswapPoolCoordinator {
     amount1: string | null,
     symbol0: string | null,
     symbol1: string | null,
-    price0: string,
-    price1: string,
+    price0: string | null,
+    price1: string | null,
   ): string | null {
-    if (amount0 === null || amount1 === null) return null;
+    if (amount0 === null || amount1 === null || price0 === null || price1 === null) return null;
     const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
     if (symbol1 !== null && stable.has(symbol1.toUpperCase())) {
       return new Decimal(amount0).mul(price0).plus(amount1).toSignificantDigits(30).toString();
@@ -226,9 +287,13 @@ export class UniswapPoolCoordinator {
         return time > previousStart && time <= start;
       });
       const windowLabels = { ...labels, windowSeconds: String(windowSeconds) };
-      const values: Array<[string, string, string, 'ok' | 'warming_up']> = [
-        ['volume_token0', sum(current.map((sample) => sample.token0Volume)), token0Symbol ?? 'token0', 'ok'],
-        ['volume_token1', sum(current.map((sample) => sample.token1Volume)), token1Symbol ?? 'token1', 'ok'],
+      const amountsSupported = token0Symbol !== null && token1Symbol !== null;
+      const values: Array<[string, string, string, 'ok' | 'warming_up']> = amountsSupported ? [
+        ['volume_token0', sum(current.map((sample) => sample.token0Volume)), token0Symbol, 'ok'],
+        ['volume_token1', sum(current.map((sample) => sample.token1Volume)), token1Symbol, 'ok'],
+      ] : [
+        ['volume_token0', 'unavailable', 'token0', 'warming_up'],
+        ['volume_token1', 'unavailable', 'token1', 'warming_up'],
       ];
       const currentUsdAvailable = usdSupported && current.every((sample) => sample.usdVolume !== null);
       const previousUsdAvailable = usdSupported && previous.every((sample) => sample.usdVolume !== null);

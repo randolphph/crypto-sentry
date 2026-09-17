@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、Pool、异步 Pool 目录和持久化窗口成交量。Telegram 尚未接入；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 尚未接入；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
 
@@ -98,7 +98,7 @@ Dashboard 可先读取数据源目录和当前就绪状态，避免在前端硬�
 GET  /api/v1/integrations/catalog            # 服务商、网络和安全默认值
 GET  /api/v1/integrations/readiness          # Aave/Binance/Uniswap 是否可创建有效 Monitor
 GET  /api/v1/integrations/:id/aave/reserves # Ethereum Aave V3 官方 Reserve 目录
-GET  /api/v1/integrations/:id/uniswap/pools # 异步索引的 V3/V4 Pool 目录
+GET  /api/v1/integrations/:id/uniswap/pools # 仅查询既有的 legacy Pool 缓存；不会触发索引
 GET  /api/v1/integrations/:id/uniswap/wallet-positions # 创建 Monitor 前发现 LP
 POST /api/v1/integrations/binance/default    # 幂等创建无需密钥的 Binance 公共行情源
 ```
@@ -199,11 +199,11 @@ Content-Type: application/json
 
 ## Ethereum / Robinhood Chain Uniswap V3/V4 LP 监控
 
-支持 Ethereum（Chain ID `1`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。Pool 目录由后台按确认区块分片索引并持久化游标；Provider 拒绝大范围 `eth_getLogs` 时会自动二分，并在每个成功子区间立即推进游标。资源 API 返回 caughtUp、scannedThroughBlock、chainTipBlock、lastAttemptAt 和 lastError，首次请求不会同步扫描 Ethereum 全历史。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
+支持 Ethereum（Chain ID `1`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。服务不会自动扫描全链 Pool 创建事件；`/uniswap/pools` 只读取历史遗留缓存，不能作为创建 Pool Monitor 的前置条件。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
 
 Position Snapshot 的分组键为 `chainId + version + tokenId`。后端计算边界距离、token0/token1 数量、V3 已记账手续费和关闭状态；Wallet 汇总 position/in-range/out-of-range/failed 数量。包含可信稳定币的池可用链上价格计算 USD，否则 `positionValueUsd`/`tvlUsd` 为 `null` 且 valuationStatus 为 unavailable，绝不显示成 0。
 
-`uniswap_pool` 必须从 Pool 目录选择 V3 `poolAddress` 或 V4 `poolId`。Pool Monitor 输出 tick、双向价格、活跃流动性、V3 token TVL、可靠时的 USD TVL，以及 swap/mint/burn 事件；V3 另提供 fee_collection。启用对应窗口 Rule 后，Swap 样本按 eventId 去重并持久化，输出 `volume_token0`、`volume_token1`、可靠时的 `volume_usd`，以及当前窗口相对前一等长窗口的 `volume_change_percent`。不同窗口通过 labels.windowSeconds 与 Snapshot 的 volumes 数组隔离。eventId 按 `chainId:txHash:logIndex` 去重。V4 无法按单池可靠归属的 TVL 和手续费字段保持 `null`。
+`uniswap_pool` 由 Dashboard 直接提交用户确认的 V3 `poolAddress` 或 V4 `poolId` 与 chainId；创建前会验证 RPC 和对应协议能力，但不会进行全链目录扫描。V3 会在首次扫描时只读取这一个 Pool 的 token/fee 元数据并缓存；V4 poolId 是不可逆的 PoolKey 哈希，因此仅凭 poolId 能可靠提供 tick、liquidity、费用和过滤后的事件，token 数量、价格、TVL 和 USD 估值保持 `null`/unavailable。Pool Monitor 输出 tick、双向价格（可用时）、活跃流动性、V3 token TVL、可靠时的 USD TVL，以及 swap/mint/burn 事件；V3 另提供 fee_collection。启用对应窗口 Rule 后，Swap 样本按 eventId 去重并持久化，输出 `volume_token0`、`volume_token1`、可靠时的 `volume_usd`，以及当前窗口相对前一等长窗口的 `volume_change_percent`。不同窗口通过 labels.windowSeconds 与 Snapshot 的 volumes 数组隔离。eventId 按 `chainId:txHash:logIndex` 去重。
 
 先创建 RPC 集成：
 

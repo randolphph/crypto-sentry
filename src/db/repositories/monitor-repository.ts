@@ -17,7 +17,7 @@ import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
 import type { MonitorRuntimeState, MonitorRuntimeStateStore, RuntimeMonitor } from '../../core/metrics/metric-pipeline.js';
 import type { AppDatabase } from '../client.js';
-import { integrationMarkets, integrations, monitors, rules, uniswapPools } from '../schema/index.js';
+import { integrationMarkets, integrations, monitors, rules } from '../schema/index.js';
 import { ruleConditions } from '../schema/index.js';
 import type { IntegrationRepository } from './integration-repository.js';
 import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
@@ -337,16 +337,6 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
           reserveAssetAddresses: unknown,
         });
       }
-    }
-    if (monitorType === 'uniswap_pool') {
-      const version = normalized.version as 'v3' | 'v4';
-      const resourceId = String(version === 'v3' ? normalized.poolAddress : normalized.poolId).toLowerCase();
-      const pool = this.database.select({ resourceId: uniswapPools.resourceId }).from(uniswapPools).where(and(
-        eq(uniswapPools.integrationId, String(normalized.rpcIntegrationId)),
-        eq(uniswapPools.chainId, normalized.chainId as number), eq(uniswapPools.version, version),
-        eq(uniswapPools.resourceId, resourceId),
-      )).get();
-      if (pool === undefined) throw new AppError(404, 'POOL_NOT_FOUND', 'Select a pool from the indexed Uniswap catalog');
     }
     this.validateIntegrationReference(monitorType, normalized);
     return normalized;

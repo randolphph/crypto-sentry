@@ -118,7 +118,7 @@ describe('Dashboard next-version API contract', () => {
     });
   });
 
-  it('enables Aave pool and requires Uniswap pools to come from the indexed resource catalog', async () => {
+  it('enables Aave pool and keeps unrelated monitor capability checks intact', async () => {
     const ethereum = await rpc('Ethereum', 1, 'https://ethereum.example');
     const aavePool = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
       name: 'Aave pool', type: 'aave_pool', enabled: false, config: { rpcIntegrationId: ethereum, chainId: 1 },
@@ -139,12 +139,6 @@ describe('Dashboard next-version API contract', () => {
       method: 'GET', url: `/api/v1/monitors/${poolMonitorId}/snapshot`, headers: authorization,
     });
     expect(poolSnapshot.json()).toMatchObject({ monitorType: 'aave_pool', status: 'warming_up', capability: { available: true } });
-    const planned = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
-      name: 'Uniswap pool', type: 'uniswap_pool',
-      config: { rpcIntegrationId: ethereum, chainId: 1, version: 'v3', poolAddress: walletAddress },
-    } });
-    expect(planned.statusCode).toBe(404);
-    expect(planned.json()).toMatchObject({ error: { code: 'POOL_NOT_FOUND' } });
     const ethereumUniswap = await app.inject({ method: 'POST', url: '/api/v1/monitors', headers: authorization, payload: {
       name: 'Ethereum Uniswap', type: 'uniswap_position',
       config: { rpcIntegrationId: ethereum, chainId: 1, version: 'v3', tokenId: '1' },

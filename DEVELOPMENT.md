@@ -68,10 +68,10 @@
 - [x] Robinhood Chain Uniswap V4 PositionManager/PoolManager/StateView 仓位适配器
 - [x] V4 钱包 Transfer 日志分块索引、SQLite 检查点与 ownerOf 对账
 - [x] Ethereum/Robinhood Uniswap V3/V4 官方部署、逐链能力测试和 Readiness
-- [x] V3/V4 Pool 后台分片索引、重扫游标、token metadata 缓存、搜索与分页 API
-- [x] Pool `eth_getLogs` 自适应二分、成功子区间即时游标与持久错误状态
+- [x] 旧 V3/V4 Pool 缓存、搜索与分页 API（不自动启动或恢复全链索引）
+- [x] 停止后台全链 Pool `eth_getLogs` 扫描；用户指定 Pool ID 后直接监听
 - [x] Position token 数量、边界距离、V3 fees owed、稳定币链上估值与跨链 tokenId 隔离
-- [x] Uniswap Pool Monitor 基础 gauge、事件去重、统一 Snapshot 和资源存在性校验
+- [x] Uniswap Pool Monitor 基础 gauge、事件去重、统一 Snapshot 和直接 Pool ID 校验
 - [x] Uniswap Pool 窗口 token/USD volume、相邻窗口 change 与持久样本
 - [x] Position tokenId 创建/PATCH 实读校验与 Wallet 多字段资源搜索
 - [ ] V4 可可靠归属的单池 TVL/完整手续费，以及非稳定币 Binance 估值回退
