@@ -103,6 +103,20 @@ describe('UniswapV3PositionSnapshotService', () => {
     expect(snapshot.dataAgeSeconds).toBe(120);
   });
 
+  it('keeps the last readable position while reporting a transient read failure', () => {
+    const snapshot = serviceWith([
+      metric('read_status', true),
+      metric('read_error', false, 'error'),
+      metric('liquidity', '1000000'),
+    ]).get('mon_uniswap');
+
+    expect(snapshot).toMatchObject({
+      status: 'partial',
+      summary: { positionCount: 1, failedPositionCount: 1 },
+      positions: [{ tokenId: '42' }],
+    });
+  });
+
   it('does not overwrite identical token IDs from different chains', () => {
     const ethereum = { ...metric('read_status', true), labels: { ...labels, chainId: '1', chainName: 'Ethereum' } };
     const robinhood = { ...metric('read_status', true), labels: { ...labels, chainId: '4663', chainName: 'Robinhood Chain' } };

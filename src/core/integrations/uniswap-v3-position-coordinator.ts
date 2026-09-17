@@ -29,7 +29,13 @@ export interface UniswapV3PositionReaderPort {
 }
 
 export interface UniswapV3PositionReaderFactory {
-  create(options: { rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds: number }): UniswapV3PositionReaderPort;
+  create(options: {
+    rpcUrl: string;
+    headers?: Record<string, string>;
+    expectedChainId: number;
+    timeoutMilliseconds: number;
+    multicallBatchSizeBytes?: number;
+  }): UniswapV3PositionReaderPort;
 }
 
 export interface UniswapV4PositionReaderPort {
@@ -85,6 +91,10 @@ function metric(
 
 export class UniswapV3PositionCoordinator {
   private readonly scheduledMonitorIds = new Set<string>();
+  private readonly monitorVariantFingerprints = new Map<string, string>();
+  private readonly v3Readers = new Map<string, UniswapV3PositionReaderPort>();
+  private readonly v4Readers = new Map<string, UniswapV4PositionReaderPort>();
+  private readonly v4OwnershipIndexers = new Map<string, UniswapV4OwnershipIndexerPort>();
   private readonly readerFactory: UniswapV3PositionReaderFactory;
   private readonly v4ReaderFactory: UniswapV4PositionReaderFactory;
   private readonly v4OwnershipIndexerFactory: UniswapV4OwnershipIndexerFactory;
@@ -152,6 +162,10 @@ export class UniswapV3PositionCoordinator {
       this.scheduler.remove(this.staleTaskId(monitorId));
     }
     this.scheduledMonitorIds.clear();
+    this.monitorVariantFingerprints.clear();
+    this.v3Readers.clear();
+    this.v4Readers.clear();
+    this.v4OwnershipIndexers.clear();
   }
 
   private taskId(monitorId: string): string {
@@ -163,7 +177,17 @@ export class UniswapV3PositionCoordinator {
   }
 
   private async scan(monitor: UniswapMonitor, signal: AbortSignal): Promise<void> {
-    this.metricPipeline.forgetMonitor(monitor.monitorId);
+    // Keep the last complete gauge snapshot available while the next RPC scan is in flight.
+    // Clearing here made every HTTP snapshot observe an empty/partial intermediate state.
+    const fingerprint = JSON.stringify({
+      rpcIntegrationId: monitor.rpcIntegrationId,
+      variants: monitor.variants,
+      ...('walletAddress' in monitor ? { walletAddress: monitor.walletAddress } : { tokenId: monitor.tokenId }),
+    });
+    if (this.monitorVariantFingerprints.get(monitor.monitorId) !== fingerprint) {
+      this.metricPipeline.forgetMonitor(monitor.monitorId);
+      this.monitorVariantFingerprints.set(monitor.monitorId, fingerprint);
+    }
     await Promise.all(monitor.variants.map(async (variant) => this.scanVariant(monitor, variant, signal)));
   }
 
@@ -184,8 +208,30 @@ export class UniswapV3PositionCoordinator {
       const rpc = rpcIntegrationConfigSchema.parse(integration.config);
       if (!integration.enabled || integration.type !== 'evm_rpc') throw new Error('Configured RPC integration is unavailable');
       const resolved = resolveEvmRpcRequest(rpc, variant.chainId);
+      const cacheKey = this.readerCacheKey(monitor.rpcIntegrationId, variant.chainId, variant.version,
+        resolved.rpcUrl, resolved.headers, rpc.timeoutMilliseconds);
+      const v3Reader = variant.version === 'v3' ? this.getV3Reader(cacheKey, {
+        rpcUrl: resolved.rpcUrl,
+        headers: resolved.headers,
+        expectedChainId: variant.chainId,
+        timeoutMilliseconds: rpc.timeoutMilliseconds,
+        multicallBatchSizeBytes: rpc.multicallBatchSizeBytes,
+      }) : undefined;
+      const v4Reader = variant.version === 'v4' ? this.getV4Reader(cacheKey, {
+        rpcUrl: resolved.rpcUrl,
+        headers: resolved.headers,
+        expectedChainId: variant.chainId,
+        timeoutMilliseconds: rpc.timeoutMilliseconds,
+      }) : undefined;
+      const ownershipIndexer = variant.version === 'v4' ? this.getV4OwnershipIndexer(cacheKey, {
+        rpcUrl: resolved.rpcUrl,
+        headers: resolved.headers,
+        expectedChainId: variant.chainId,
+        integrationId: monitor.rpcIntegrationId,
+        timeoutMilliseconds: rpc.timeoutMilliseconds,
+      }) : undefined;
 
-      const discovery = await this.discover(monitor, variant, resolved.rpcUrl, resolved.headers, rpc.timeoutMilliseconds, signal);
+      const discovery = await this.discover(monitor, variant, signal, v3Reader, ownershipIndexer);
       const positions: UniswapPosition[] = [];
       const failures: string[] = [];
       for (const tokenId of discovery.tokenIds) {
@@ -194,12 +240,10 @@ export class UniswapV3PositionCoordinator {
           const position = await this.readPosition(
             variant.version,
             tokenId,
-            resolved.rpcUrl,
-            resolved.headers,
-            variant.chainId,
-            rpc.timeoutMilliseconds,
             signal,
             discovery.blockNumber,
+            v3Reader,
+            v4Reader,
           );
           if ('walletAddress' in monitor && position.owner.toLowerCase() !== monitor.walletAddress.toLowerCase()) continue;
           positions.push(position);
@@ -299,7 +343,7 @@ export class UniswapV3PositionCoordinator {
         await this.metricPipeline.ingest(metric(
           monitor.monitorId,
           tokenId,
-          'read_status',
+          'read_error',
           false,
           timestamp,
           { status: 'error', labels: { ...baseLabels, tokenId } },
@@ -325,10 +369,9 @@ export class UniswapV3PositionCoordinator {
   private async discover(
     monitor: UniswapMonitor,
     variant: UniswapVariant,
-    rpcUrl: string,
-    headers: Record<string, string>,
-    timeoutMilliseconds: number,
     signal: AbortSignal,
+    v3Reader?: UniswapV3PositionReaderPort,
+    ownershipIndexer?: UniswapV4OwnershipIndexerPort,
   ): Promise<{
     tokenIds: string[];
     blockNumber?: bigint;
@@ -339,21 +382,12 @@ export class UniswapV3PositionCoordinator {
     if ('tokenId' in monitor) return { tokenIds: [monitor.tokenId], caughtUp: true };
     const walletAddress = getAddress(monitor.walletAddress);
     if (variant.version === 'v3') {
-      const result = await this.readerFactory.create({
-        rpcUrl,
-        headers,
-        expectedChainId: variant.chainId,
-        timeoutMilliseconds,
-      }).discover(walletAddress, signal);
+      if (v3Reader === undefined) throw new Error('Uniswap V3 reader is unavailable');
+      const result = await v3Reader.discover(walletAddress, signal);
       return { tokenIds: result.tokenIds, blockNumber: result.blockNumber, caughtUp: true };
     }
-    const result = await this.v4OwnershipIndexerFactory.create({
-      rpcUrl,
-      headers,
-      expectedChainId: variant.chainId,
-      integrationId: monitor.rpcIntegrationId,
-      timeoutMilliseconds,
-    }).sync(walletAddress, signal);
+    if (ownershipIndexer === undefined) throw new Error('Uniswap V4 ownership indexer is unavailable');
+    const result = await ownershipIndexer.sync(walletAddress, signal);
     return {
       tokenIds: result.tokenIds,
       blockNumber: result.scannedThroughBlock,
@@ -366,17 +400,64 @@ export class UniswapV3PositionCoordinator {
   private async readPosition(
     version: 'v3' | 'v4',
     tokenId: string,
-    rpcUrl: string,
-    headers: Record<string, string>,
-    chainId: number,
-    timeoutMilliseconds: number,
     signal: AbortSignal,
     blockNumber?: bigint,
+    v3Reader?: UniswapV3PositionReaderPort,
+    v4Reader?: UniswapV4PositionReaderPort,
   ): Promise<UniswapPosition> {
-    const options = { rpcUrl, headers, expectedChainId: chainId, timeoutMilliseconds };
-    return version === 'v3'
-      ? this.readerFactory.create(options).read(tokenId, signal, blockNumber)
-      : this.v4ReaderFactory.create(options).read(tokenId, signal, blockNumber);
+    if (version === 'v3') {
+      if (v3Reader === undefined) throw new Error('Uniswap V3 reader is unavailable');
+      return v3Reader.read(tokenId, signal, blockNumber);
+    }
+    if (v4Reader === undefined) throw new Error('Uniswap V4 reader is unavailable');
+    return v4Reader.read(tokenId, signal, blockNumber);
+  }
+
+  private readerCacheKey(
+    integrationId: string,
+    chainId: number,
+    version: 'v3' | 'v4',
+    rpcUrl: string,
+    headers: Record<string, string>,
+    timeoutMilliseconds: number,
+  ): string {
+    const headerFingerprint = Object.entries(headers).sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => `${name}:${value}`).join('|');
+    return `${integrationId}:${chainId}:${version}:${timeoutMilliseconds}:${rpcUrl}:${headerFingerprint}`;
+  }
+
+  private getV3Reader(key: string, options: {
+    rpcUrl: string;
+    headers: Record<string, string>;
+    expectedChainId: number;
+    timeoutMilliseconds: number;
+    multicallBatchSizeBytes: number;
+  }): UniswapV3PositionReaderPort {
+    const existing = this.v3Readers.get(key);
+    if (existing !== undefined) return existing;
+    const created = this.readerFactory.create(options);
+    this.v3Readers.set(key, created);
+    return created;
+  }
+
+  private getV4Reader(key: string, options: {
+    rpcUrl: string; headers: Record<string, string>; expectedChainId: number; timeoutMilliseconds: number;
+  }): UniswapV4PositionReaderPort {
+    const existing = this.v4Readers.get(key);
+    if (existing !== undefined) return existing;
+    const created = this.v4ReaderFactory.create(options);
+    this.v4Readers.set(key, created);
+    return created;
+  }
+
+  private getV4OwnershipIndexer(key: string, options: {
+    rpcUrl: string; headers: Record<string, string>; expectedChainId: number; integrationId: string; timeoutMilliseconds: number;
+  }): UniswapV4OwnershipIndexerPort {
+    const existing = this.v4OwnershipIndexers.get(key);
+    if (existing !== undefined) return existing;
+    const created = this.v4OwnershipIndexerFactory.create(options);
+    this.v4OwnershipIndexers.set(key, created);
+    return created;
   }
 
   private async emitPosition(
@@ -404,6 +485,7 @@ export class UniswapV3PositionCoordinator {
     };
     const values: Array<[string, string | boolean, string]> = [
       ['read_status', true, 'boolean'],
+      ['read_error', true, 'boolean'],
       ['position_owner', position.owner, 'address'],
       ['position_manager_address', position.positionManagerAddress, 'address'],
       ['block_number', position.blockNumber, 'block'],

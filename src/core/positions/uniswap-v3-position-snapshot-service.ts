@@ -81,7 +81,8 @@ export class UniswapV3PositionSnapshotService {
         return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
       });
     const failedPositionCount = [...groups.values()]
-      .filter((positionMetrics) => byName(positionMetrics, 'read_status')?.status === 'error')
+      .filter((positionMetrics) => byName(positionMetrics, 'read_error')?.status === 'error' ||
+        byName(positionMetrics, 'read_status')?.status === 'error')
       .length;
     const discoveryMetrics = metrics.filter((metric) => metric.name === 'discovery_caught_up');
     const caughtUp = discoveryMetrics.every((metric) => metric.value === true);

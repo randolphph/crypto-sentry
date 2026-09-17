@@ -66,5 +66,9 @@ describe('UniswapV4PositionReader', () => {
     for (const [parameters] of readContract.mock.calls) {
       expect(parameters).toEqual(expect.objectContaining({ blockNumber: 54_321n }));
     }
+
+    await reader.read('9', undefined, 54_321n);
+    expect(publicClient.getChainId).toHaveBeenCalledTimes(1);
+    expect(readContract).toHaveBeenCalledTimes(9);
   });
 });

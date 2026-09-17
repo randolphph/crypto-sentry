@@ -75,6 +75,7 @@ export class MonitorService {
     const options = {
       rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: config.chainId,
       timeoutMilliseconds: rpc.timeoutMilliseconds,
+      multicallBatchSizeBytes: rpc.multicallBatchSizeBytes,
     };
     try {
       const position = config.version === 'v3'

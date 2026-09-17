@@ -16,6 +16,27 @@ function rpcRequest(init?: RequestInit): { id: number; method: string } {
 }
 
 describe('EvmRpcClient', () => {
+  it('limits concurrent requests shared by clients for the same RPC endpoint', async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = rpcRequest(init);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return rpcResponse(request.id, request.method === 'eth_chainId' ? '0x1' : '0x64');
+    });
+    const clients = Array.from({ length: 10 }, () => new EvmRpcClient({
+      rpcUrl: 'https://rpc.example/shared-limit-test', expectedChainId: 1, fetch: fetchMock,
+    }));
+
+    await Promise.all(clients.map((client) => client.testConnectivity()));
+
+    expect(fetchMock).toHaveBeenCalledTimes(20);
+    expect(maximumActive).toBeLessThanOrEqual(8);
+  });
+
   it('checks chain identity and reads the current block number', async () => {
     const methods: string[] = [];
     const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {

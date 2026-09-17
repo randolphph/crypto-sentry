@@ -4,6 +4,7 @@ import type { Address, Hex, PublicClient } from 'viem';
 import { createEvmPublicClient } from '../evm/evm-rpc-client.js';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
+const DEFAULT_OWNERSHIP_CACHE_TTL_MILLISECONDS = 5 * 60 * 1_000;
 
 const positionManagerAbi = [
   {
@@ -153,6 +154,9 @@ export interface UniswapV4PositionReaderOptions {
   fetch?: typeof globalThis.fetch;
   headers?: Record<string, string>;
   timeoutMilliseconds?: number;
+  /** NFT ownership changes infrequently; refresh the owner after this TTL. */
+  ownershipCacheTtlMilliseconds?: number;
+  now?: () => number;
   publicClient?: PublicClient;
 }
 
@@ -162,9 +166,17 @@ function signed24(value: bigint): number {
 
 export class UniswapV4PositionReader {
   private readonly publicClient: PublicClient;
+  private deploymentPromise: Promise<UniswapV4Deployment> | undefined;
+  private readonly tokenMetadata = new Map<string, { symbol: string; decimals: number }>();
+  private readonly ownersByTokenId = new Map<string, { owner: Address; expiresAt: number }>();
+  private readonly ownershipCacheTtlMilliseconds: number;
+  private readonly now: () => number;
 
   public constructor(private readonly options: UniswapV4PositionReaderOptions) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
+    this.ownershipCacheTtlMilliseconds = options.ownershipCacheTtlMilliseconds
+      ?? DEFAULT_OWNERSHIP_CACHE_TTL_MILLISECONDS;
+    this.now = options.now ?? Date.now;
   }
 
   public async read(
@@ -172,23 +184,13 @@ export class UniswapV4PositionReader {
     signal?: AbortSignal,
     requestedBlockNumber?: bigint,
   ): Promise<UniswapV4Position> {
-    const deployment = supportedUniswapV4Deployments.get(this.options.expectedChainId);
-    if (deployment === undefined) throw new Error(`Uniswap V4 is not supported on chain ${this.options.expectedChainId}`);
-    const chainId = await this.publicClient.getChainId();
-    if (chainId !== deployment.chainId) {
-      throw new Error(`EVM RPC chain ID mismatch: expected ${deployment.chainId}, received ${chainId}`);
-    }
+    const deployment = await this.deployment();
+    const chainId = deployment.chainId;
     signal?.throwIfAborted();
     const blockNumber = requestedBlockNumber ?? await this.publicClient.getBlockNumber({ cacheTime: 0 });
     const numericTokenId = BigInt(tokenId);
     const [owner, position, liquidity] = await Promise.all([
-      this.publicClient.readContract({
-        address: deployment.positionManagerAddress,
-        abi: positionManagerAbi,
-        functionName: 'ownerOf',
-        args: [numericTokenId],
-        blockNumber,
-      }),
+      this.readOwner(deployment.positionManagerAddress, numericTokenId, blockNumber),
       this.publicClient.readContract({
         address: deployment.positionManagerAddress,
         abi: positionManagerAbi,
@@ -249,25 +251,58 @@ export class UniswapV4PositionReader {
     };
   }
 
+  private async readOwner(positionManagerAddress: Address, tokenId: bigint, blockNumber: bigint): Promise<Address> {
+    const key = tokenId.toString();
+    const cached = this.ownersByTokenId.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.owner;
+    const owner = await this.publicClient.readContract({
+      address: positionManagerAddress,
+      abi: positionManagerAbi,
+      functionName: 'ownerOf',
+      args: [tokenId],
+      blockNumber,
+    });
+    const normalized = getAddress(owner);
+    this.ownersByTokenId.set(key, {
+      owner: normalized,
+      expiresAt: this.now() + Math.max(0, this.ownershipCacheTtlMilliseconds),
+    });
+    return normalized;
+  }
+
   private async readCurrency(address: Address, blockNumber: bigint) {
     const normalized = getAddress(address);
     if (normalized === ZERO_ADDRESS) {
       return { address: normalized, symbol: 'ETH', decimals: 18, native: true };
     }
+    const key = normalized.toLowerCase();
+    const cached = this.tokenMetadata.get(key);
+    if (cached !== undefined) return { address: normalized, ...cached, native: false };
     const [symbol, decimals] = await Promise.all([
-      this.publicClient.readContract({
-        address: normalized,
-        abi: erc20MetadataAbi,
-        functionName: 'symbol',
-        blockNumber,
-      }),
-      this.publicClient.readContract({
-        address: normalized,
-        abi: erc20MetadataAbi,
-        functionName: 'decimals',
-        blockNumber,
-      }),
+      this.publicClient.readContract({ address: normalized, abi: erc20MetadataAbi, functionName: 'symbol', blockNumber }),
+      this.publicClient.readContract({ address: normalized, abi: erc20MetadataAbi, functionName: 'decimals', blockNumber }),
     ]);
-    return { address: normalized, symbol, decimals, native: false };
+    const metadata = { symbol, decimals };
+    this.tokenMetadata.set(key, metadata);
+    return { address: normalized, ...metadata, native: false };
+  }
+
+  private async deployment(): Promise<UniswapV4Deployment> {
+    if (this.deploymentPromise !== undefined) return this.deploymentPromise;
+    this.deploymentPromise = this.loadDeployment().catch((error: unknown) => {
+      this.deploymentPromise = undefined;
+      throw error;
+    });
+    return this.deploymentPromise;
+  }
+
+  private async loadDeployment(): Promise<UniswapV4Deployment> {
+    const deployment = supportedUniswapV4Deployments.get(this.options.expectedChainId);
+    if (deployment === undefined) throw new Error(`Uniswap V4 is not supported on chain ${this.options.expectedChainId}`);
+    const chainId = await this.publicClient.getChainId();
+    if (chainId !== deployment.chainId) {
+      throw new Error(`EVM RPC chain ID mismatch: expected ${deployment.chainId}, received ${chainId}`);
+    }
+    return deployment;
   }
 }

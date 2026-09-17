@@ -453,6 +453,7 @@ export class IntegrationOperationsService {
         const discovered = await this.uniswapV3ReaderFactory.create({
           rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
           timeoutMilliseconds: config.timeoutMilliseconds,
+          multicallBatchSizeBytes: config.multicallBatchSizeBytes,
         }).discover(wallet);
         tokenIds = discovered.tokenIds;
         scannedThroughBlock = discovered.blockNumber.toString();
@@ -476,12 +477,16 @@ export class IntegrationOperationsService {
     const readerOptions = {
       rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: input.chainId,
       timeoutMilliseconds: config.timeoutMilliseconds,
+      multicallBatchSizeBytes: config.multicallBatchSizeBytes,
     };
     const reader = input.version === 'v3'
       ? this.uniswapV3ReaderFactory.create(readerOptions)
       : this.uniswapV4ReaderFactory.create(readerOptions);
     const results: Array<PromiseSettledResult<Awaited<ReturnType<typeof reader.read>>>> = [];
-    const readConcurrency = 8;
+    // Keep wallet discovery below provider burst limits. The reader itself performs
+    // a small Promise.all for metadata, so eight concurrent positions can fan out
+    // into dozens of HTTP RPC requests at once.
+    const readConcurrency = 2;
     for (let offset = 0; offset < candidates.length; offset += readConcurrency) {
       const batch = candidates.slice(offset, offset + readConcurrency);
       results.push(...await Promise.allSettled(batch.map(async (tokenId) => reader.read(tokenId))));

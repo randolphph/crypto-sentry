@@ -22,6 +22,8 @@ export interface UniswapPoolCatalogReaderFactory {
 
 export class UniswapPoolIndexCoordinator {
   private readonly taskIds = new Set<string>();
+  private readonly retryNotBefore = new Map<string, number>();
+  private readonly consecutiveFailures = new Map<string, number>();
   private readonly readerFactory: UniswapPoolCatalogReaderFactory;
   private readonly confirmationBlocks: bigint;
   private readonly reorgRewindBlocks: bigint;
@@ -29,6 +31,9 @@ export class UniswapPoolIndexCoordinator {
   private readonly maximumBlockChunkSize: bigint;
   private readonly minimumBlockChunkSize: bigint;
   private readonly maximumChunksPerRun: number;
+  private readonly failureBackoffMilliseconds: number;
+  private readonly maximumFailureBackoffMilliseconds: number;
+  private readonly pollIntervalMilliseconds: number;
   private readonly now: () => Date;
 
   public constructor(
@@ -41,6 +46,7 @@ export class UniswapPoolIndexCoordinator {
       fetch?: typeof globalThis.fetch; readerFactory?: UniswapPoolCatalogReaderFactory; onError?: (error: Error) => void;
       confirmationBlocks?: bigint; reorgRewindBlocks?: bigint; initialBlockChunkSize?: bigint;
       maximumBlockChunkSize?: bigint; minimumBlockChunkSize?: bigint; maximumChunksPerRun?: number; now?: () => Date;
+      failureBackoffMilliseconds?: number; maximumFailureBackoffMilliseconds?: number; pollIntervalMilliseconds?: number;
     } = {},
   ) {
     this.readerFactory = options.readerFactory ?? { create: (readerOptions) => new UniswapPoolCatalogReader({
@@ -53,6 +59,9 @@ export class UniswapPoolIndexCoordinator {
     this.maximumBlockChunkSize = options.maximumBlockChunkSize ?? 100_000n;
     this.minimumBlockChunkSize = options.minimumBlockChunkSize ?? 1n;
     this.maximumChunksPerRun = options.maximumChunksPerRun ?? 4;
+    this.failureBackoffMilliseconds = options.failureBackoffMilliseconds ?? 30_000;
+    this.maximumFailureBackoffMilliseconds = options.maximumFailureBackoffMilliseconds ?? 10 * 60_000;
+    this.pollIntervalMilliseconds = options.pollIntervalMilliseconds ?? 60_000;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -71,7 +80,7 @@ export class UniswapPoolIndexCoordinator {
           const id = this.taskId(integration.id, chainId, version);
           desired.add(id);
           this.scheduler.upsert({
-            id, intervalMilliseconds: 20_000,
+            id, intervalMilliseconds: this.pollIntervalMilliseconds,
             run: async (signal) => this.sync(integration.id, chainId, version, signal),
           });
         }
@@ -85,6 +94,8 @@ export class UniswapPoolIndexCoordinator {
   public close(): void {
     for (const id of this.taskIds) this.scheduler.remove(id);
     this.taskIds.clear();
+    this.retryNotBefore.clear();
+    this.consecutiveFailures.clear();
   }
 
   private taskId(integrationId: string, chainId: number, version: 'v3' | 'v4'): string {
@@ -92,6 +103,9 @@ export class UniswapPoolIndexCoordinator {
   }
 
   private async sync(integrationId: string, chainId: number, version: 'v3' | 'v4', signal: AbortSignal): Promise<void> {
+    const taskId = this.taskId(integrationId, chainId, version);
+    const retryAt = this.retryNotBefore.get(taskId);
+    if (retryAt !== undefined && this.now().getTime() < retryAt) return;
     try {
       const integration = this.integrations.getRuntime(integrationId);
       const config = rpcIntegrationConfigSchema.parse(integration.config);
@@ -133,8 +147,17 @@ export class UniswapPoolIndexCoordinator {
         integrationId, chainId, version, status: highWater !== undefined && highWater >= confirmed ? 'ok' : 'running',
         lastErrorCode: null, lastAttemptAt: this.now().toISOString(), chunkSize,
       });
+      this.retryNotBefore.delete(taskId);
+      this.consecutiveFailures.delete(taskId);
     } catch {
       if (!signal.aborted) {
+        const failures = (this.consecutiveFailures.get(taskId) ?? 0) + 1;
+        this.consecutiveFailures.set(taskId, failures);
+        const backoff = Math.min(
+          this.maximumFailureBackoffMilliseconds,
+          this.failureBackoffMilliseconds * (2 ** Math.min(failures - 1, 10)),
+        );
+        this.retryNotBefore.set(taskId, this.now().getTime() + backoff);
         const previous = this.pools.getIndexerState(integrationId, chainId, version);
         const previousChunk = previous === undefined ? this.initialBlockChunkSize : BigInt(previous.chunkSize);
         const reduced = previousChunk / 2n < this.minimumBlockChunkSize ? this.minimumBlockChunkSize : previousChunk / 2n;

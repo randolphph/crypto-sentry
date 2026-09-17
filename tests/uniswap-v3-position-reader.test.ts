@@ -39,6 +39,44 @@ describe('UniswapV3PositionReader', () => {
     }
   });
 
+  it('batches token ids and reuses ownership discovery during the cache TTL', async () => {
+    let now = 1_000;
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }) => {
+      if (functionName === 'balanceOf') return 2n;
+      throw new Error(`Unexpected function: ${functionName}`);
+    });
+    const multicall = vi.fn(async () => [42n, 77n]);
+    const publicClient = {
+      getChainId: vi.fn(async () => 4_663),
+      getBlockNumber: vi.fn(async () => 54_321n),
+      readContract,
+      multicall,
+    } as unknown as PublicClient;
+    const reader = new UniswapV3PositionReader({
+      rpcUrl: 'https://rpc.example',
+      expectedChainId: 4_663,
+      publicClient,
+      tokenIdCacheTtlMilliseconds: 300_000,
+      now: () => now,
+    });
+
+    await expect(reader.discover(owner)).resolves.toEqual({ blockNumber: 54_321n, tokenIds: ['42', '77'] });
+    now += 20_000;
+    await expect(reader.discover(owner)).resolves.toEqual({ blockNumber: 54_321n, tokenIds: ['42', '77'] });
+    expect(multicall).toHaveBeenCalledOnce();
+    expect(readContract).toHaveBeenCalledOnce();
+    expect(multicall).toHaveBeenCalledWith(expect.objectContaining({
+      blockNumber: 54_321n,
+      multicallAddress: '0xcA11bde05977b3631167028862bE2a173976CA11',
+      contracts: expect.any(Array) as unknown,
+    }));
+
+    now += 300_000;
+    await reader.discover(owner);
+    expect(multicall).toHaveBeenCalledTimes(2);
+    expect(readContract).toHaveBeenCalledTimes(2);
+  });
+
   it('reads a Robinhood Chain V3 NFT position at one fixed block', async () => {
     const readContract = vi.fn(async ({ functionName, address }: { functionName: string; address: string }) => {
       if (functionName === 'ownerOf') return owner;
@@ -87,6 +125,10 @@ describe('UniswapV3PositionReader', () => {
     for (const [parameters] of readContract.mock.calls) {
       expect(parameters).toEqual(expect.objectContaining({ blockNumber: 54_321n }));
     }
+
+    await reader.read('42', undefined, 54_321n);
+    expect(publicClient.getChainId).toHaveBeenCalledTimes(1);
+    expect(readContract).toHaveBeenCalledTimes(10);
   });
 
   it('rejects a mismatched RPC network', async () => {

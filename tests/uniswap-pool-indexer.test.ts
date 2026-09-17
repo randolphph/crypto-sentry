@@ -51,7 +51,11 @@ function fixture(
   const scheduler = new CapturingScheduler();
   const coordinator = new UniswapPoolIndexCoordinator(
     integrations, health, pools, cursors, scheduler as unknown as PollingScheduler,
-    { readerFactory: { create: () => ({ latestBlock: async () => latest, scan }) }, maximumChunksPerRun: 1 },
+    {
+      readerFactory: { create: () => ({ latestBlock: async () => latest, scan }) },
+      maximumChunksPerRun: 1,
+      failureBackoffMilliseconds: 0,
+    },
   );
   coordinator.reconcile();
   const task = scheduler.tasks.get(`uniswap-pools:${integration.id}:1:v3`);
@@ -60,6 +64,45 @@ function fixture(
 }
 
 describe('Uniswap pool adaptive indexer', () => {
+  it('backs off failed provider runs without issuing another RPC request', async () => {
+    let nowMilliseconds = 0;
+    const scan = vi.fn(async (): Promise<DiscoveredUniswapPool[]> => {
+      throw new Error('provider unavailable');
+    });
+    const database = createDatabase(':memory:');
+    databases.push(database);
+    const integrations = new IntegrationRepository(database.db, new EncryptionService(Buffer.alloc(32, 7)));
+    const integration = integrations.create({
+      name: 'Ethereum', type: 'evm_rpc', provider: 'custom', enabled: true,
+      config: { chainId: 1, rpcUrl: 'https://rpc.invalid' },
+    });
+    const health = new IntegrationNetworkHealthRepository(database.db);
+    health.replace({
+      integrationId: integration.id, chainId: 1, rpcStatus: 'ok', aaveV3Status: 'ok',
+      aaveAccountReadStatus: 'ok', aaveReserveCatalogStatus: 'ok', aaveEventLogsStatus: 'ok',
+      uniswapV3Status: 'ok', uniswapV4Status: 'error', blockNumber: (ETHEREUM_UNISWAP_V3.deploymentBlock + 12n).toString(),
+      errorCode: null, testedAt: '2026-09-16T00:00:00.000Z',
+    });
+    const scheduler = new CapturingScheduler();
+    const coordinator = new UniswapPoolIndexCoordinator(
+      integrations, health, new UniswapPoolRepository(database.db), new ChainScanCursorRepository(database.db),
+      scheduler as unknown as PollingScheduler,
+      {
+        readerFactory: { create: () => ({ latestBlock: async () => ETHEREUM_UNISWAP_V3.deploymentBlock + 12n, scan }) },
+        maximumChunksPerRun: 1, failureBackoffMilliseconds: 1_000, now: () => new Date(nowMilliseconds),
+      },
+    );
+    coordinator.reconcile();
+    const task = scheduler.tasks.get(`uniswap-pools:${integration.id}:1:v3`);
+    if (task === undefined) throw new Error('Indexer task missing');
+    await task.run(new AbortController().signal);
+    await task.run(new AbortController().signal);
+    expect(scan).toHaveBeenCalledTimes(1);
+    nowMilliseconds = 1_000;
+    await task.run(new AbortController().signal);
+    expect(scan).toHaveBeenCalledTimes(2);
+  });
+
   it('bisects a rejected 100000-block request and persists every successful subrange', async () => {
     const deployment = ETHEREUM_UNISWAP_V3.deploymentBlock;
     const confirmed = deployment + 99_999n;

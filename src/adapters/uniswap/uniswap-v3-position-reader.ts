@@ -4,6 +4,8 @@ import type { Address, PublicClient } from 'viem';
 import { createEvmPublicClient } from '../evm/evm-rpc-client.js';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as Address;
+const DEFAULT_TOKEN_ID_CACHE_TTL_MILLISECONDS = 5 * 60 * 1_000;
 
 const positionManagerAbi = [
   {
@@ -160,6 +162,10 @@ export interface UniswapV3PositionReaderOptions {
   fetch?: typeof globalThis.fetch;
   headers?: Record<string, string>;
   timeoutMilliseconds?: number;
+  multicallBatchSizeBytes?: number;
+  /** Wallet NFT ownership changes infrequently; discovery is refreshed after this TTL. */
+  tokenIdCacheTtlMilliseconds?: number;
+  now?: () => number;
   publicClient?: PublicClient;
 }
 
@@ -170,35 +176,81 @@ export interface UniswapV3OwnedPositions {
 
 export class UniswapV3PositionReader {
   private readonly publicClient: PublicClient;
+  private deploymentPromise: Promise<UniswapV3Deployment> | undefined;
+  private readonly poolAddresses = new Map<string, Address>();
+  private readonly tokenMetadata = new Map<string, { symbol: string; decimals: number }>();
+  private readonly tokenIdsByWallet = new Map<string, { tokenIds: string[]; expiresAt: number }>();
+  private readonly ownersByTokenId = new Map<string, { owner: Address; expiresAt: number }>();
+  private readonly tokenIdCacheTtlMilliseconds: number;
+  private readonly now: () => number;
 
   public constructor(private readonly options: UniswapV3PositionReaderOptions) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
+    this.tokenIdCacheTtlMilliseconds = options.tokenIdCacheTtlMilliseconds
+      ?? DEFAULT_TOKEN_ID_CACHE_TTL_MILLISECONDS;
+    this.now = options.now ?? Date.now;
   }
 
   public async discover(walletAddress: Address, signal?: AbortSignal): Promise<UniswapV3OwnedPositions> {
     const deployment = await this.deployment();
     signal?.throwIfAborted();
     const blockNumber = await this.publicClient.getBlockNumber({ cacheTime: 0 });
+    const wallet = getAddress(walletAddress);
+    const cacheKey = wallet.toLowerCase();
+    const cached = this.tokenIdsByWallet.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > this.now()) {
+      return { blockNumber, tokenIds: [...cached.tokenIds] };
+    }
     const balance = await this.publicClient.readContract({
       address: deployment.positionManagerAddress,
       abi: positionManagerAbi,
       functionName: 'balanceOf',
-      args: [getAddress(walletAddress)],
+      args: [wallet],
       blockNumber,
     });
-    const tokenIds: string[] = [];
-    for (let index = 0n; index < balance; index += 1n) {
-      signal?.throwIfAborted();
-      const tokenId = await this.publicClient.readContract({
-        address: deployment.positionManagerAddress,
-        abi: positionManagerAbi,
-        functionName: 'tokenOfOwnerByIndex',
-        args: [getAddress(walletAddress), index],
+    const tokenIds = await this.readTokenIds(wallet, balance, blockNumber, signal);
+    this.tokenIdsByWallet.set(cacheKey, {
+      tokenIds,
+      expiresAt: this.now() + Math.max(0, this.tokenIdCacheTtlMilliseconds),
+    });
+    return { blockNumber, tokenIds };
+  }
+
+  private async readTokenIds(
+    wallet: Address,
+    balance: bigint,
+    blockNumber: bigint,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    if (balance === 0n) return [];
+    const contracts = Array.from({ length: Number(balance) }, (_, index) => ({
+      address: supportedUniswapV3Deployments.get(this.options.expectedChainId)?.positionManagerAddress
+        ?? ZERO_ADDRESS as Address,
+      abi: positionManagerAbi,
+      functionName: 'tokenOfOwnerByIndex' as const,
+      args: [wallet, BigInt(index)] as const,
+    }));
+    signal?.throwIfAborted();
+    // PublicClient always exposes multicall. The fallback keeps lightweight unit-test
+    // clients and non-multicall providers compatible without changing semantics.
+    if (typeof this.publicClient.multicall === 'function') {
+      const results = await this.publicClient.multicall({
+        allowFailure: false,
+        batchSize: this.options.multicallBatchSizeBytes ?? 8_192,
         blockNumber,
+        contracts,
+        multicallAddress: MULTICALL3_ADDRESS,
       });
+      signal?.throwIfAborted();
+      return results.map((tokenId) => tokenId.toString());
+    }
+    const tokenIds: string[] = [];
+    for (const contract of contracts) {
+      signal?.throwIfAborted();
+      const tokenId = await this.publicClient.readContract({ ...contract, blockNumber });
       tokenIds.push(tokenId.toString());
     }
-    return { blockNumber, tokenIds };
+    return tokenIds;
   }
 
   public async read(
@@ -211,13 +263,7 @@ export class UniswapV3PositionReader {
     const blockNumber = requestedBlockNumber ?? await this.publicClient.getBlockNumber({ cacheTime: 0 });
     const numericTokenId = BigInt(tokenId);
     const [owner, position] = await Promise.all([
-      this.publicClient.readContract({
-        address: deployment.positionManagerAddress,
-        abi: positionManagerAbi,
-        functionName: 'ownerOf',
-        args: [numericTokenId],
-        blockNumber,
-      }),
+      this.readOwner(deployment.positionManagerAddress, numericTokenId, blockNumber),
       this.publicClient.readContract({
         address: deployment.positionManagerAddress,
         abi: positionManagerAbi,
@@ -228,21 +274,21 @@ export class UniswapV3PositionReader {
     ]);
     signal?.throwIfAborted();
     const [, , token0Address, token1Address, feeTier, tickLower, tickUpper, liquidity, , , owed0, owed1] = position;
-    const poolAddress = await this.publicClient.readContract({
+    const poolKey = `${token0Address.toLowerCase()}:${token1Address.toLowerCase()}:${feeTier.toString()}`;
+    const poolAddress = this.poolAddresses.get(poolKey) ?? await this.publicClient.readContract({
       address: deployment.factoryAddress,
       abi: factoryAbi,
       functionName: 'getPool',
       args: [token0Address, token1Address, feeTier],
       blockNumber,
     });
+    this.poolAddresses.set(poolKey, poolAddress);
     if (poolAddress.toLowerCase() === ZERO_ADDRESS) throw new Error(`Uniswap V3 pool was not found for position ${tokenId}`);
     signal?.throwIfAborted();
-    const [slot0, symbol0, decimals0, symbol1, decimals1] = await Promise.all([
+    const [slot0, metadata0, metadata1] = await Promise.all([
       this.publicClient.readContract({ address: poolAddress, abi: poolAbi, functionName: 'slot0', blockNumber }),
-      this.publicClient.readContract({ address: token0Address, abi: erc20MetadataAbi, functionName: 'symbol', blockNumber }),
-      this.publicClient.readContract({ address: token0Address, abi: erc20MetadataAbi, functionName: 'decimals', blockNumber }),
-      this.publicClient.readContract({ address: token1Address, abi: erc20MetadataAbi, functionName: 'symbol', blockNumber }),
-      this.publicClient.readContract({ address: token1Address, abi: erc20MetadataAbi, functionName: 'decimals', blockNumber }),
+      this.readTokenMetadata(token0Address, blockNumber),
+      this.readTokenMetadata(token1Address, blockNumber),
     ]);
     signal?.throwIfAborted();
     const currentTick = slot0[1];
@@ -256,20 +302,48 @@ export class UniswapV3PositionReader {
       owner: getAddress(owner),
       positionManagerAddress: deployment.positionManagerAddress,
       poolAddress: getAddress(poolAddress),
-      token0: { address: getAddress(token0Address), symbol: symbol0, decimals: decimals0 },
-      token1: { address: getAddress(token1Address), symbol: symbol1, decimals: decimals1 },
+      token0: { address: getAddress(token0Address), symbol: metadata0.symbol, decimals: metadata0.decimals },
+      token1: { address: getAddress(token1Address), symbol: metadata1.symbol, decimals: metadata1.decimals },
       feeTier,
       tickLower,
       tickUpper,
       currentTick,
       liquidity: liquidity.toString(),
       inRange: liquidity > 0n && currentTick >= tickLower && currentTick < tickUpper,
-      tokensOwed0: formatUnits(owed0, decimals0),
-      tokensOwed1: formatUnits(owed1, decimals1),
+      tokensOwed0: formatUnits(owed0, metadata0.decimals),
+      tokensOwed1: formatUnits(owed1, metadata1.decimals),
     };
   }
 
+  private async readOwner(positionManagerAddress: Address, tokenId: bigint, blockNumber: bigint): Promise<Address> {
+    const key = tokenId.toString();
+    const cached = this.ownersByTokenId.get(key);
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.owner;
+    const owner = await this.publicClient.readContract({
+      address: positionManagerAddress,
+      abi: positionManagerAbi,
+      functionName: 'ownerOf',
+      args: [tokenId],
+      blockNumber,
+    });
+    const normalized = getAddress(owner);
+    this.ownersByTokenId.set(key, {
+      owner: normalized,
+      expiresAt: this.now() + Math.max(0, this.tokenIdCacheTtlMilliseconds),
+    });
+    return normalized;
+  }
+
   private async deployment(): Promise<UniswapV3Deployment> {
+    if (this.deploymentPromise !== undefined) return this.deploymentPromise;
+    this.deploymentPromise = this.loadDeployment().catch((error: unknown) => {
+      this.deploymentPromise = undefined;
+      throw error;
+    });
+    return this.deploymentPromise;
+  }
+
+  private async loadDeployment(): Promise<UniswapV3Deployment> {
     const deployment = supportedUniswapV3Deployments.get(this.options.expectedChainId);
     if (deployment === undefined) {
       throw new Error(`Uniswap V3 is not supported on chain ${this.options.expectedChainId}`);
@@ -279,5 +353,19 @@ export class UniswapV3PositionReader {
       throw new Error(`EVM RPC chain ID mismatch: expected ${deployment.chainId}, received ${chainId}`);
     }
     return deployment;
+  }
+
+  private async readTokenMetadata(address: Address, blockNumber: bigint): Promise<{ symbol: string; decimals: number }> {
+    const normalized = getAddress(address);
+    const key = normalized.toLowerCase();
+    const cached = this.tokenMetadata.get(key);
+    if (cached !== undefined) return cached;
+    const [symbol, decimals] = await Promise.all([
+      this.publicClient.readContract({ address: normalized, abi: erc20MetadataAbi, functionName: 'symbol', blockNumber }),
+      this.publicClient.readContract({ address: normalized, abi: erc20MetadataAbi, functionName: 'decimals', blockNumber }),
+    ]);
+    const metadata = { symbol, decimals };
+    this.tokenMetadata.set(key, metadata);
+    return metadata;
   }
 }

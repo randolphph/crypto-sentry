@@ -78,11 +78,12 @@ describe('Robinhood Uniswap V3 position monitor API', () => {
   let app: FastifyInstance;
   const read = vi.fn(async () => position);
   const v4Read = vi.fn(async () => v4Position);
+  const createReader = vi.fn(() => ({
+    discover: async () => ({ blockNumber: 54_321n, tokenIds: ['42'] }),
+    read,
+  }));
   const readerFactory: UniswapV3PositionReaderFactory = {
-    create: () => ({
-      discover: async () => ({ blockNumber: 54_321n, tokenIds: ['42'] }),
-      read,
-    }),
+    create: createReader,
   };
   const v4ReaderFactory: UniswapV4PositionReaderFactory = { create: () => ({ read: v4Read }) };
   const v4OwnershipIndexerFactory: UniswapV4OwnershipIndexerFactory = {
@@ -99,6 +100,7 @@ describe('Robinhood Uniswap V3 position monitor API', () => {
   beforeEach(async () => {
     read.mockClear();
     v4Read.mockClear();
+    createReader.mockClear();
     app = await createApp({
       config,
       logger: false,
@@ -241,6 +243,7 @@ describe('Robinhood Uniswap V3 position monitor API', () => {
         positions: [{ tokenId: '42', version: 'v3', inRange: true }],
       });
     });
+    expect(createReader).toHaveBeenCalledTimes(1);
     const legacy = await app.inject({
       method: 'GET',
       url: `/api/v1/monitors/${monitorId}/uniswap-position`,
