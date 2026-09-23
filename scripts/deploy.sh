@@ -22,7 +22,8 @@ if [[ ! -L "$APP_LINK" && ! -d "$APP_LINK/.git" ]]; then
 fi
 
 readonly CURRENT_RELEASE="$(readlink -f "$APP_LINK")"
-readonly REPOSITORY_URL="$(git -C "$CURRENT_RELEASE" remote get-url origin)"
+REPOSITORY_URL="$(sudo -u cryptosentry git -C "$CURRENT_RELEASE" remote get-url origin)"
+readonly REPOSITORY_URL
 readonly RELEASE_DIR="$RELEASES_DIR/$TAG"
 
 git ls-remote --exit-code --tags "$REPOSITORY_URL" "refs/tags/$TAG" >/dev/null
