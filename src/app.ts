@@ -58,6 +58,7 @@ import { MonitorService } from './core/monitors/monitor-service.js';
 import { createRpcObservabilityFetch } from './adapters/evm/evm-rpc-client.js';
 import { RpcRequestAuditService } from './core/observability/rpc-request-audit-service.js';
 import { RpcRequestContextStore } from './core/observability/rpc-request-context.js';
+import { AlertDeliveryService } from './core/notifications/alert-delivery-service.js';
 import { redactLogValue } from './observability/safe-log.js';
 
 export interface CreateAppOptions {
@@ -141,6 +142,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
               'RESOURCE_NOT_FOUND', 'POSITION_NOT_FOUND', 'POOL_NOT_FOUND', 'INDEXER_WARMING_UP',
               'INDEXER_PARTIAL_FAILURE', 'VALUATION_UNAVAILABLE', 'RULE_METRIC_UNSUPPORTED',
               'RULE_LABEL_INVALID', 'EVENT_RULE_DURATION_UNSUPPORTED',
+              'TELEGRAM_UNAUTHORIZED', 'TELEGRAM_FORBIDDEN', 'TELEGRAM_BAD_REQUEST',
+              'TELEGRAM_RATE_LIMITED', 'TELEGRAM_UNAVAILABLE', 'TELEGRAM_WEBHOOK_ACTIVE',
+              'TELEGRAM_DISCOVERY_RATE_LIMITED',
             ],
           },
           ErrorResponse: {
@@ -192,9 +196,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     ...(options.uniswapV4PositionReaderFactory === undefined ? {} : { v4Factory: options.uniswapV4PositionReaderFactory }),
   });
   const rules = new RuleRepository(database.db);
-  const ruleExecutionStore = new RuleExecutionRepository(database.db);
-  const ruleExecution = new RuleExecutionService(ruleExecutionStore);
   const alerts = new AlertRepository(database.db);
+  const alertDelivery = new AlertDeliveryService(
+    alerts, integrations, baseFetch,
+    (error) => app.log.warn({ errorName: error.name }, 'Alert delivery worker failed'),
+  );
+  const ruleExecutionStore = new RuleExecutionRepository(database.db);
+  const ruleExecution = new RuleExecutionService(ruleExecutionStore, undefined, () => alertDelivery.wake());
   const status = new StatusService(database.db, [ruleExecution]);
   const latestMetrics = new LatestMetricStore();
   const metricPipeline = new MetricPipeline(
@@ -336,6 +344,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   registerRuleRoutes(app, rules, events);
   registerAlertRoutes(app, alerts);
   registerStatusRoutes(app, status, rpcRequestLogs);
+  alertDelivery.start();
 
   const heartbeat = setInterval(() => status.heartbeat(), 5_000);
   heartbeat.unref();
@@ -352,6 +361,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     await integrationOperations.close();
     await metricPipeline.close();
     ruleExecution.close();
+    await alertDelivery.close();
     rpcRequestAudit.close();
     database.close();
   });

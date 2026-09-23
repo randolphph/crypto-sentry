@@ -6,7 +6,7 @@ import type { IntegrationOperationsService } from '../../core/integrations/integ
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import { openApiSchema } from '../openapi.js';
 import { AppError } from '../errors.js';
-import { idParamsSchema, integrationCreateSchema, integrationPatchSchema } from '../schemas.js';
+import { idParamsSchema, integrationCreateSchema, integrationPatchSchema, telegramDiscoverSchema } from '../schemas.js';
 
 const aaveReserveQuerySchema = z.object({ chainId: z.coerce.number().int().min(1) });
 const uniswapPoolQuerySchema = z.object({
@@ -25,7 +25,26 @@ export function registerIntegrationRoutes(
   operations: IntegrationOperationsService,
   events: ConfigEventBus,
 ): void {
+  const telegramDiscoveries: number[] = [];
+
   app.get('/api/v1/integrations', { schema: { tags: ['integrations'] } }, async () => ({ items: repository.list() }));
+
+  app.post('/api/v1/integrations/telegram/discover', { schema: {
+    tags: ['integrations', 'notifications'],
+    summary: 'Discover recent Telegram chats for a bot token',
+    body: openApiSchema(telegramDiscoverSchema),
+  } }, async (request) => {
+    const now = Date.now();
+    while (telegramDiscoveries.length > 0 && (telegramDiscoveries[0] ?? now) <= now - 60_000) {
+      telegramDiscoveries.shift();
+    }
+    if (telegramDiscoveries.length >= 5) {
+      throw new AppError(429, 'TELEGRAM_DISCOVERY_RATE_LIMITED', 'Telegram chat discovery is limited to 5 requests per minute');
+    }
+    telegramDiscoveries.push(now);
+    const { botToken } = telegramDiscoverSchema.parse(request.body);
+    return operations.discoverTelegram(botToken);
+  });
 
   app.get('/api/v1/integrations/catalog', { schema: {
     tags: ['integrations'],

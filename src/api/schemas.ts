@@ -47,6 +47,7 @@ export const binanceIntegrationConfigSchema = z.object({
 }));
 export const evmRpcProviderSchema = z.enum(EVM_RPC_PROVIDERS);
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
+export const telegramDiscoverSchema = z.object({ botToken: z.string().min(10) }).strict();
 export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),
   marketType: z.enum(['spot', 'perpetual']),

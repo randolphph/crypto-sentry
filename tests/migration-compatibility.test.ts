@@ -5,6 +5,29 @@ import { describe, expect, it } from 'vitest';
 import { migrations, runMigrations } from '../src/db/migrations.js';
 
 describe('compatible database migrations', () => {
+  it('schedules Telegram targets left pending by an earlier version', () => {
+    const sqlite = new BetterSqlite3(':memory:');
+    sqlite.exec(`CREATE TABLE schema_migrations (
+      name TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+    )`);
+    const record = sqlite.prepare('INSERT INTO schema_migrations VALUES (?, ?, ?)');
+    for (const migration of migrations.slice(0, -1)) {
+      sqlite.exec(migration.sql);
+      record.run(migration.name, createHash('sha256').update(migration.sql).digest('hex'), '2026-09-17T00:00:00.000Z');
+    }
+    const at = '2026-09-17T01:00:00.000Z';
+    sqlite.prepare(`INSERT INTO alerts
+      (id, status, severity, title, message, observed_at, delivery_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run('alert_pending', 'open', 'warning', 'Alert', 'Test', at,
+      JSON.stringify({ targets: [{ integrationId: 'int_telegram', status: 'pending', attempts: 0 }] }), at, at);
+
+    runMigrations(sqlite);
+
+    expect(sqlite.prepare('SELECT delivery_next_attempt_at AS nextAt FROM alerts WHERE id = ?').get('alert_pending'))
+      .toEqual({ nextAt: at });
+    sqlite.close();
+  });
+
   it('upgrades an existing database and preserves/backfills legacy rules atomically', () => {
     const sqlite = new BetterSqlite3(':memory:');
     sqlite.pragma('foreign_keys = ON');

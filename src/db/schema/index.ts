@@ -146,12 +146,14 @@ export const alerts = sqliteTable(
     acknowledgedAt: text('acknowledged_at'),
     resolvedAt: text('resolved_at'),
     deliveryJson: text('delivery_json').notNull().default('{}'),
+    deliveryNextAttemptAt: text('delivery_next_attempt_at'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [
     index('alerts_status_created_at_idx').on(table.status, table.createdAt),
     index('alerts_rule_id_idx').on(table.ruleId),
+    index('alerts_delivery_next_attempt_idx').on(table.deliveryNextAttemptAt),
   ],
 );
 

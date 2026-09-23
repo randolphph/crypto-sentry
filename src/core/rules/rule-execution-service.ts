@@ -81,6 +81,7 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
   public constructor(
     private readonly store: RuleExecutionStore,
     private readonly now: () => Date = () => new Date(),
+    private readonly onAlertCommitted: () => void = () => undefined,
   ) {}
 
   public getHealth(): RuntimeComponentHealth {
@@ -145,6 +146,7 @@ export class RuleExecutionService implements MetricConsumer, RuntimeHealthProvid
         const truth = combineConditionResults(rule.combinator, results);
         const evaluation = evaluateRuleTruth(rule, state, truth, String(metric.value), evaluationTime);
         this.store.commitEvaluation({ rule, state: evaluation.state, action: evaluation.action, metric, evaluatedAt });
+        if (evaluation.action === 'trigger' || evaluation.action === 'repeat') this.onAlertCommitted();
         for (const condition of matching) {
           if (metric.kind === 'event') this.latestByCondition.delete(condition.id);
         }

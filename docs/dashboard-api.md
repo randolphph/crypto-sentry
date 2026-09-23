@@ -498,7 +498,9 @@ GET 始终返回 `combinator` 与 `conditions`。为旧 Dashboard 暂时保留�
 }
 ```
 
-所有数字阈值保持 decimal string；Boolean 只支持 `eq/neq`。`notificationIntegrationIds` 本阶段只保存和校验，不投递 Telegram。
+所有数字阈值保持 decimal string；Boolean 只支持 `eq/neq`。`notificationIntegrationIds` 绑定已启用的 Telegram Integration 后，新告警会由后端异步投递；Alert 的 `delivery.targets[]` 展示 `pending`、`sending`、`sent`、`failed` 或 `skipped`，以及尝试次数、下次重试时间和脱敏错误码。
+
+Telegram 配置页先以 `POST /api/v1/integrations/telegram/discover` 提交 `{ "botToken": "..." }`。成功响应包含已验证 Bot 和最多 20 个按最近活动时间倒序排列的会话；Chat ID 为字符串。空数组表示需要提示用户向 Bot 或目标群组发送 `/start` 后重试。HTTP 409 `TELEGRAM_WEBHOOK_ACTIVE` 表示该 Bot 已由其他 Webhook 使用，页面应保留手工填写 Chat ID 的入口。该接口不返回消息正文、Webhook URL、Bot Token 或 Telegram 原始错误描述。
 
 三态语义：
 
@@ -588,4 +590,4 @@ const body = await response.json();
 - 非稳定币的 Binance/multi-pool USD 回退。
 - V3 完整 fee-growth 模拟；当前 `tokensOwed` 仅为已记账待领取手续费。
 
-Telegram 实际投递、新告警提醒去重与恢复通知仍属于第三阶段。本阶段已实现 Uniswap Pool token0/token1 rolling volume；`volume_usd` 和 `volume_change_percent` 只在估值可靠、前一窗口有效时提供 actionable 数值。
+Telegram 测试和新告警投递已实现；恢复通知仍待实现。本阶段已实现 Uniswap Pool token0/token1 rolling volume；`volume_usd` 和 `volume_change_percent` 只在估值可靠、前一窗口有效时提供 actionable 数值。

@@ -323,6 +323,16 @@ CREATE INDEX rpc_request_logs_observed_at_idx ON rpc_request_logs(observed_at DE
 CREATE INDEX rpc_request_logs_task_observed_at_idx ON rpc_request_logs(task_id, observed_at DESC);
 `,
   },
+  {
+    name: '0010_alert_delivery_schedule',
+    sql: `
+ALTER TABLE alerts ADD COLUMN delivery_next_attempt_at TEXT;
+UPDATE alerts SET delivery_next_attempt_at = created_at
+  WHERE delivery_json LIKE '%"status":"pending"%'
+     OR delivery_json LIKE '%"status":"sending"%';
+CREATE INDEX alerts_delivery_next_attempt_idx ON alerts(delivery_next_attempt_at);
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

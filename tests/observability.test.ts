@@ -11,6 +11,7 @@ describe('safe log redaction', () => {
       rpcUrl: 'https://provider.example/secret',
       headers: { Authorization: 'Bearer secret' },
       tokenId: '123',
+      botToken: '123456:secret',
     })).toEqual({
       rpcIntegrationId: 'int_rpc',
       chainIds: [4_663],
@@ -18,7 +19,7 @@ describe('safe log redaction', () => {
       rpcUrl: '[REDACTED]',
       headers: '[REDACTED]',
       tokenId: '123',
+      botToken: '[REDACTED]',
     });
   });
 });
-

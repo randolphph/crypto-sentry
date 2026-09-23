@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 尚未接入；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 已支持测试消息和持久化告警投递；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
 
@@ -283,6 +283,18 @@ UNISWAP_SMOKE_VERSION='v4' \
 UNISWAP_SMOKE_TOKEN_ID='42' \
 npm run test:uniswap:live
 ```
+
+## Telegram 告警通知
+
+前端可先调用 `POST /api/v1/integrations/telegram/discover`，在 JSON body 中提交 `botToken`。后端依次验证 Bot、确认没有活动 Webhook，并从最近的 Telegram Updates 中返回最多 20 个去重会话；Chat ID 始终为字符串，不返回消息正文或 Telegram 原始错误。用户需要先向 Bot 发送 `/start`，或把 Bot 加入群组后发送 `/start`。没有历史 Update 时 `chats` 正常返回空数组。发现接口每分钟最多调用 5 次。
+
+如果 Bot 已配置 Webhook，接口返回 HTTP 409 和 `TELEGRAM_WEBHOOK_ACTIVE`。Telegram 的 Webhook 与 `getUpdates` 互斥，此时应使用专用 Bot，或由用户手工填写 Chat ID；后端不会删除已有 Webhook。
+
+创建 `type: "notification"`、`provider: "telegram"` 的 Integration，配置 `botToken` 和 `chatId`。Bot Token 加密存储，在 API 响应中以 `********` 掩码显示。调用 `POST /api/v1/integrations/:id/test` 会实际发送一条测试消息，返回 `{ "ok": true, "provider": "telegram", "delivery": { "status": "sent" } }`；失败时返回 `ok: false` 与稳定错误码，不回传 Telegram 原始错误描述或 Token。
+
+在 Rule 的 `notificationIntegrationIds` 中加入该 Integration ID 后，新告警会创建 `delivery.targets` 的 `pending` 项。后台立即尝试发送；网络故障和 Telegram 429/5xx 最多尝试 5 次，指数退避，并遵守 429 的 `retry_after`。投递状态和下次尝试时间保存在 SQLite；服务重启后自动恢复。成功为 `sent`，永久错误或重试耗尽为 `failed`，告警已恢复或通知 Integration 不可用时为 `skipped`。`GET /api/v1/alerts` 和单条告警接口会返回这些状态、尝试次数和脱敏错误码。
+
+发送请求得到成功响应前若进程或网络中断，重启重试可能造成重复 Telegram 消息；投递语义为至少一次。恢复通知尚未发送，恢复只会将现有告警标记为 `resolved`。
 
 ## 质量检查
 

@@ -1,4 +1,9 @@
 import { BinanceRestClient, BinanceRestError } from '../../adapters/markets/binance/binance-rest-client.js';
+import {
+  discoverTelegramChats,
+  sendTelegramMessage,
+  TelegramApiError,
+} from '../../adapters/notifications/telegram-client.js';
 import { EvmChainMismatchError, EvmRpcClient } from '../../adapters/evm/evm-rpc-client.js';
 import {
   createNodeMarketWebSocket,
@@ -187,6 +192,35 @@ export class IntegrationOperationsService {
     };
   }
 
+  public async discoverTelegram(botToken: string) {
+    try {
+      const result = await discoverTelegramChats(botToken, this.fetchImplementation);
+      if (result.webhookActive) {
+        throw new AppError(
+          409,
+          'TELEGRAM_WEBHOOK_ACTIVE',
+          'This bot has an active webhook; use a dedicated bot or enter the Chat ID manually',
+        );
+      }
+      return { bot: result.bot, chats: result.chats };
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      if (!(error instanceof TelegramApiError)) {
+        throw new AppError(502, 'TELEGRAM_UNAVAILABLE', 'Telegram discovery failed');
+      }
+      const statusCode = error.code === 'TELEGRAM_UNAUTHORIZED' ? 401
+        : error.code === 'TELEGRAM_FORBIDDEN' ? 403
+          : error.code === 'TELEGRAM_BAD_REQUEST' ? 400
+            : error.code === 'TELEGRAM_RATE_LIMITED' ? 429 : 502;
+      throw new AppError(
+        statusCode,
+        error.code,
+        error.message,
+        error.retryAfterSeconds === undefined ? undefined : { retryAfterSeconds: String(error.retryAfterSeconds) },
+      );
+    }
+  }
+
   public ensureDefaultBinance() {
     const existing = this.integrations.listRuntime().find((integration) => (
       integration.type === 'market_data' && integration.provider === 'binance'
@@ -208,6 +242,20 @@ export class IntegrationOperationsService {
     const integration = this.integrations.getRuntime(id);
     if (!integration.enabled) {
       throw new AppError(409, 'INTEGRATION_DISABLED', 'Enable the integration before using it');
+    }
+    if (integration.type === 'notification' && integration.provider === 'telegram') {
+      const config = integration.config;
+      if (typeof config.botToken !== 'string' || typeof config.chatId !== 'string') {
+        throw new AppError(400, 'INVALID_REQUEST', 'Telegram configuration is invalid');
+      }
+      const result = await sendTelegramMessage(
+        { botToken: config.botToken, chatId: config.chatId },
+        'CryptoSentry Telegram connection test',
+        this.fetchImplementation,
+      );
+      return result.ok
+        ? { ok: true, provider: 'telegram', delivery: { status: 'sent' } }
+        : { ok: false, provider: 'telegram', delivery: { status: 'failed' }, error: { code: result.code, message: result.message } };
     }
     if (integration.type === 'evm_rpc' && isEvmRpcProvider(integration.provider)) {
       const config = rpcIntegrationConfigSchema.parse(integration.config);

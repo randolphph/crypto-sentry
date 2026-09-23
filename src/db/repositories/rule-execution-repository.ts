@@ -143,6 +143,7 @@ export class RuleExecutionRepository implements RuleExecutionStore {
               attempts: 0,
             })),
           }),
+          deliveryNextAttemptAt: commit.rule.notificationIntegrationIds.length > 0 ? commit.evaluatedAt : null,
           createdAt: commit.evaluatedAt,
           updatedAt: commit.evaluatedAt,
         }).run();
