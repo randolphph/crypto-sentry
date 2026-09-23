@@ -52,6 +52,43 @@ describe('Telegram notification delivery', () => {
     expect(message).not.toMatch(/Rule:|Labels:|Metric:|Condition group:|Observed at:/u);
   });
 
+  it('formats Uniswap LP alerts with Chinese metric names and readable position details', () => {
+    const message = formatTelegramAlert({
+      alertId: 'alert_lp', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,
+      alertStatus: 'open', severity: 'critical', title: '[CRITICAL] Alert: Uniswap LP out of range',
+      message: [
+        'Rule: Uniswap LP out of range',
+        'Target: 123456',
+        'Labels: chainId=4663, token0Address=0x01, token0Symbol=WETH, token1Address=0x02, token1Symbol=USDC, tokenId=123456, version=v4',
+        'Metric: in_range',
+        'Current value: false boolean',
+        'Condition group: AND (1 conditions)',
+        'Observed at: 2026-09-23T06:27:00.000Z',
+      ].join('\n'),
+      currentValue: 'false', observedAt: '2026-09-23T06:27:00.000Z',
+    });
+
+    expect(message).toBe('🔴 严重告警｜LP 已离开价格区间\n仓位：WETH/USDC · V4 · #123456\n时间：09-23 14:27（北京时间）');
+    expect(message).not.toMatch(/Uniswap|out of range|boolean|token0|chainId/u);
+  });
+
+  it('formats Uniswap LP values with concise localized units', () => {
+    const message = formatTelegramAlert({
+      alertId: 'alert_lp_value', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,
+      alertStatus: 'open', severity: 'warning', title: '[WARNING] Reminder: Position value',
+      message: [
+        'Rule: Position value',
+        'Target: 42',
+        'Labels: chainId=1, token0Symbol=WETH, token1Symbol=USDC, tokenId=42, version=v3',
+        'Metric: position_value_usd',
+        'Current value: 12345.678901234 USD',
+      ].join('\n'),
+      currentValue: '12345.678901234', observedAt: '2026-09-23T06:27:00.000Z',
+    });
+
+    expect(message).toBe('🟠 警告（再次提醒）｜LP 仓位价值\n仓位：WETH/USDC · V3 · #42\n当前：$12,345.678901\n时间：09-23 14:27（北京时间）');
+  });
+
   it('uses the Telegram retry-after value without exposing the API description', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(429, {
       ok: false, error_code: 429, description: `rate limited ${secret}`, parameters: { retry_after: 42 },
