@@ -250,7 +250,7 @@ export class IntegrationOperationsService {
       }
       const result = await sendTelegramMessage(
         { botToken: config.botToken, chatId: config.chatId },
-        'CryptoSentry Telegram connection test',
+        '✅ CryptoSentry 通知测试成功\n告警消息将发送到当前会话。',
         this.fetchImplementation,
       );
       return result.ok

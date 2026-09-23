@@ -7,6 +7,7 @@ import { createApp } from '../src/app.js';
 import { sendTelegramMessage } from '../src/adapters/notifications/telegram-client.js';
 import type { AppConfig } from '../src/config.js';
 import { AlertDeliveryService } from '../src/core/notifications/alert-delivery-service.js';
+import { formatTelegramAlert } from '../src/core/notifications/telegram-alert-message.js';
 import { createDatabase } from '../src/db/client.js';
 import { AlertRepository } from '../src/db/repositories/alert-repository.js';
 import { IntegrationRepository } from '../src/db/repositories/integration-repository.js';
@@ -31,6 +32,26 @@ function response(status: number, body: unknown): Response {
 }
 
 describe('Telegram notification delivery', () => {
+  it('formats alerts as a concise Chinese summary', () => {
+    const message = formatTelegramAlert({
+      alertId: 'alert_1', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,
+      alertStatus: 'open', severity: 'warning', title: '[WARNING] Alert: USDE 脱锚',
+      message: [
+        'Rule: USDE depeg',
+        'Target: USDEUSDT',
+        'Labels: marketType=spot, providerSymbol=USDEUSDT',
+        'Metric: price',
+        'Current value: 0.98 USD',
+        'Condition group: AND (1 conditions)',
+        'Observed at: 2026-09-23T06:27:00.000Z',
+      ].join('\n'),
+      currentValue: '0.98', observedAt: '2026-09-23T06:27:00.000Z',
+    });
+
+    expect(message).toBe('🟠 警告｜USDE 脱锚\n对象：USDEUSDT\n当前：0.98 USD\n时间：09-23 14:27（北京时间）');
+    expect(message).not.toMatch(/Rule:|Labels:|Metric:|Condition group:|Observed at:/u);
+  });
+
   it('uses the Telegram retry-after value without exposing the API description', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(429, {
       ok: false, error_code: 429, description: `rate limited ${secret}`, parameters: { retry_after: 42 },

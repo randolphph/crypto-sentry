@@ -54,8 +54,11 @@ export interface ClaimedAlertDelivery {
   integrationId: string;
   attempts: number;
   alertStatus: string;
+  severity: string;
   title: string;
   message: string;
+  currentValue: string | null;
+  observedAt: string;
 }
 
 export type DeliveryOutcome = {
@@ -108,7 +111,8 @@ export class AlertRepository {
           .where(eq(alerts.id, row.id)).run();
         return {
           alertId: row.id, targetIndex, integrationId: target.integrationId, attempts: claimed.attempts,
-          alertStatus: row.status, title: row.title, message: row.message,
+          alertStatus: row.status, severity: row.severity, title: row.title, message: row.message,
+          currentValue: row.currentValue, observedAt: row.observedAt,
         };
       }
       return undefined;

@@ -1,6 +1,7 @@
 import type { IntegrationRepository } from '../../db/repositories/integration-repository.js';
 import type { AlertRepository, ClaimedAlertDelivery } from '../../db/repositories/alert-repository.js';
 import { sendTelegramMessage } from '../../adapters/notifications/telegram-client.js';
+import { formatTelegramAlert } from './telegram-alert-message.js';
 
 const POLL_MILLISECONDS = 5_000;
 const MAX_ATTEMPTS = 5;
@@ -91,7 +92,7 @@ export class AlertDeliveryService {
     }
     const result = await sendTelegramMessage(
       { botToken: config.botToken, chatId: config.chatId },
-      `${job.title}\n${job.message}`,
+      formatTelegramAlert(job),
       this.fetchImplementation,
     );
     if (result.ok) {
