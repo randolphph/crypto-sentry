@@ -14,6 +14,12 @@ const databases: AppDatabase[] = [];
 afterEach(() => databases.splice(0).forEach((database) => database.close()));
 
 describe('rule metric catalog consistency', () => {
+  it('exposes price movement as a one-direction absolute threshold', () => {
+    expect(ruleMetricDefinition('market', 'price_change_percent')).toMatchObject({
+      name: '价格波动幅度', operators: ['gte'], units: ['percent'], requiresWindow: true,
+    });
+  });
+
   it('only exposes metrics whose definitions include the requested monitor type', () => {
     for (const [monitorType, definitions] of Object.entries(RULE_METRICS)) {
       for (const definition of definitions) {

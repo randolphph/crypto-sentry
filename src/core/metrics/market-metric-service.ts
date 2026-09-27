@@ -417,7 +417,7 @@ export class MarketMetricService {
       await this.metricPipeline.ingest({ ...common, value: 'unavailable', status: latestIsStale ? 'stale' : 'warming_up' });
       return;
     }
-    const change = new Decimal(String(latest.value)).dividedBy(reference.price).minus(1).times(100);
+    const change = new Decimal(String(latest.value)).dividedBy(reference.price).minus(1).times(100).abs();
     await this.metricPipeline.ingest({
       ...common,
       value: change.toSignificantDigits(18).toString(),

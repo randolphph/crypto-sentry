@@ -148,6 +148,24 @@ describe('MarketMetricService', () => {
     await service.close();
   });
 
+  it('reports price movement as an absolute percentage for either direction', async () => {
+    const current = new Date('2026-09-14T12:05:00.000Z');
+    const samples = new FakePriceSampleStore();
+    samples.byMonitor.set('mon_btc', [
+      { observedAt: '2026-09-14T12:00:00.000Z', price: '100' },
+    ]);
+    const { latest, service } = setup(samples, () => current);
+    service.reconcile([runtime]);
+
+    await service.ingestPrice(price('90', current.toISOString()));
+    await service.runCycle(current);
+
+    expect(latest.list('mon_btc')).toContainEqual(expect.objectContaining({
+      name: 'price_change_percent', value: '10', status: 'ok',
+    }));
+    await service.close();
+  });
+
   it('uses spot klines to warm an empty window before emitting an actionable change', async () => {
     const current = new Date('2026-09-14T12:05:00.000Z');
     const closeTime = Date.parse('2026-09-14T12:00:00.000Z');

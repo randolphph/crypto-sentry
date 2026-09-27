@@ -1,4 +1,5 @@
 import { and, asc, eq, ne } from 'drizzle-orm';
+import { Decimal } from 'decimal.js';
 
 import { AppError } from '../../api/errors.js';
 import { ruleConditionSchema, ruleCreateSchema, rulePatchSchema } from '../../api/schemas.js';
@@ -190,6 +191,11 @@ export class RuleRepository {
       if (!definition.operators.includes(condition.operator)) {
         throw new AppError(400, 'RULE_CONDITION_INVALID', 'Operator is not supported for this metric', {
           [`conditions.${index}.operator`]: `Allowed operators: ${definition.operators.join(', ')}`,
+        });
+      }
+      if (condition.metric === 'price_change_percent' && new Decimal(condition.threshold).isNegative()) {
+        throw new AppError(400, 'RULE_CONDITION_INVALID', 'Price movement threshold must not be negative', {
+          [`conditions.${index}.threshold`]: 'Expected a non-negative percentage',
         });
       }
       const invalidLabel = Object.keys(condition.labels).find((label) => !definition.labels.includes(label));

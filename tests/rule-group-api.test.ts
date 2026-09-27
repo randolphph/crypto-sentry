@@ -107,6 +107,13 @@ describe('Rule Group API and execution', () => {
     expect(missingWindow.statusCode).toBe(400);
     expect(missingWindow.json()).toMatchObject({ error: { code: 'RULE_CONDITION_INVALID' } });
 
+    const negativeMovement = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
+      monitorId, name: 'Negative movement', metric: 'price_change_percent', operator: 'gte', threshold: '-3',
+      windowSeconds: 300, severity: 'warning',
+    } });
+    expect(negativeMovement.statusCode).toBe(400);
+    expect(negativeMovement.json()).toMatchObject({ error: { code: 'RULE_CONDITION_INVALID' } });
+
     const conflictingWindow = await app.inject({ method: 'POST', url: '/api/v1/rules', headers: authorization, payload: {
       monitorId, name: 'Conflicting window', metric: 'price_change_percent', labels: { windowSeconds: '900' },
       windowSeconds: 300, operator: 'gte', threshold: '3', severity: 'warning',

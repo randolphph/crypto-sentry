@@ -123,7 +123,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 每个市场的基础 Metric 包括：
 
 - `price`：WebSocket 最新成交价或标记价格
-- `price_change_percent`：按规则的 `windowSeconds` 独立计算；默认同时提供 5 分钟窗口
+- `price_change_percent`：按规则的 `windowSeconds` 独立计算价格波动的绝对幅度；上涨或下跌达到同一正阈值都会触发，默认同时提供 5 分钟窗口
 - `data_age_seconds`：最后一条实时行情距当前时间的秒数；超过 Monitor 的 `maxStaleSeconds` 后状态变为 `stale`
 
 滚动涨跌幅的参考价是“不晚于当前时间减窗口长度的最近样本”。不同窗口通过 Metric 的 `labels.windowSeconds` 区分，只会匹配相同窗口的规则。过期的涨跌幅不会触发规则；`data_age_seconds` 虽处于 `stale` 状态，其年龄数值仍可用于配置断流告警。

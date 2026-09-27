@@ -333,6 +333,25 @@ UPDATE alerts SET delivery_next_attempt_at = created_at
 CREATE INDEX alerts_delivery_next_attempt_idx ON alerts(delivery_next_attempt_at);
 `,
   },
+  {
+    name: '0011_absolute_price_movement',
+    sql: `
+UPDATE rule_conditions
+SET operator = 'gte',
+    threshold = CASE
+      WHEN substr(trim(threshold), 1, 1) = '-' THEN substr(trim(threshold), 2)
+      ELSE trim(threshold)
+    END
+WHERE metric = 'price_change_percent';
+UPDATE rules
+SET operator = 'gte',
+    threshold = CASE
+      WHEN substr(trim(threshold), 1, 1) = '-' THEN substr(trim(threshold), 2)
+      ELSE trim(threshold)
+    END
+WHERE metric = 'price_change_percent';
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

@@ -11,7 +11,8 @@ describe('compatible database migrations', () => {
       name TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
     )`);
     const record = sqlite.prepare('INSERT INTO schema_migrations VALUES (?, ?, ?)');
-    for (const migration of migrations.slice(0, -1)) {
+    const targetIndex = migrations.findIndex((migration) => migration.name === '0010_alert_delivery_schedule');
+    for (const migration of migrations.slice(0, targetIndex)) {
       sqlite.exec(migration.sql);
       record.run(migration.name, createHash('sha256').update(migration.sql).digest('hex'), '2026-09-17T00:00:00.000Z');
     }
@@ -25,6 +26,46 @@ describe('compatible database migrations', () => {
 
     expect(sqlite.prepare('SELECT delivery_next_attempt_at AS nextAt FROM alerts WHERE id = ?').get('alert_pending'))
       .toEqual({ nextAt: at });
+    sqlite.close();
+  });
+
+  it('migrates signed price-change rules to absolute movement thresholds', () => {
+    const sqlite = new BetterSqlite3(':memory:');
+    sqlite.pragma('foreign_keys = ON');
+    sqlite.exec(`CREATE TABLE schema_migrations (
+      name TEXT PRIMARY KEY NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL
+    )`);
+    const record = sqlite.prepare('INSERT INTO schema_migrations VALUES (?, ?, ?)');
+    const targetIndex = migrations.findIndex((migration) => migration.name === '0011_absolute_price_movement');
+    for (const migration of migrations.slice(0, targetIndex)) {
+      sqlite.exec(migration.sql);
+      record.run(migration.name, createHash('sha256').update(migration.sql).digest('hex'), '2026-09-27T00:00:00.000Z');
+    }
+    sqlite.prepare(`INSERT INTO monitors (
+      id,name,type,enabled,interval_seconds,max_stale_seconds,config_json,last_status,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      'mon_move', 'Movement', 'market', 1, 20, 90, '{}', 'ok',
+      '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z',
+    );
+    sqlite.prepare(`INSERT INTO rules (
+      id,monitor_id,name,metric,labels_json,operator,threshold,window_seconds,duration_seconds,
+      cooldown_seconds,hysteresis,severity,notification_integration_ids_json,enabled,created_at,updated_at,combinator
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      'rule_move', 'mon_move', 'Move 3%', 'price_change_percent', '{}', 'lte', '-3', 300, 0, 1800,
+      '0', 'warning', '[]', 1, '2026-09-27T00:00:00.000Z', '2026-09-27T00:00:00.000Z', 'and',
+    );
+    sqlite.prepare(`INSERT INTO rule_conditions
+      (id,rule_id,position,metric,labels_json,operator,threshold,window_seconds,hysteresis)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+      'condition_move', 'rule_move', 0, 'price_change_percent', '{}', 'lte', '-3', 300, '0',
+    );
+
+    runMigrations(sqlite);
+
+    expect(sqlite.prepare('SELECT operator, threshold FROM rule_conditions WHERE id = ?').get('condition_move'))
+      .toEqual({ operator: 'gte', threshold: '3' });
+    expect(sqlite.prepare('SELECT operator, threshold FROM rules WHERE id = ?').get('rule_move'))
+      .toEqual({ operator: 'gte', threshold: '3' });
     sqlite.close();
   });
 

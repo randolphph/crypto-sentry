@@ -267,7 +267,7 @@ GET /api/v1/integrations/catalog
 }
 ```
 
-Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`、`quote_volume_24h`、`funding_rate_percent`、`next_funding_time`、`open_interest`、`open_interest_change_percent` 和 `data_age_seconds`。资金费率和 OI 仅适用于 perpetual。窗口上限与 30 分钟样本保留一致。
+Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`、`quote_volume_24h`、`funding_rate_percent`、`next_funding_time`、`open_interest`、`open_interest_change_percent` 和 `data_age_seconds`。其中 `price_change_percent` 表示区间价格波动的绝对幅度，只接受 `gte` 和非负阈值，因此上涨或下跌达到同一阈值都会触发。资金费率和 OI 仅适用于 perpetual。窗口上限与 30 分钟样本保留一致。
 
 Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、抵押/债务窗口变化，以及 `account_supply`、`account_withdraw`、`account_borrow`、`account_repay`、`account_liquidation`、`account_position_opened`、`account_position_closed` 事件。仓位开关事件仅在持久化的账户状态发生变化且能关联到新链上事件时产生。Aave Pool 使用 `aave_event_amount_token` 与 `aave_event_amount_usd`，用 `labels.eventType` 区分五类事件；Oracle 不可用时只产生 token amount，绝不把 USD 金额伪装为 0。
 

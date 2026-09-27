@@ -199,8 +199,8 @@ describe('HTTP API foundation', () => {
         monitorId: monitor.id,
         name: 'Missing rolling window',
         metric: 'price_change_percent',
-        operator: 'lte',
-        threshold: '-3',
+        operator: 'gte',
+        threshold: '3',
         severity: 'critical',
       },
     });

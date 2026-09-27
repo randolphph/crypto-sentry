@@ -25,7 +25,7 @@ export const MARKET_RULE_METRICS: RuleMetricDefinition[] = [
     labels: ['marketType', 'providerSymbol', 'canonicalSymbol', 'priceType'],
   },
   {
-    id: 'price_change_percent', name: '价格涨跌幅', kind: 'gauge', valueType: 'decimal', operators: numericOperators,
+    id: 'price_change_percent', name: '价格波动幅度', kind: 'gauge', valueType: 'decimal', operators: ['gte'],
     units: ['percent'], requiresWindow: true, windowSecondsMin: 5, windowSecondsMax: 1_800,
     monitorTypes: ['market'], marketTypes: ['spot', 'perpetual'],
     labels: ['marketType', 'providerSymbol', 'canonicalSymbol', 'priceType', 'windowSeconds'],
