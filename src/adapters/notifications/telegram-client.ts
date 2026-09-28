@@ -1,3 +1,5 @@
+import { request as httpsRequest } from 'node:https';
+
 export interface TelegramSendFailure {
   ok: false;
   code: 'TELEGRAM_UNAUTHORIZED' | 'TELEGRAM_FORBIDDEN' | 'TELEGRAM_BAD_REQUEST' |
@@ -35,6 +37,62 @@ export class TelegramApiError extends Error {
 
 const TIMEOUT_MILLISECONDS = 10_000;
 
+type HttpsRequest = typeof httpsRequest;
+
+export function createTelegramIpv4Fetch(requestImplementation: HttpsRequest = httpsRequest): typeof globalThis.fetch {
+  return async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.protocol !== 'https:' || url.hostname !== 'api.telegram.org') {
+      throw new TypeError('Telegram transport only accepts the official HTTPS API host');
+    }
+    const body = typeof init?.body === 'string' || Buffer.isBuffer(init?.body) ? init.body : undefined;
+    return new Promise<Response>((resolve, reject) => {
+      let settled = false;
+      const finish = (operation: () => void) => {
+        if (settled) return;
+        settled = true;
+        init?.signal?.removeEventListener('abort', abort);
+        operation();
+      };
+      const request = requestImplementation({
+        protocol: 'https:', hostname: url.hostname, port: 443,
+        path: `${url.pathname}${url.search}`, method: init?.method ?? 'GET',
+        family: 4,
+        headers: {
+          ...(init?.headers === undefined ? {} : Object.fromEntries(new Headers(init.headers).entries())),
+          ...(body === undefined ? {} : { 'content-length': Buffer.byteLength(body) }),
+        },
+      }, (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        incoming.once('end', () => {
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(incoming.headers)) {
+            if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+          }
+          finish(() => resolve(new Response(Buffer.concat(chunks), {
+            status: incoming.statusCode ?? 502,
+            headers,
+          })));
+        });
+        incoming.once('error', (error) => finish(() => reject(error)));
+      });
+      const abort = () => request.destroy(init?.signal?.reason instanceof Error
+        ? init.signal.reason : new Error('Telegram request aborted'));
+      request.once('error', (error) => finish(() => reject(error)));
+      init?.signal?.addEventListener('abort', abort, { once: true });
+      if (init?.signal?.aborted === true) abort();
+      else request.end(body);
+    });
+  };
+}
+
+const telegramIpv4Fetch = createTelegramIpv4Fetch();
+
+function telegramFetch(fetchImplementation: typeof globalThis.fetch): typeof globalThis.fetch {
+  return fetchImplementation === globalThis.fetch ? telegramIpv4Fetch : fetchImplementation;
+}
+
 function apiRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
 }
@@ -64,7 +122,7 @@ async function callTelegram(
   fetchImplementation: typeof globalThis.fetch,
 ): Promise<unknown> {
   try {
-    const response = await fetchImplementation(`https://api.telegram.org/bot${botToken}/${method}`, {
+    const response = await telegramFetch(fetchImplementation)(`https://api.telegram.org/bot${botToken}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),

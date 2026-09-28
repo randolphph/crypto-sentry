@@ -1,10 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { EventEmitter } from 'node:events';
+import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http';
+import type { request as httpsRequest } from 'node:https';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
-import { sendTelegramMessage } from '../src/adapters/notifications/telegram-client.js';
+import { createTelegramIpv4Fetch, sendTelegramMessage } from '../src/adapters/notifications/telegram-client.js';
 import type { AppConfig } from '../src/config.js';
 import { AlertDeliveryService } from '../src/core/notifications/alert-delivery-service.js';
 import { formatTelegramAlert } from '../src/core/notifications/telegram-alert-message.js';
@@ -32,6 +35,33 @@ function response(status: number, body: unknown): Response {
 }
 
 describe('Telegram notification delivery', () => {
+  it('uses an IPv4-only HTTPS transport for production Telegram requests', async () => {
+    let options: RequestOptions | undefined;
+    const request = ((requestOptions: RequestOptions, callback: (response: IncomingMessage) => void) => {
+      options = requestOptions;
+      const outgoing = new EventEmitter() as ClientRequest;
+      outgoing.end = vi.fn(() => {
+        const incoming = new EventEmitter() as IncomingMessage;
+        incoming.statusCode = 200;
+        incoming.headers = { 'content-type': 'application/json' };
+        callback(incoming);
+        incoming.emit('data', Buffer.from('{"ok":true,"result":{"message_id":1}}'));
+        incoming.emit('end');
+        return outgoing;
+      }) as ClientRequest['end'];
+      outgoing.destroy = vi.fn(() => outgoing);
+      return outgoing;
+    }) as unknown as typeof httpsRequest;
+
+    const fetch = createTelegramIpv4Fetch(request);
+    const response = await fetch('https://api.telegram.org/bot123:test/sendMessage', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    });
+
+    expect(options).toMatchObject({ hostname: 'api.telegram.org', port: 443, family: 4, method: 'POST' });
+    expect(await response.json()).toEqual({ ok: true, result: { message_id: 1 } });
+  });
+
   it('formats alerts as a concise Chinese summary', () => {
     const message = formatTelegramAlert({
       alertId: 'alert_1', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,
