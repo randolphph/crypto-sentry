@@ -40,6 +40,7 @@ function cloneMetric(metric: Metric): Metric {
   return {
     ...metric,
     ...(metric.labels === undefined ? {} : { labels: { ...metric.labels } }),
+    ...(metric.context === undefined ? {} : { context: { ...metric.context } }),
   };
 }
 

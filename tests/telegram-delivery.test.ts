@@ -82,6 +82,33 @@ describe('Telegram notification delivery', () => {
     expect(message).not.toMatch(/Rule:|Labels:|Metric:|Condition group:|Observed at:/u);
   });
 
+  it('formats price movement with a percent sign, three decimals, and the trigger price', () => {
+    const message = formatTelegramAlert({
+      alertId: 'alert_move', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,
+      alertStatus: 'open', severity: 'warning', title: '[WARNING] Alert: BTC 5 分钟价格波动',
+      message: [
+        'Rule: BTC 5 分钟价格波动',
+        'Target: BTC/USDT',
+        'Labels: canonicalSymbol=BTC/USDT, marketType=spot, windowSeconds=300',
+        'Metric: price_change_percent',
+        'Current value: 0.12356789 percent',
+        'Current price: 109900.00001 USDT',
+        'Condition group: AND (1 conditions)',
+        'Observed at: 2026-09-23T06:27:00.000Z',
+      ].join('\n'),
+      currentValue: '0.12356789', observedAt: '2026-09-23T06:27:00.000Z',
+    });
+
+    expect(message).toBe([
+      '🟠 警告｜BTC 5 分钟价格波动',
+      '对象：BTC/USDT',
+      '波动：0.124%',
+      '当前价格：109,900 USDT',
+      '时间：09-23 14:27（北京时间）',
+    ].join('\n'));
+    expect(message).not.toContain('percent');
+  });
+
   it('formats Uniswap LP alerts with Chinese metric names and readable position details', () => {
     const message = formatTelegramAlert({
       alertId: 'alert_lp', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,

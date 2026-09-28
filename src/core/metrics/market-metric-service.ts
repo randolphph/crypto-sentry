@@ -418,10 +418,15 @@ export class MarketMetricService {
       return;
     }
     const change = new Decimal(String(latest.value)).dividedBy(reference.price).minus(1).times(100).abs();
+    const quoteAsset = state.config.quoteAsset ?? state.config.canonicalSymbol?.split('/')[1];
     await this.metricPipeline.ingest({
       ...common,
       value: change.toSignificantDigits(18).toString(),
       status: latestIsStale ? 'stale' : 'ok',
+      context: {
+        currentPrice: String(latest.value),
+        ...(quoteAsset === undefined ? {} : { currentPriceUnit: quoteAsset }),
+      },
     });
   }
 }

@@ -122,7 +122,10 @@ describe('MarketMetricService', () => {
     expect(latest.list('mon_btc')).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'price', value: '110', status: 'ok' }),
       expect.objectContaining({ name: 'data_age_seconds', value: '0', status: 'ok' }),
-      expect.objectContaining({ name: 'price_change_percent', value: '10', status: 'ok' }),
+      expect.objectContaining({
+        name: 'price_change_percent', value: '10', status: 'ok',
+        context: { currentPrice: '110', currentPriceUnit: 'USD' },
+      }),
     ]));
     expect(latest.list('mon_btc').find((metric) => metric.name === 'price_change_percent')?.labels?.windowSeconds).toBe('300');
 

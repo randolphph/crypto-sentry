@@ -1,3 +1,5 @@
+import { Decimal } from 'decimal.js';
+
 import type { ClaimedAlertDelivery } from '../../db/repositories/alert-repository.js';
 
 const severityPresentation: Record<string, { emoji: string; label: string }> = {
@@ -80,6 +82,45 @@ function conciseNumber(value: string): string {
   return `${sign}${grouped}${conciseFraction.length === 0 ? '' : `.${conciseFraction}`}`;
 }
 
+function conciseDecimal(value: string, decimalPlaces: number): string {
+  try {
+    const fixed = new Decimal(value).toDecimalPlaces(decimalPlaces).toFixed(decimalPlaces);
+    const rounded = fixed.includes('.') ? fixed.replace(/0+$/u, '').replace(/\.$/u, '') : fixed;
+    return conciseNumber(rounded);
+  } catch {
+    return value;
+  }
+}
+
+function splitValueAndUnit(value: string): { value: string; unit: string } {
+  const separator = value.lastIndexOf(' ');
+  return separator < 0
+    ? { value, unit: '' }
+    : { value: value.slice(0, separator), unit: value.slice(separator + 1) };
+}
+
+function formatPriceChangeAlert(
+  job: ClaimedAlertDelivery,
+  severity: { emoji: string; label: string },
+  repeated: boolean,
+): string | undefined {
+  if (lineValue(job.message, 'Metric') !== 'price_change_percent') return undefined;
+  const movement = splitValueAndUnit(lineValue(job.message, 'Current value') ?? job.currentValue ?? '');
+  const price = lineValue(job.message, 'Current price');
+  const target = lineValue(job.message, 'Target');
+  const priceLine = price === undefined ? [] : (() => {
+    const current = splitValueAndUnit(price);
+    return [`当前价格：${conciseDecimal(current.value, 3)}${current.unit.length === 0 ? '' : ` ${current.unit}`}`];
+  })();
+  return [
+    `${severity.emoji} ${severity.label}${repeated ? '（再次提醒）' : ''}｜${ruleName(job.title)}`,
+    ...(target === undefined ? [] : [`对象：${compactTarget(target)}`]),
+    `波动：${conciseDecimal(movement.value, 3)}%`,
+    ...priceLine,
+    `时间：${beijingTime(job.observedAt)}（北京时间）`,
+  ].join('\n');
+}
+
 function localizedValue(currentValue: string, labels: Record<string, string>, metric: string): string {
   const separator = currentValue.lastIndexOf(' ');
   const rawValue = separator < 0 ? currentValue : currentValue.slice(0, separator);
@@ -156,6 +197,8 @@ function beijingTime(isoTimestamp: string): string {
 export function formatTelegramAlert(job: ClaimedAlertDelivery): string {
   const severity = severityPresentation[job.severity] ?? { emoji: '⚠️', label: '告警' };
   const repeated = /\bReminder:\s*/u.test(job.title);
+  const priceChangeAlert = formatPriceChangeAlert(job, severity, repeated);
+  if (priceChangeAlert !== undefined) return priceChangeAlert;
   const uniswapAlert = formatUniswapAlert(job, severity, repeated);
   if (uniswapAlert !== undefined) return uniswapAlert;
   const target = lineValue(job.message, 'Target');

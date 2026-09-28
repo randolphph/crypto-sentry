@@ -26,6 +26,10 @@ function alertMessage(commit: RuleEvaluationCommit): string {
     ...(labels.length === 0 ? [] : [`Labels: ${labels}`]),
     `Metric: ${commit.metric.name}`,
     `Current value: ${String(commit.metric.value)}${commit.metric.unit === undefined ? '' : ` ${commit.metric.unit}`}`,
+    ...(commit.metric.context?.currentPrice === undefined ? [] : [
+      `Current price: ${commit.metric.context.currentPrice}` +
+        `${commit.metric.context.currentPriceUnit === undefined ? '' : ` ${commit.metric.context.currentPriceUnit}`}`,
+    ]),
     `Condition group: ${commit.rule.combinator.toUpperCase()} (${commit.rule.conditions.length} conditions)`,
     `Observed at: ${commit.metric.observedAt}`,
   ].join('\n');

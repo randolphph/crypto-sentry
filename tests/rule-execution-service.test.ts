@@ -264,11 +264,13 @@ describe('RuleExecutionService', () => {
       name: 'price_change_percent',
       unit: 'percent',
       labels: { windowSeconds: '300' },
+      context: { currentPrice: '109876.54321', currentPriceUnit: 'USDT' },
     });
 
     const createdAlerts = fixture.alerts.list({ limit: 50, offset: 0 });
     expect(createdAlerts.total).toBe(1);
     expect(createdAlerts.items[0]?.ruleId).toBe(fiveMinute.id);
+    expect(createdAlerts.items[0]?.message).toContain('Current price: 109876.54321 USDT');
     await pipeline.close();
     fixture.database.close();
   });

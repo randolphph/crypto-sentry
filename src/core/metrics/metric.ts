@@ -16,6 +16,7 @@ export const metricSchema = z.object({
   kind: z.enum(['gauge', 'event']).optional(),
   eventId: z.string().min(1).optional(),
   labels: z.record(z.string(), z.string()).optional(),
+  context: z.record(z.string(), z.string()).optional(),
 }).superRefine((metric, context) => {
   if (metric.kind === 'event' && metric.eventId === undefined) {
     context.addIssue({ code: 'custom', path: ['eventId'], message: 'Event metrics require a stable eventId' });
