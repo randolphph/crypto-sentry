@@ -109,6 +109,22 @@ export function registerMonitorRoutes(
     return uniswapPositions.get(id);
   });
 
+  app.get('/api/v1/monitors/:id/pancake-position', { schema: {
+    tags: ['monitors', 'pancakeswap'], summary: 'Get a single PancakeSwap V3 LP position snapshot',
+    params: openApiSchema(idParamsSchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return uniswapPositions.getLegacy(id);
+  });
+
+  app.get('/api/v1/monitors/:id/pancake-positions', { schema: {
+    tags: ['monitors', 'pancakeswap'], summary: 'Get directly owned PancakeSwap V3 LP position snapshots',
+    params: openApiSchema(idParamsSchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return uniswapPositions.get(id);
+  });
+
   app.post('/api/v1/monitors/:id/aave-risk-rules', { schema: {
     tags: ['monitors', 'rules'],
     summary: 'Create chain-scoped default Aave V3 health-factor rules',

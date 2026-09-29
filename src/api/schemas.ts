@@ -120,6 +120,24 @@ export const uniswapPoolMonitorConfigSchema = z.object({
     context.addIssue({ code: 'custom', path: ['poolAddress'], message: 'V4 pools do not use poolAddress' });
   }
 });
+export const pancakePositionMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainId: z.literal(56),
+  version: z.literal('v3'),
+  tokenId: z.string().regex(/^\d+$/),
+}).strict();
+export const pancakeWalletMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainIds: z.array(z.literal(56)).min(1).transform((values) => [...new Set(values)]),
+  versions: z.array(z.literal('v3')).min(1).transform((values) => [...new Set(values)]),
+  walletAddress: address,
+}).strict();
+export const pancakePoolMonitorConfigSchema = z.object({
+  rpcIntegrationId: z.string().min(1),
+  chainId: z.literal(56),
+  version: z.literal('v3'),
+  poolAddress: address,
+}).strict();
 
 export const monitorTypeSchema = z.enum([
   'market',
@@ -128,6 +146,9 @@ export const monitorTypeSchema = z.enum([
   'uniswap_position',
   'uniswap_pool',
   'uniswap_wallet',
+  'pancake_position',
+  'pancake_pool',
+  'pancake_wallet',
   'aave_position',
   'lp_position',
 ]).describe('Monitor type. aave_position and lp_position are legacy/deprecated but remain readable and runnable.');
@@ -188,6 +209,9 @@ export function monitorConfigSchema(type: MonitorType): z.ZodType {
     case 'uniswap_position': return uniswapPositionMonitorConfigSchema;
     case 'uniswap_wallet': return uniswapWalletMonitorConfigSchema;
     case 'uniswap_pool': return uniswapPoolMonitorConfigSchema;
+    case 'pancake_position': return pancakePositionMonitorConfigSchema;
+    case 'pancake_wallet': return pancakeWalletMonitorConfigSchema;
+    case 'pancake_pool': return pancakePoolMonitorConfigSchema;
     case 'aave_position': return aaveMonitorConfigSchema;
     case 'lp_position': return lpMonitorConfigSchema;
   }

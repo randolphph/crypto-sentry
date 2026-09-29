@@ -10,6 +10,7 @@ import type { MetricPipeline } from '../metrics/metric-pipeline.js';
 import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
 import { resolveEvmRpcRequest } from './evm-rpc-config.js';
 import { Decimal } from 'decimal.js';
+import { BSC_PANCAKE_V3 } from '../../adapters/pancake/pancake-v3-position-reader.js';
 
 export interface UniswapPoolReaderPort {
   latestBlock(signal?: AbortSignal): Promise<bigint>;
@@ -20,6 +21,7 @@ export interface UniswapPoolReaderPort {
 export interface UniswapPoolReaderFactory {
   create(options: {
     rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds: number;
+    expectedV3FactoryAddress?: string;
   }): UniswapPoolReaderPort;
 }
 
@@ -32,6 +34,9 @@ interface SharedPoolRead {
   observedAt: string;
 }
 
+type DexPoolRuntimeMonitor = ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number] |
+  ReturnType<MonitorRepository['listEnabledPancakePoolMonitors']>[number];
+
 export class UniswapPoolCoordinator {
   private readonly monitorIds = new Set<string>();
   private readonly directTargets = new Map<string, { fingerprint: string; target: UniswapPoolTarget }>();
@@ -41,6 +46,7 @@ export class UniswapPoolCoordinator {
   private readonly readerFactory: UniswapPoolReaderFactory;
   private readonly now: () => Date;
   private readonly onError: (error: Error) => void;
+  private readonly protocol: 'uniswap' | 'pancakeswap';
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -52,6 +58,7 @@ export class UniswapPoolCoordinator {
     options: {
       fetch?: typeof globalThis.fetch; readerFactory?: UniswapPoolReaderFactory; now?: () => Date;
       onError?: (error: Error) => void; samples?: UniswapPoolSwapSampleRepository;
+      protocol?: 'uniswap' | 'pancakeswap';
     } = {},
   ) {
     this.readerFactory = options.readerFactory ?? { create: (readerOptions) => new UniswapPoolReader({
@@ -59,6 +66,7 @@ export class UniswapPoolCoordinator {
     }) };
     this.now = options.now ?? (() => new Date());
     this.onError = options.onError ?? (() => undefined);
+    this.protocol = options.protocol ?? 'uniswap';
     this.samples = options.samples;
   }
 
@@ -69,7 +77,9 @@ export class UniswapPoolCoordinator {
     // RPC route must never remain eligible after its config generation changed.
     this.sharedReads.clear();
     this.readers.clear();
-    const monitors = this.monitors.listEnabledUniswapPoolMonitors();
+    const monitors = this.protocol === 'pancakeswap'
+      ? this.monitors.listEnabledPancakePoolMonitors()
+      : this.monitors.listEnabledUniswapPoolMonitors();
     const desired = new Set(monitors.map((monitor) => monitor.monitorId));
     const desiredResources = new Set<string>();
     this.resourceIntervals.clear();
@@ -105,14 +115,14 @@ export class UniswapPoolCoordinator {
     this.resourceIntervals.clear();
   }
 
-  private taskId(id: string) { return `uniswap-pool:${id}`; }
+  private taskId(id: string) { return `${this.protocol}-pool:${id}`; }
 
-  private resourceKey(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number]): string {
+  private resourceKey(monitor: DexPoolRuntimeMonitor): string {
     return `${monitor.rpcIntegrationId}:${monitor.chainId}:${monitor.version}:${monitor.resourceId.toLowerCase()}`;
   }
 
   private async resolveTarget(
-    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    monitor: DexPoolRuntimeMonitor,
     reader: UniswapPoolReaderPort,
     signal: AbortSignal,
   ): Promise<UniswapPoolTarget> {
@@ -136,10 +146,10 @@ export class UniswapPoolCoordinator {
     const cached = this.directTargets.get(resource);
     if (cached?.fingerprint === fingerprint) return cached.target;
     if (monitor.version === 'v3') {
-      if (reader.describeV3 === undefined) throw new Error('Uniswap V3 pool metadata reader is unavailable');
+      if (reader.describeV3 === undefined) throw new Error('V3 pool metadata reader is unavailable');
       const described = await reader.describeV3(monitor.resourceId, signal);
       if (described.chainId !== monitor.chainId || described.poolAddress?.toLowerCase() !== monitor.resourceId.toLowerCase()) {
-        throw new Error('Uniswap V3 pool identity mismatch');
+        throw new Error('V3 pool identity mismatch');
       }
       this.directTargets.set(resource, { fingerprint, target: described });
       return described;
@@ -160,7 +170,7 @@ export class UniswapPoolCoordinator {
   }
 
   private async readShared(
-    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    monitor: DexPoolRuntimeMonitor,
     signal: AbortSignal,
   ): Promise<SharedPoolRead> {
     const resource = this.resourceKey(monitor);
@@ -178,7 +188,7 @@ export class UniswapPoolCoordinator {
   }
 
   private async readPool(
-    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    monitor: DexPoolRuntimeMonitor,
     signal: AbortSignal,
   ): Promise<SharedPoolRead> {
     const integration = this.integrations.getRuntime(monitor.rpcIntegrationId);
@@ -188,11 +198,12 @@ export class UniswapPoolCoordinator {
     const reader = this.readers.get(readerKey) ?? this.readerFactory.create({
       rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: monitor.chainId,
       timeoutMilliseconds: config.timeoutMilliseconds,
+      ...(this.protocol === 'pancakeswap' ? { expectedV3FactoryAddress: BSC_PANCAKE_V3.factoryAddress } : {}),
     });
     this.readers.set(readerKey, reader);
     const target = await this.resolveTarget(monitor, reader, signal);
     const labels = {
-      chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
+      protocol: this.protocol, chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
       ...(target.token0Address === null ? {} : { token0Address: target.token0Address }),
       ...(target.token0Symbol === null ? {} : { token0Symbol: target.token0Symbol }),
       ...(target.token1Address === null ? {} : { token1Address: target.token1Address }),
@@ -201,15 +212,15 @@ export class UniswapPoolCoordinator {
     const tip = await reader.latestBlock(signal);
     const confirmed = tip > 12n ? tip - 12n : 0n;
     const stream = `resource:${monitor.version}:${monitor.resourceId.toLowerCase()}`;
-    const saved = this.cursors.get(monitor.rpcIntegrationId, `uniswap_${monitor.version}_pool`, monitor.chainId, stream);
+    const saved = this.cursors.get(monitor.rpcIntegrationId, `${this.protocol}_${monitor.version}_pool`, monitor.chainId, stream);
     const from = saved === undefined ? (confirmed > 2_000n ? confirmed - 2_000n : 0n) : (saved > 12n ? saved - 11n : 0n);
     const result = await reader.read(target, from, confirmed, signal);
     return { target, labels, tip, confirmed, result, observedAt: this.now().toISOString() };
   }
 
-  private async scan(monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number], signal: AbortSignal) {
+  private async scan(monitor: DexPoolRuntimeMonitor, signal: AbortSignal) {
     let labels: Record<string, string> = {
-      chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
+      protocol: this.protocol, chainId: String(monitor.chainId), version: monitor.version, resourceId: monitor.resourceId,
     };
     let timestamp = this.now().toISOString();
     try {
@@ -232,7 +243,7 @@ export class UniswapPoolCoordinator {
       );
       if (tvlUsd !== null) gauges.push(['tvl_usd', tvlUsd, 'USD']);
       for (const [name, value, unit] of gauges) await this.pipeline.ingest({
-        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name, value, unit,
+        monitorId: monitor.monitorId, source: `${this.protocol}_pool`, target: monitor.resourceId, name, value, unit,
         observedAt: timestamp, receivedAt: timestamp, status: 'ok', labels,
       });
       for (const event of result.events) {
@@ -249,7 +260,7 @@ export class UniswapPoolCoordinator {
           });
         }
         await this.pipeline.ingest({
-          monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId,
+          monitorId: monitor.monitorId, source: `${this.protocol}_pool`, target: monitor.resourceId,
           name: event.eventType === 'collect' ? 'fee_collection' : event.eventType,
           value: amount0 ?? amount1 ?? '1', unit: amount0 === null ? target.token1Symbol ?? 'token1' : target.token0Symbol ?? 'token0',
           observedAt: eventObservedAt, receivedAt: timestamp, status: 'ok', kind: 'event', eventId: event.eventId,
@@ -261,13 +272,13 @@ export class UniswapPoolCoordinator {
       await this.emitWindowVolumes(monitor, labels, target.token0Symbol, target.token1Symbol, timestamp);
       this.cursors.save(
         monitor.rpcIntegrationId,
-        `uniswap_${monitor.version}_pool`,
+        `${this.protocol}_${monitor.version}_pool`,
         monitor.chainId,
         `resource:${monitor.version}:${monitor.resourceId.toLowerCase()}`,
         confirmed,
       );
       await this.pipeline.ingest({
-        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: true,
+        monitorId: monitor.monitorId, source: `${this.protocol}_pool`, target: monitor.resourceId, name: 'sync_status', value: true,
         observedAt: timestamp, receivedAt: timestamp, status: 'ok',
         labels: {
           ...labels,
@@ -278,9 +289,9 @@ export class UniswapPoolCoordinator {
       });
     } catch {
       if (signal.aborted) return;
-      this.onError(new Error(`Uniswap ${monitor.version} pool monitor failed on chain ${monitor.chainId}`));
+      this.onError(new Error(`${this.protocol} ${monitor.version} pool monitor failed on chain ${monitor.chainId}`));
       await this.pipeline.ingest({
-        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId, name: 'sync_status', value: false,
+        monitorId: monitor.monitorId, source: `${this.protocol}_pool`, target: monitor.resourceId, name: 'sync_status', value: false,
         observedAt: timestamp, receivedAt: timestamp, status: 'error', labels,
       });
     }
@@ -295,7 +306,7 @@ export class UniswapPoolCoordinator {
     price1: string | null,
   ): string | null {
     if (amount0 === null || amount1 === null || price0 === null || price1 === null) return null;
-    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS', 'FDUSD', 'BUSD']);
     if (symbol1 !== null && stable.has(symbol1.toUpperCase())) {
       return new Decimal(amount0).mul(price0).plus(amount1).toSignificantDigits(30).toString();
     }
@@ -312,14 +323,14 @@ export class UniswapPoolCoordinator {
     symbol1: string | null,
   ): string | null {
     if (amount0 === null || amount1 === null) return null;
-    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS', 'FDUSD', 'BUSD']);
     if (symbol1 !== null && stable.has(symbol1.toUpperCase())) return new Decimal(amount1).toSignificantDigits(30).toString();
     if (symbol0 !== null && stable.has(symbol0.toUpperCase())) return new Decimal(amount0).toSignificantDigits(30).toString();
     return null;
   }
 
   private async emitWindowVolumes(
-    monitor: ReturnType<MonitorRepository['listEnabledUniswapPoolMonitors']>[number],
+    monitor: DexPoolRuntimeMonitor,
     labels: Record<string, string>,
     token0Symbol: string | null,
     token1Symbol: string | null,
@@ -333,7 +344,7 @@ export class UniswapPoolCoordinator {
     const largestWindow = Math.max(...monitor.volumeWindowSeconds);
     const cutoff = new Date(Date.parse(timestamp) - largestWindow * 2 * 1_000).toISOString();
     const samples = this.samples.listSince(monitor.monitorId, cutoff);
-    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS', 'FDUSD', 'BUSD']);
     const usdSupported = [token0Symbol, token1Symbol].some((symbol) => symbol !== null && stable.has(symbol.toUpperCase()));
     const sum = (values: string[]) => values.reduce((total, value) => total.plus(value), new Decimal(0)).toSignificantDigits(30).toString();
     for (const windowSeconds of monitor.volumeWindowSeconds) {
@@ -366,7 +377,7 @@ export class UniswapPoolCoordinator {
         ? null : new Decimal(currentUsd).div(previousUsd).minus(1).mul(100).toSignificantDigits(30).toString();
       values.push(['volume_change_percent', change ?? 'unavailable', 'percent', change === null ? 'warming_up' : 'ok']);
       for (const [name, value, unit, status] of values) await this.pipeline.ingest({
-        monitorId: monitor.monitorId, source: 'uniswap_pool', target: monitor.resourceId,
+        monitorId: monitor.monitorId, source: `${this.protocol}_pool`, target: monitor.resourceId,
         name, value, unit, observedAt: timestamp, receivedAt: timestamp, status, labels: windowLabels,
       });
     }

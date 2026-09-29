@@ -57,6 +57,7 @@ describe('Integration setup API', () => {
       };
       monitorTypes: Array<{ id: string; status: string; chainIds?: number[]; versions?: string[] }>;
       uniswap: { deployments: Array<{ chainId: number; version: string; positionManagerAddress: string }> };
+      pancakeswap: { deployments: Array<{ chainId: number; version: string; positionManagerAddress: string }> };
       samplingPresets: Array<{ id: string; intervalSeconds: number }>;
       ruleMetrics: {
         market: Array<{ id: string; kind: string; requiresWindow: boolean; marketTypes: string[] }>;
@@ -76,6 +77,9 @@ describe('Integration setup API', () => {
       { chainId: 1, version: 'v4' },
       { chainId: 4_663, version: 'v4' },
     ]);
+    expect(catalogBody.pancakeswap.deployments.map(({ chainId, version }) => ({ chainId, version }))).toEqual([
+      { chainId: 56, version: 'v3' },
+    ]);
     expect(catalogBody.evmRpc.routingModes.map(({ id }) => id)).toEqual(['fixed', 'url_template', 'header', 'query']);
     expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 1)).toMatchObject({
       productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'available', uniswapV4: 'available' },
@@ -83,9 +87,18 @@ describe('Integration setup API', () => {
     expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 4_663)).toMatchObject({
       productEnabled: true, capabilities: { aaveV3: 'unsupported', uniswapV3: 'available', uniswapV4: 'available' },
     });
+    expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 56)).toEqual({
+      chainId: 56,
+      name: 'BNB Chain',
+      productEnabled: true,
+      capabilities: {
+        aaveV3: 'unsupported', uniswapV3: 'unsupported', uniswapV4: 'unsupported', pancakeV3: 'available',
+      },
+    });
     expect(catalogBody.monitorTypes).toEqual(expect.arrayContaining([
       { id: 'aave_pool', status: 'available', chainIds: [1] },
       { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+      { id: 'pancake_wallet', status: 'available', chainIds: [56], versions: ['v3'] },
     ]));
     expect(catalogBody.samplingPresets).toEqual([
       { id: 'realtime', intervalSeconds: 5 },
@@ -119,6 +132,7 @@ describe('Integration setup API', () => {
       aave: { ready: false, configuredNetworkCount: 0, networks: [] },
       binance: { ready: false, sources: [] },
       uniswap: { ready: false, configuredNetworkCount: 0, networks: [] },
+      pancakeswap: { ready: false, configuredNetworkCount: 0, networks: [] },
     });
   });
 

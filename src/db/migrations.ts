@@ -352,6 +352,12 @@ SET operator = 'gte',
 WHERE metric = 'price_change_percent';
 `,
   },
+  {
+    name: '0012_pancakeswap_v3_capability',
+    sql: `
+ALTER TABLE integration_network_health ADD COLUMN pancake_v3_status TEXT NOT NULL DEFAULT 'unknown';
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

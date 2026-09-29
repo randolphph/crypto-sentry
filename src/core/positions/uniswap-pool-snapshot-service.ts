@@ -1,5 +1,6 @@
 import { AppError } from '../../api/errors.js';
 import { uniswapPoolMonitorConfigSchema } from '../../api/schemas.js';
+import { pancakePoolMonitorConfigSchema } from '../../api/schemas.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { Metric } from '../metrics/metric.js';
 import type { MetricSnapshotReader } from '../metrics/latest-metric-store.js';
@@ -18,9 +19,12 @@ export class UniswapPoolSnapshotService {
 
   public get(monitorId: string) {
     const monitor = this.monitors.get(monitorId);
-    if (monitor.type !== 'uniswap_pool') throw new AppError(409, 'MONITOR_TYPE_MISMATCH', 'Pool snapshot requires uniswap_pool');
-    const config = uniswapPoolMonitorConfigSchema.parse(monitor.config);
-    const metrics = this.metrics.list(monitorId).filter((metric) => metric.source === 'uniswap_pool');
+    if (!['uniswap_pool', 'pancake_pool'].includes(monitor.type)) throw new AppError(409, 'MONITOR_TYPE_MISMATCH', 'Pool snapshot requires a DEX pool monitor');
+    const protocol = monitor.type === 'pancake_pool' ? 'pancakeswap' as const : 'uniswap' as const;
+    const config = monitor.type === 'pancake_pool'
+      ? pancakePoolMonitorConfigSchema.parse(monitor.config)
+      : uniswapPoolMonitorConfigSchema.parse(monitor.config);
+    const metrics = this.metrics.list(monitorId).filter((metric) => metric.source === `${protocol}_pool`);
     const sync = metrics.find((metric) => metric.name === 'sync_status');
     const observedAt = metrics.reduce<string | null>((latest, metric) => (
       latest === null || Date.parse(metric.observedAt) > Date.parse(latest) ? metric.observedAt : latest
@@ -60,7 +64,8 @@ export class UniswapPoolSnapshotService {
       observedAt, dataAgeSeconds, maxStaleSeconds: monitor.maxStaleSeconds,
       summary: { eventCount: events.length, valuationCoverage: tvlUsd === null ? 'unavailable' : 'full' },
       pool: {
-        chainId: config.chainId, version: config.version, poolAddress: config.poolAddress ?? null, poolId: config.poolId ?? null,
+        protocol, chainId: config.chainId, version: config.version, poolAddress: config.poolAddress ?? null,
+        poolId: 'poolId' in config ? config.poolId ?? null : null,
         token0Price: stringValue(metrics, 'token0_price'), token1Price: stringValue(metrics, 'token1_price'),
         currentTick: stringValue(metrics, 'current_tick'), activeLiquidity: stringValue(metrics, 'active_liquidity'),
         tvlToken0: stringValue(metrics, 'tvl_token0'), tvlToken1: stringValue(metrics, 'tvl_token1'), tvlUsd,
@@ -76,7 +81,7 @@ export class UniswapPoolSnapshotService {
         scannedThroughBlock: sync?.labels?.scannedThroughBlock ?? null, chainTipBlock: sync?.labels?.chainTipBlock ?? null,
       },
       recentEvents: events,
-      error: sync?.status === 'error' ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Uniswap pool synchronization failed' }
+      error: sync?.status === 'error' ? { code: 'INDEXER_PARTIAL_FAILURE', message: `${protocol === 'pancakeswap' ? 'PancakeSwap' : 'Uniswap'} pool synchronization failed` }
         : tvlUsd === null ? { code: 'VALUATION_UNAVAILABLE', message: 'Reliable USD valuation is not currently available' } : null,
     };
   }

@@ -111,6 +111,7 @@ export const integrationNetworkHealth = sqliteTable(
     aaveEventLogsStatus: text('aave_event_logs_status').notNull().default('unknown'),
     uniswapV3Status: text('uniswap_v3_status').notNull().default('unknown'),
     uniswapV4Status: text('uniswap_v4_status').notNull().default('unknown'),
+    pancakeV3Status: text('pancake_v3_status').notNull().default('unknown'),
     blockNumber: text('block_number'),
     errorCode: text('error_code'),
     testedAt: text('tested_at').notNull(),

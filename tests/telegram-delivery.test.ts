@@ -146,6 +146,23 @@ describe('Telegram notification delivery', () => {
     expect(message).toBe('🟠 警告（再次提醒）｜LP 仓位价值\n仓位：WETH/USDC · V3 · #42\n当前：$12,345.678901\n时间：09-23 14:27（北京时间）');
   });
 
+  it('identifies PancakeSwap V3 alerts while keeping the message concise', () => {
+    const message = formatTelegramAlert({
+      alertId: 'alert_pancake', targetIndex: 0, integrationId: 'telegram_1', attempts: 1,
+      alertStatus: 'open', severity: 'critical', title: '[CRITICAL] Alert: Pancake range',
+      message: [
+        'Rule: Pancake range',
+        'Target: 88',
+        'Labels: protocol=pancakeswap, chainId=56, token0Symbol=USDT, token1Symbol=WBNB, tokenId=88, version=v3',
+        'Metric: in_range',
+        'Current value: false boolean',
+      ].join('\n'),
+      currentValue: 'false', observedAt: '2026-09-23T06:27:00.000Z',
+    });
+
+    expect(message).toBe('🔴 严重告警｜PancakeSwap LP 已离开价格区间\n仓位：USDT/WBNB · V3 · #88\n时间：09-23 14:27（北京时间）');
+  });
+
   it('uses the Telegram retry-after value without exposing the API description', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response(429, {
       ok: false, error_code: 429, description: `rate limited ${secret}`, parameters: { retry_after: 42 },

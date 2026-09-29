@@ -3,6 +3,8 @@ import {
   lpMonitorConfigSchema,
   uniswapPositionMonitorConfigSchema,
   uniswapWalletMonitorConfigSchema,
+  pancakePositionMonitorConfigSchema,
+  pancakeWalletMonitorConfigSchema,
 } from '../../api/schemas.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { Metric } from '../metrics/metric.js';
@@ -52,16 +54,20 @@ export class UniswapV3PositionSnapshotService {
 
   public get(monitorId: string) {
     const monitor = this.monitors.get(monitorId);
-    if (!['lp_position', 'uniswap_position', 'uniswap_wallet'].includes(monitor.type)) {
-      throw new AppError(409, 'MONITOR_TYPE_MISMATCH', 'Uniswap snapshots are only available for LP monitors');
+    if (!['lp_position', 'uniswap_position', 'uniswap_wallet', 'pancake_position', 'pancake_wallet'].includes(monitor.type)) {
+      throw new AppError(409, 'MONITOR_TYPE_MISMATCH', 'Concentrated liquidity snapshots are only available for LP monitors');
     }
     const legacy = lpMonitorConfigSchema.safeParse(monitor.config);
     const positionConfig = uniswapPositionMonitorConfigSchema.safeParse(monitor.config);
     const walletConfig = uniswapWalletMonitorConfigSchema.safeParse(monitor.config);
+    const pancakePosition = pancakePositionMonitorConfigSchema.safeParse(monitor.config);
+    const pancakeWallet = pancakeWalletMonitorConfigSchema.safeParse(monitor.config);
     const config = legacy.success ? legacy.data : positionConfig.success
       ? positionConfig.data
-      : walletConfig.success ? walletConfig.data : uniswapWalletMonitorConfigSchema.parse(monitor.config);
-    const metrics = this.metrics.list(monitorId).filter((metric) => metric.source.startsWith('uniswap'));
+      : walletConfig.success ? walletConfig.data : pancakePosition.success ? pancakePosition.data
+        : pancakeWallet.success ? pancakeWallet.data : uniswapWalletMonitorConfigSchema.parse(monitor.config);
+    const protocol = monitor.type.startsWith('pancake_') ? 'pancakeswap' as const : 'uniswap' as const;
+    const metrics = this.metrics.list(monitorId).filter((metric) => metric.source.startsWith(protocol));
     const scanStatuses = metrics.filter((metric) => metric.name === 'scan_status' || metric.name === 'read_status');
     const scanStatusMetrics = metrics.filter((metric) => metric.name === 'scan_status');
     const scanStatus = (scanStatusMetrics.length > 0 ? scanStatusMetrics : scanStatuses)
@@ -105,7 +111,7 @@ export class UniswapV3PositionSnapshotService {
 
     return {
       monitorId,
-      protocol: 'uniswap' as const,
+      protocol,
       version: 'version' in config ? config.version : config.versions.length === 1 ? config.versions[0] : null,
       versions: 'version' in config ? [config.version] : config.versions,
       chainId: 'chainId' in config ? config.chainId : config.chainIds[0],
@@ -134,8 +140,8 @@ export class UniswapV3PositionSnapshotService {
       },
       positions,
       error: scanFailed ? {
-        code: 'UNISWAP_POSITION_READ_FAILED' as const,
-        message: 'The Uniswap positions could not be fully read from the configured RPC',
+        code: protocol === 'pancakeswap' ? 'PANCAKE_POSITION_READ_FAILED' as const : 'UNISWAP_POSITION_READ_FAILED' as const,
+        message: `The ${protocol === 'pancakeswap' ? 'PancakeSwap' : 'Uniswap'} positions could not be fully read from the configured RPC`,
       } : null,
     };
   }
@@ -143,7 +149,7 @@ export class UniswapV3PositionSnapshotService {
   public getLegacy(monitorId: string) {
     const snapshot = this.get(monitorId);
     if (snapshot.requestedTokenId === null) {
-      throw new AppError(409, 'USE_COLLECTION_ENDPOINT', 'Wallet monitors must use /uniswap-positions');
+      throw new AppError(409, 'USE_COLLECTION_ENDPOINT', 'Wallet monitors must use the protocol positions collection endpoint');
     }
     return {
       monitorId: snapshot.monitorId,
@@ -160,7 +166,7 @@ export class UniswapV3PositionSnapshotService {
     const labels = byName(metrics, 'read_status')?.labels ?? {};
     const version = labels.version === 'v4' ? 'v4' as const : 'v3' as const;
     return {
-      protocol: 'uniswap' as const,
+      protocol: labels.protocol === 'pancakeswap' ? 'pancakeswap' as const : 'uniswap' as const,
       version,
       chainId: Number(labels.chainId),
       chainName: labels.chainName ?? `Chain ${labels.chainId ?? 'unknown'}`,

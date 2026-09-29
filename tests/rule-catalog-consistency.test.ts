@@ -67,6 +67,24 @@ describe('rule metric catalog consistency', () => {
         'tvl_usd', 'volume_token0', 'volume_token1', 'volume_usd', 'volume_change_percent',
         'swap', 'mint', 'burn', 'fee_collection',
       ],
+      pancake_position: [
+        'in_range', 'current_tick', 'tick_lower', 'tick_upper', 'distance_to_lower_tick',
+        'distance_to_upper_tick', 'distance_to_nearest_boundary_percent', 'liquidity', 'token0_amount',
+        'token1_amount', 'fees_owed_token0', 'fees_owed_token1', 'position_value_usd', 'fees_value_usd',
+        'position_closed', 'position_count',
+      ],
+      pancake_wallet: [
+        'in_range', 'current_tick', 'tick_lower', 'tick_upper', 'distance_to_lower_tick',
+        'distance_to_upper_tick', 'distance_to_nearest_boundary_percent', 'liquidity', 'token0_amount',
+        'token1_amount', 'fees_owed_token0', 'fees_owed_token1', 'position_value_usd', 'fees_value_usd',
+        'position_closed', 'position_count', 'in_range_count', 'out_of_range_count', 'failed_position_count',
+        'aggregate_value_usd', 'aggregate_fees_usd',
+      ],
+      pancake_pool: [
+        'current_tick', 'token0_price', 'token1_price', 'active_liquidity', 'tvl_token0', 'tvl_token1',
+        'tvl_usd', 'volume_token0', 'volume_token1', 'volume_usd', 'volume_change_percent',
+        'swap', 'mint', 'burn', 'fee_collection',
+      ],
     };
     for (const [monitorType, metricIds] of Object.entries(emitted)) {
       const catalogIds = new Set(RULE_METRICS[monitorType as keyof typeof RULE_METRICS].map((metric) => metric.id));

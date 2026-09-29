@@ -2,6 +2,7 @@ import { ROBINHOOD_UNISWAP_V3, supportedUniswapV3Deployments } from '../../adapt
 import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { RULE_METRICS } from '../rules/rule-metric-catalog.js';
 import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
+import { supportedPancakeV3Deployments } from '../../adapters/pancake/pancake-v3-position-reader.js';
 
 export const EVM_RPC_PROVIDERS = ['alchemy', 'infura', 'quicknode', 'custom'] as const;
 
@@ -47,7 +48,7 @@ export const INTEGRATION_CATALOG = {
       { chainId: 1, name: 'Ethereum', productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'available', uniswapV4: 'available' } },
       { chainId: 42_161, name: 'Arbitrum', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       { chainId: 8_453, name: 'Base', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
-      { chainId: 56, name: 'BNB Chain', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
+      { chainId: 56, name: 'BNB Chain', productEnabled: true, capabilities: { aaveV3: 'unsupported', uniswapV3: 'unsupported', uniswapV4: 'unsupported', pancakeV3: 'available' } },
       {
         chainId: ROBINHOOD_UNISWAP_V3.chainId,
         name: ROBINHOOD_UNISWAP_V3.chainName,
@@ -69,6 +70,9 @@ export const INTEGRATION_CATALOG = {
     { id: 'uniswap_position', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
     { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
     { id: 'uniswap_pool', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+    { id: 'pancake_position', status: 'available', chainIds: [56], versions: ['v3'] },
+    { id: 'pancake_wallet', status: 'available', chainIds: [56], versions: ['v3'] },
+    { id: 'pancake_pool', status: 'available', chainIds: [56], versions: ['v3'] },
   ],
   aave: {
     deployments: [...supportedAaveV3Markets.values()].filter((market) => market.chainId === 1).map((market) => ({
@@ -95,6 +99,14 @@ export const INTEGRATION_CATALOG = {
         explorerUrl: deployment.explorerUrl,
       })),
     ],
+  },
+  pancakeswap: {
+    deployments: [...supportedPancakeV3Deployments.values()].map((deployment) => ({
+      chainId: deployment.chainId, chainName: deployment.chainName, version: 'v3' as const,
+      factoryAddress: deployment.factoryAddress, positionManagerAddress: deployment.positionManagerAddress,
+      deploymentBlock: deployment.deploymentBlock.toString(), explorerUrl: deployment.explorerUrl,
+    })),
+    limitations: { stakedMasterChefPositions: false },
   },
 } as const;
 

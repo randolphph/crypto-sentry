@@ -6,11 +6,12 @@ import { createEvmPublicClient } from '../evm/evm-rpc-client.js';
 import { supportedUniswapV4Deployments } from './uniswap-v4-position-reader.js';
 
 const v3Abi = parseAbi([
+  'function factory() view returns (address)',
   'function token0() view returns (address)',
   'function token1() view returns (address)',
   'function fee() view returns (uint24)',
   'function tickSpacing() view returns (int24)',
-  'function slot0() view returns (uint160 sqrtPriceX96,int24 tick,uint16,uint16,uint16,uint8,bool)',
+  'function slot0() view returns (uint160 sqrtPriceX96,int24 tick,uint16,uint16,uint16,uint32,bool)',
   'function liquidity() view returns (uint128)',
   'event Swap(address indexed sender,address indexed recipient,int256 amount0,int256 amount1,uint160 sqrtPriceX96,uint128 liquidity,int24 tick)',
   'event Mint(address sender,address indexed owner,int24 indexed tickLower,int24 indexed tickUpper,uint128 amount,uint256 amount0,uint256 amount1)',
@@ -73,12 +74,14 @@ export interface UniswapPoolReadResult {
 
 export class UniswapPoolReader {
   private readonly publicClient: PublicClient;
+  private readonly expectedV3FactoryAddress: string | undefined;
   private readonly blockTimestampCache = new Map<bigint, string>();
   public constructor(options: {
     rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds?: number;
-    fetch?: typeof globalThis.fetch; publicClient?: PublicClient;
+    fetch?: typeof globalThis.fetch; publicClient?: PublicClient; expectedV3FactoryAddress?: string;
   }) {
     this.publicClient = options.publicClient ?? createEvmPublicClient(options);
+    this.expectedV3FactoryAddress = options.expectedV3FactoryAddress;
   }
 
   public async latestBlock(signal?: AbortSignal): Promise<bigint> {
@@ -93,12 +96,16 @@ export class UniswapPoolReader {
   public async describeV3(poolAddress: string, signal?: AbortSignal): Promise<UniswapPoolTarget> {
     const pool = getAddress(poolAddress);
     signal?.throwIfAborted();
-    const [token0Address, token1Address, feeTier, tickSpacing] = await Promise.all([
+    const [factoryAddress, token0Address, token1Address, feeTier, tickSpacing] = await Promise.all([
+      this.publicClient.readContract({ address: pool, abi: v3Abi, functionName: 'factory' }),
       this.publicClient.readContract({ address: pool, abi: v3Abi, functionName: 'token0' }),
       this.publicClient.readContract({ address: pool, abi: v3Abi, functionName: 'token1' }),
       this.publicClient.readContract({ address: pool, abi: v3Abi, functionName: 'fee' }),
       this.publicClient.readContract({ address: pool, abi: v3Abi, functionName: 'tickSpacing' }),
     ]);
+    if (this.expectedV3FactoryAddress !== undefined && factoryAddress.toLowerCase() !== this.expectedV3FactoryAddress.toLowerCase()) {
+      throw new Error('V3 pool does not belong to the expected protocol factory');
+    }
     signal?.throwIfAborted();
     const [token0, token1] = await Promise.all([
       this.tokenMetadata(token0Address),

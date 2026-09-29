@@ -18,10 +18,12 @@ import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
 import { Decimal } from 'decimal.js';
 import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
+import { PancakeV3PositionReader, supportedPancakeV3Deployments } from '../../adapters/pancake/pancake-v3-position-reader.js';
 
 type UniswapPosition = UniswapV3Position | UniswapV4Position;
-type UniswapMonitor = ReturnType<MonitorRepository['listEnabledUniswapMonitors']>[number];
-type UniswapVariant = UniswapMonitor['variants'][number];
+type DexMonitor = ReturnType<MonitorRepository['listEnabledUniswapMonitors']>[number] |
+  ReturnType<MonitorRepository['listEnabledPancakeMonitors']>[number];
+type DexVariant = DexMonitor['variants'][number];
 const DEFAULT_CLOSED_POSITION_REFRESH_MILLISECONDS = 15 * 60 * 1_000;
 
 interface UniswapVariantRead {
@@ -82,6 +84,7 @@ export interface UniswapV3PositionCoordinatorOptions {
   now?: () => Date;
   closedPositionRefreshMilliseconds?: number;
   onError?: (error: Error) => void;
+  protocol?: 'uniswap' | 'pancakeswap';
 }
 
 function metric(
@@ -91,10 +94,11 @@ function metric(
   value: string | boolean,
   observedAt: string,
   options: Pick<Metric, 'status' | 'unit' | 'labels'>,
+  source = 'uniswap',
 ): Metric {
   return {
     monitorId,
-    source: 'uniswap',
+    source,
     target,
     name,
     value,
@@ -119,6 +123,7 @@ export class UniswapV3PositionCoordinator {
   private readonly now: () => Date;
   private readonly closedPositionRefreshMilliseconds: number;
   private readonly onError: (error: Error) => void;
+  private readonly protocol: 'uniswap' | 'pancakeswap';
 
   public constructor(
     private readonly integrations: IntegrationRepository,
@@ -128,8 +133,12 @@ export class UniswapV3PositionCoordinator {
     private readonly scheduler: PollingScheduler,
     options: UniswapV3PositionCoordinatorOptions = {},
   ) {
+    this.protocol = options.protocol ?? 'uniswap';
     this.readerFactory = options.readerFactory ?? {
-      create: (readerOptions) => new UniswapV3PositionReader({
+      create: (readerOptions) => this.protocol === 'pancakeswap' ? new PancakeV3PositionReader({
+        ...readerOptions,
+        ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+      }) : new UniswapV3PositionReader({
         ...readerOptions,
         ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
       }),
@@ -159,7 +168,9 @@ export class UniswapV3PositionCoordinator {
     // changed; the next task rebuilds it from the current runtime config.
     this.sharedVariantReads.clear();
     this.closedPositions.clear();
-    const monitors = this.monitors.listEnabledUniswapMonitors();
+    const monitors = this.protocol === 'pancakeswap'
+      ? this.monitors.listEnabledPancakeMonitors()
+      : this.monitors.listEnabledUniswapMonitors();
     const desiredIds = new Set(monitors.map(({ monitorId }) => monitorId));
     const desiredResources = new Set<string>();
     this.resourceIntervals.clear();
@@ -212,23 +223,23 @@ export class UniswapV3PositionCoordinator {
   }
 
   private taskId(monitorId: string): string {
-    return `uniswap:${monitorId}`;
+    return `${this.protocol}:${monitorId}`;
   }
 
   private staleTaskId(monitorId: string): string {
-    return `uniswap-stale:${monitorId}`;
+    return `${this.protocol}-stale:${monitorId}`;
   }
 
-  private resourceKey(monitor: UniswapMonitor, variant: UniswapVariant): string {
+  private resourceKey(monitor: DexMonitor, variant: DexVariant): string {
     const target = 'walletAddress' in monitor ? getAddress(monitor.walletAddress).toLowerCase() : monitor.tokenId;
     return `${monitor.rpcIntegrationId}:${variant.chainId}:${variant.version}:${target}`;
   }
 
-  private closedPositionKey(monitor: UniswapMonitor, variant: UniswapVariant, tokenId: string): string {
+  private closedPositionKey(monitor: DexMonitor, variant: DexVariant, tokenId: string): string {
     return `${this.resourceKey(monitor, variant)}:${tokenId}`;
   }
 
-  private async scan(monitor: UniswapMonitor, signal: AbortSignal): Promise<void> {
+  private async scan(monitor: DexMonitor, signal: AbortSignal): Promise<void> {
     // Keep the last complete gauge snapshot available while the next RPC scan is in flight.
     // Clearing here made every HTTP snapshot observe an empty/partial intermediate state.
     const fingerprint = JSON.stringify({
@@ -243,15 +254,15 @@ export class UniswapV3PositionCoordinator {
     await Promise.all(monitor.variants.map(async (variant) => this.scanVariant(monitor, variant, signal)));
   }
 
-  private async scanVariant(monitor: UniswapMonitor, variant: UniswapVariant, signal: AbortSignal): Promise<void> {
+  private async scanVariant(monitor: DexMonitor, variant: DexVariant, signal: AbortSignal): Promise<void> {
     const timestamp = this.now().toISOString();
     const target = 'walletAddress' in monitor ? monitor.walletAddress : monitor.tokenId;
     const baseLabels = {
       chainId: String(variant.chainId),
       chainName: (variant.version === 'v3'
-        ? supportedUniswapV3Deployments.get(variant.chainId)?.chainName
+        ? (this.protocol === 'pancakeswap' ? supportedPancakeV3Deployments : supportedUniswapV3Deployments).get(variant.chainId)?.chainName
         : supportedUniswapV4Deployments.get(variant.chainId)?.chainName) ?? `Chain ${variant.chainId}`,
-      protocol: 'uniswap',
+      protocol: this.protocol,
       version: variant.version,
       ...('walletAddress' in monitor ? { walletAddress: getAddress(monitor.walletAddress) } : {}),
     };
@@ -265,7 +276,7 @@ export class UniswapV3PositionCoordinator {
         'scan_status',
         failures.length === 0,
         timestamp,
-        { status: scanStatus, labels: baseLabels },
+        { status: scanStatus, labels: baseLabels }, this.protocol,
       ));
       if (scanStatus === 'ok') {
         await this.metricPipeline.ingest(metric(
@@ -274,7 +285,7 @@ export class UniswapV3PositionCoordinator {
           'data_age_seconds',
           '0',
           timestamp,
-          { status: 'ok', unit: 'seconds', labels: {} },
+          { status: 'ok', unit: 'seconds', labels: {} }, this.protocol,
         ));
       }
       if ('walletAddress' in monitor) {
@@ -291,29 +302,29 @@ export class UniswapV3PositionCoordinator {
         };
         await this.metricPipeline.ingest(metric(
           monitor.monitorId, target, 'in_range_count', String(positions.filter((position) => position.inRange).length), timestamp,
-          { status: scanStatus, unit: 'positions', labels: baseLabels },
+          { status: scanStatus, unit: 'positions', labels: baseLabels }, this.protocol,
         ));
         await this.metricPipeline.ingest(metric(
           monitor.monitorId, target, 'out_of_range_count',
           String(positions.filter((position) => !position.inRange && !new Decimal(position.liquidity).isZero()).length), timestamp,
-          { status: scanStatus, unit: 'positions', labels: baseLabels },
+          { status: scanStatus, unit: 'positions', labels: baseLabels }, this.protocol,
         ));
         await this.metricPipeline.ingest(metric(
           monitor.monitorId, target, 'failed_position_count', String(failures.length), timestamp,
-          { status: scanStatus, unit: 'positions', labels: baseLabels },
+          { status: scanStatus, unit: 'positions', labels: baseLabels }, this.protocol,
         ));
         if (valuedPositions.length > 0) {
           await this.metricPipeline.ingest(metric(
             monitor.monitorId, target, 'aggregate_value_usd',
             Decimal.sum(...valuedPositions.map((valuation) => valuation.positionValueUsd)).toSignificantDigits(30).toString(), timestamp,
-            { status: scanStatus, unit: 'USD', labels: aggregationLabels },
+            { status: scanStatus, unit: 'USD', labels: aggregationLabels }, this.protocol,
           ));
         }
         if (valuedFees.length > 0) {
           await this.metricPipeline.ingest(metric(
             monitor.monitorId, target, 'aggregate_fees_usd',
             Decimal.sum(...valuedFees.map((valuation) => valuation.feesValueUsd as string)).toSignificantDigits(30).toString(), timestamp,
-            { status: scanStatus, unit: 'USD', labels: aggregationLabels },
+            { status: scanStatus, unit: 'USD', labels: aggregationLabels }, this.protocol,
           ));
         }
       }
@@ -323,7 +334,7 @@ export class UniswapV3PositionCoordinator {
         'position_count',
         String(positions.length),
         timestamp,
-        { status: scanStatus, unit: 'positions', labels: baseLabels },
+        { status: scanStatus, unit: 'positions', labels: baseLabels }, this.protocol,
       ));
       await this.metricPipeline.ingest(metric(
         monitor.monitorId,
@@ -331,7 +342,7 @@ export class UniswapV3PositionCoordinator {
         'discovery_caught_up',
         discovery.caughtUp,
         timestamp,
-        { status: discovery.caughtUp ? 'ok' : 'warming_up', labels: baseLabels },
+        { status: discovery.caughtUp ? 'ok' : 'warming_up', labels: baseLabels }, this.protocol,
       ));
       if (discovery.scannedThroughBlock !== undefined) {
         await this.metricPipeline.ingest(metric(
@@ -340,7 +351,7 @@ export class UniswapV3PositionCoordinator {
           'discovery_scanned_block',
           discovery.scannedThroughBlock.toString(),
           timestamp,
-          { status: discovery.caughtUp ? 'ok' : 'warming_up', unit: 'block', labels: baseLabels },
+          { status: discovery.caughtUp ? 'ok' : 'warming_up', unit: 'block', labels: baseLabels }, this.protocol,
         ));
       }
       if (discovery.chainTipBlock !== undefined) {
@@ -350,7 +361,7 @@ export class UniswapV3PositionCoordinator {
           'discovery_chain_tip_block',
           discovery.chainTipBlock.toString(),
           timestamp,
-          { status: discovery.caughtUp ? 'ok' : 'warming_up', unit: 'block', labels: baseLabels },
+          { status: discovery.caughtUp ? 'ok' : 'warming_up', unit: 'block', labels: baseLabels }, this.protocol,
         ));
       }
       for (const position of positions) await this.emitPosition(monitor.monitorId, position, timestamp, baseLabels);
@@ -361,14 +372,14 @@ export class UniswapV3PositionCoordinator {
           'read_error',
           false,
           timestamp,
-          { status: 'error', labels: { ...baseLabels, tokenId } },
+          { status: 'error', labels: { ...baseLabels, tokenId } }, this.protocol,
         ));
       }
     } catch {
       if (signal.aborted) return;
-      this.onError(new Error(`Uniswap ${variant.version} scan failed on chain ${variant.chainId}`));
+      this.onError(new Error(`${this.protocol} ${variant.version} scan failed on chain ${variant.chainId}`));
       const previousLabels = this.metricPipeline.list(monitor.monitorId)
-        .find((candidate) => candidate.source === 'uniswap' && candidate.name === 'scan_status')
+        .find((candidate) => candidate.source === this.protocol && candidate.name === 'scan_status')
         ?.labels;
       await this.metricPipeline.ingest(metric(
         monitor.monitorId,
@@ -376,7 +387,7 @@ export class UniswapV3PositionCoordinator {
         'scan_status',
         false,
         timestamp,
-        { status: 'error', labels: { ...previousLabels, ...baseLabels } },
+        { status: 'error', labels: { ...previousLabels, ...baseLabels } }, this.protocol,
       ));
     }
   }
@@ -386,8 +397,8 @@ export class UniswapV3PositionCoordinator {
    * The per-monitor Metric and Rule streams remain separate below this boundary.
    */
   private async readShared(
-    monitor: UniswapMonitor,
-    variant: UniswapVariant,
+    monitor: DexMonitor,
+    variant: DexVariant,
     signal: AbortSignal,
   ): Promise<UniswapVariantRead> {
     signal.throwIfAborted();
@@ -406,8 +417,8 @@ export class UniswapV3PositionCoordinator {
   }
 
   private async readVariant(
-    monitor: UniswapMonitor,
-    variant: UniswapVariant,
+    monitor: DexMonitor,
+    variant: DexVariant,
     signal: AbortSignal,
   ): Promise<UniswapVariantRead> {
     const integration = this.integrations.getRuntime(monitor.rpcIntegrationId);
@@ -467,8 +478,8 @@ export class UniswapV3PositionCoordinator {
   }
 
   private async discover(
-    monitor: UniswapMonitor,
-    variant: UniswapVariant,
+    monitor: DexMonitor,
+    variant: DexVariant,
     signal: AbortSignal,
     v3Reader?: UniswapV3PositionReaderPort,
     ownershipIndexer?: UniswapV4OwnershipIndexerPort,
@@ -638,7 +649,7 @@ export class UniswapV3PositionCoordinator {
     for (const [name, value, unit] of values) {
       await this.metricPipeline.ingest(metric(monitorId, position.tokenId, name, value, timestamp, {
         status: 'ok', unit, labels,
-      }));
+      }, this.protocol));
     }
   }
 
@@ -669,7 +680,7 @@ export class UniswapV3PositionCoordinator {
     position: UniswapPosition,
     amounts: { token0: string; token1: string },
   ): { positionValueUsd: string; feesValueUsd: string | null } | null {
-    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS']);
+    const stable = new Set(['USDC', 'USDT', 'DAI', 'USDS', 'FDUSD', 'BUSD']);
     const ratio = new Decimal('1.0001').pow(position.currentTick)
       .mul(new Decimal(10).pow(position.token0.decimals - position.token1.decimals));
     let price0: Decimal;
@@ -687,10 +698,10 @@ export class UniswapV3PositionCoordinator {
     return { positionValueUsd, feesValueUsd };
   }
 
-  private async checkStale(monitor: UniswapMonitor, signal: AbortSignal): Promise<void> {
+  private async checkStale(monitor: DexMonitor, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     const latestSuccessful = this.metricPipeline.list(monitor.monitorId)
-      .filter((candidate) => candidate.source === 'uniswap' && candidate.status === 'ok')
+      .filter((candidate) => candidate.source === this.protocol && candidate.status === 'ok')
       .reduce<Metric | undefined>((latest, candidate) => (
         latest === undefined || Date.parse(candidate.observedAt) > Date.parse(latest.observedAt) ? candidate : latest
       ), undefined);
@@ -705,7 +716,7 @@ export class UniswapV3PositionCoordinator {
       'data_age_seconds',
       String(ageSeconds),
       timestamp,
-      { status: 'stale', unit: 'seconds' },
+      { status: 'stale', unit: 'seconds' }, this.protocol,
     ));
   }
 }

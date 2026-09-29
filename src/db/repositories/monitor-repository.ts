@@ -12,6 +12,9 @@ import {
   uniswapPositionMonitorConfigSchema,
   uniswapPoolMonitorConfigSchema,
   uniswapWalletMonitorConfigSchema,
+  pancakePositionMonitorConfigSchema,
+  pancakePoolMonitorConfigSchema,
+  pancakeWalletMonitorConfigSchema,
 } from '../../api/schemas.js';
 import type { MonitorCreate, MonitorPatch } from '../../api/schemas.js';
 import { createId } from '../../core/ids.js';
@@ -56,6 +59,25 @@ export interface UniswapPoolRuntimeMonitor {
   rpcIntegrationId: string;
   chainId: number;
   version: 'v3' | 'v4';
+  resourceId: string;
+  volumeWindowSeconds: number[];
+}
+
+export type PancakeRuntimeMonitor = {
+  monitorId: string;
+  intervalSeconds: number;
+  maxStaleSeconds: number;
+  rpcIntegrationId: string;
+  variants: Array<{ chainId: 56; version: 'v3' }>;
+} & ({ walletAddress: string } | { tokenId: string });
+
+export interface PancakePoolRuntimeMonitor {
+  monitorId: string;
+  intervalSeconds: number;
+  maxStaleSeconds: number;
+  rpcIntegrationId: string;
+  chainId: 56;
+  version: 'v3';
   resourceId: string;
   volumeWindowSeconds: number[];
 }
@@ -197,6 +219,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
     return this.database
       .select({
         id: monitors.id,
+        type: monitors.type,
         configJson: monitors.configJson,
         intervalSeconds: monitors.intervalSeconds,
         maxStaleSeconds: monitors.maxStaleSeconds,
@@ -205,6 +228,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       .where(eq(monitors.enabled, true))
       .all()
       .flatMap<UniswapRuntimeMonitor>((row) => {
+        if (!['lp_position', 'uniswap_position', 'uniswap_wallet'].includes(row.type)) return [];
         const raw: unknown = JSON.parse(row.configJson);
         const legacy = lpMonitorConfigSchema.safeParse(raw);
         const position = uniswapPositionMonitorConfigSchema.safeParse(raw);
@@ -259,6 +283,54 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
           resourceId: (parsed.data.version === 'v3' ? parsed.data.poolAddress : parsed.data.poolId) as string,
           volumeWindowSeconds: [...new Set(windowsByMonitor.get(row.id) ?? [])],
         }];
+      });
+  }
+
+  public listEnabledPancakeMonitors(): PancakeRuntimeMonitor[] {
+    return this.database.select({
+      id: monitors.id, type: monitors.type, configJson: monitors.configJson,
+      intervalSeconds: monitors.intervalSeconds, maxStaleSeconds: monitors.maxStaleSeconds,
+    }).from(monitors).where(eq(monitors.enabled, true)).all().flatMap<PancakeRuntimeMonitor>((row) => {
+      if (!['pancake_position', 'pancake_wallet'].includes(row.type)) return [];
+      const raw: unknown = JSON.parse(row.configJson);
+      const position = pancakePositionMonitorConfigSchema.safeParse(raw);
+      const wallet = pancakeWalletMonitorConfigSchema.safeParse(raw);
+      return position.success ? [{
+        monitorId: row.id, intervalSeconds: row.intervalSeconds, maxStaleSeconds: row.maxStaleSeconds,
+        rpcIntegrationId: position.data.rpcIntegrationId, tokenId: position.data.tokenId,
+        variants: [{ chainId: 56, version: 'v3' }],
+      }] : wallet.success ? [{
+        monitorId: row.id, intervalSeconds: row.intervalSeconds, maxStaleSeconds: row.maxStaleSeconds,
+        rpcIntegrationId: wallet.data.rpcIntegrationId, walletAddress: wallet.data.walletAddress,
+        variants: [{ chainId: 56, version: 'v3' }],
+      }] : [];
+    });
+  }
+
+  public listEnabledPancakePoolMonitors(): PancakePoolRuntimeMonitor[] {
+    const windowsByMonitor = new Map<string, number[]>();
+    for (const condition of this.database.select({
+      monitorId: rules.monitorId, metric: ruleConditions.metric, windowSeconds: ruleConditions.windowSeconds,
+    }).from(ruleConditions).innerJoin(rules, eq(ruleConditions.ruleId, rules.id)).where(eq(rules.enabled, true)).all()) {
+      if (condition.windowSeconds === null || ![
+        'volume_token0', 'volume_token1', 'volume_usd', 'volume_change_percent',
+      ].includes(condition.metric)) continue;
+      const windows = windowsByMonitor.get(condition.monitorId) ?? [];
+      windows.push(condition.windowSeconds);
+      windowsByMonitor.set(condition.monitorId, windows);
+    }
+    return this.database.select({
+      id: monitors.id, configJson: monitors.configJson,
+      intervalSeconds: monitors.intervalSeconds, maxStaleSeconds: monitors.maxStaleSeconds,
+    }).from(monitors).where(and(eq(monitors.enabled, true), eq(monitors.type, 'pancake_pool'))).all()
+      .flatMap((row) => {
+        const parsed = pancakePoolMonitorConfigSchema.safeParse(JSON.parse(row.configJson));
+        return parsed.success ? [{
+          monitorId: row.id, intervalSeconds: row.intervalSeconds, maxStaleSeconds: row.maxStaleSeconds,
+          rpcIntegrationId: parsed.data.rpcIntegrationId, chainId: parsed.data.chainId, version: parsed.data.version,
+          resourceId: parsed.data.poolAddress,
+          volumeWindowSeconds: [...new Set(windowsByMonitor.get(row.id) ?? [])],
+        }] : [];
       });
   }
 
@@ -371,7 +443,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
       if (this.integrationRepository === undefined) return;
       const runtime = this.integrationRepository.getRuntime(integrationId);
       const rpc = normalizeEvmRpcConfig(runtime.config);
-      const selectedChainIds = monitorType === 'uniswap_wallet'
+      const selectedChainIds = monitorType === 'uniswap_wallet' || monitorType === 'pancake_wallet'
         ? (config.chainIds as number[])
         : [config.chainId as number];
       const unsupported = selectedChainIds.find((chainId) => !rpc.chainIds.includes(chainId));

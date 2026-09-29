@@ -15,6 +15,7 @@ export interface IntegrationNetworkHealthRecord {
   aaveEventLogsStatus: CapabilityStatus;
   uniswapV3Status: CapabilityStatus;
   uniswapV4Status: CapabilityStatus;
+  pancakeV3Status: CapabilityStatus;
   blockNumber: string | null;
   errorCode: string | null;
   testedAt: string;
@@ -35,10 +36,11 @@ export class IntegrationNetworkHealthRepository {
     )).get() as IntegrationNetworkHealthRecord | undefined;
   }
 
-  public replace(record: IntegrationNetworkHealthRecord): void {
-    this.database.insert(integrationNetworkHealth).values(record).onConflictDoUpdate({
+  public replace(record: Omit<IntegrationNetworkHealthRecord, 'pancakeV3Status'> & Partial<Pick<IntegrationNetworkHealthRecord, 'pancakeV3Status'>>): void {
+    const normalized = { ...record, pancakeV3Status: record.pancakeV3Status ?? 'unknown' };
+    this.database.insert(integrationNetworkHealth).values(normalized).onConflictDoUpdate({
       target: [integrationNetworkHealth.integrationId, integrationNetworkHealth.chainId],
-      set: record,
+      set: normalized,
     }).run();
   }
 

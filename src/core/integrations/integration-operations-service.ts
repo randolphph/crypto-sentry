@@ -31,6 +31,7 @@ import { AaveV3EventReader } from '../../adapters/aave/aave-v3-event-reader.js';
 import type { AaveV3EventReaderOptions } from '../../adapters/aave/aave-v3-event-reader.js';
 import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
+import { PancakeV3PositionReader, supportedPancakeV3Deployments } from '../../adapters/pancake/pancake-v3-position-reader.js';
 import type { UniswapV3Position } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import type { UniswapV4Position } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import {
@@ -74,8 +75,10 @@ export class IntegrationOperationsService {
   private readonly aaveReserveCache = new Map<string, AaveReserveCatalog>();
   private readonly uniswapV3ReaderFactory: UniswapV3PositionReaderFactory;
   private readonly uniswapV4ReaderFactory: UniswapV4PositionReaderFactory;
+  private readonly pancakeV3ReaderFactory: UniswapV3PositionReaderFactory;
   private readonly uniswapV3Readers = new Map<string, UniswapV3PositionReaderPort>();
   private readonly uniswapV4Readers = new Map<string, UniswapV4PositionReaderPort>();
+  private readonly pancakeV3Readers = new Map<string, UniswapV3PositionReaderPort>();
   private readonly walletPositionResponses = new Map<string, {
     expiresAt: number;
     result: UniswapWalletPositionsResult;
@@ -104,12 +107,16 @@ export class IntegrationOperationsService {
     private readonly uniswapV4Ownership?: UniswapV4OwnershipRepository,
     uniswapV3ReaderFactory?: UniswapV3PositionReaderFactory,
     uniswapV4ReaderFactory?: UniswapV4PositionReaderFactory,
+    pancakeV3ReaderFactory?: UniswapV3PositionReaderFactory,
   ) {
     this.uniswapV3ReaderFactory = uniswapV3ReaderFactory ?? {
       create: (options) => new UniswapV3PositionReader({ ...options, fetch: this.fetchImplementation }),
     };
     this.uniswapV4ReaderFactory = uniswapV4ReaderFactory ?? {
       create: (options) => new UniswapV4PositionReader({ ...options, fetch: this.fetchImplementation }),
+    };
+    this.pancakeV3ReaderFactory = pancakeV3ReaderFactory ?? {
+      create: (options) => new PancakeV3PositionReader({ ...options, fetch: this.fetchImplementation }),
     };
   }
 
@@ -126,6 +133,7 @@ export class IntegrationOperationsService {
       capabilities: { accountRead: true; reserveCatalog: true; eventLogs: true };
     }>();
     const uniswapNetworks = new Map<number, { chainId: number; name: string; versions: { v3: boolean; v4: boolean }; integrationIds: string[] }>();
+    const pancakeNetworks = new Map<number, { chainId: number; name: string; versions: { v3: boolean }; integrationIds: string[] }>();
     const binanceSources: Array<{
       integrationId: string;
       name: string;
@@ -160,6 +168,14 @@ export class IntegrationOperationsService {
             current.integrationIds.push(integration.id);
             uniswapNetworks.set(chainId, current);
           }
+          if (chainId === 56 && health?.rpcStatus === 'ok' && health.pancakeV3Status === 'ok') {
+            const current = pancakeNetworks.get(chainId) ?? {
+              chainId, name: evmNetworkName(chainId), versions: { v3: false }, integrationIds: [],
+            };
+            current.versions.v3 = true;
+            current.integrationIds.push(integration.id);
+            pancakeNetworks.set(chainId, current);
+          }
         }
       }
       if (integration.type === 'market_data' && integration.provider === 'binance') {
@@ -174,6 +190,7 @@ export class IntegrationOperationsService {
 
     const networks = [...aaveNetworks.values()].sort((left, right) => left.chainId - right.chainId);
     const uniswap = [...uniswapNetworks.values()].sort((left, right) => left.chainId - right.chainId);
+    const pancakeswap = [...pancakeNetworks.values()].sort((left, right) => left.chainId - right.chainId);
     return {
       aave: {
         ready: networks.length > 0,
@@ -188,6 +205,11 @@ export class IntegrationOperationsService {
         ready: uniswap.length > 0,
         configuredNetworkCount: uniswap.length,
         networks: uniswap,
+      },
+      pancakeswap: {
+        ready: pancakeswap.length > 0,
+        configuredNetworkCount: pancakeswap.length,
+        networks: pancakeswap,
       },
     };
   }
@@ -264,6 +286,7 @@ export class IntegrationOperationsService {
           rpc: 'unknown',
           ...(chainId === 1 ? { aaveV3: 'unknown' as const } : {}),
           ...([1, 4_663].includes(chainId) ? { uniswapV3: 'unknown' as const, uniswapV4: 'unknown' as const } : {}),
+          ...(chainId === 56 ? { pancakeV3: 'unknown' as const } : {}),
         };
         let blockNumber: string | null = null;
         let errorResult: { code: string; message: string } | null = null;
@@ -348,6 +371,14 @@ export class IntegrationOperationsService {
             ]);
             if (codes.some((code) => code === undefined || code === '0x')) throw new Error('contract unavailable');
           });
+          const pancakeV3 = supportedPancakeV3Deployments.get(chainId);
+          if (pancakeV3 !== undefined) connectivity.pancakeV3 = await probe('pancakeV3', async () => {
+            const codes = await Promise.all([
+              rpcClient.publicClient.getBytecode({ address: pancakeV3.factoryAddress }),
+              rpcClient.publicClient.getBytecode({ address: pancakeV3.positionManagerAddress }),
+            ]);
+            if (codes.some((code) => code === undefined || code === '0x')) throw new Error('contract unavailable');
+          });
           const applicable = Object.entries(connectivity).filter(([name]) => name !== 'rpc');
           if (applicable.some(([, status]) => status === 'error')) {
             errorResult = { code: 'RPC_PARTIAL_FAILURE', message: 'One or more protocol capability tests failed' };
@@ -373,6 +404,7 @@ export class IntegrationOperationsService {
           aaveEventLogsStatus: aaveCapabilities.eventLogs,
           uniswapV3Status: connectivity.uniswapV3 ?? 'unknown',
           uniswapV4Status: connectivity.uniswapV4 ?? 'unknown',
+          pancakeV3Status: connectivity.pancakeV3 ?? 'unknown',
           blockNumber,
           errorCode: errorResult?.code ?? null,
           testedAt: new Date().toISOString(),
@@ -616,12 +648,88 @@ export class IntegrationOperationsService {
     };
   }
 
+  public async pancakeWalletPositions(id: string, input: {
+    chainId: 56; version: 'v3'; walletAddress: string; limit: number; cursor?: string | undefined; q?: string | undefined;
+  }): Promise<UniswapWalletPositionsResult> {
+    const cacheKey = JSON.stringify([
+      'pancakeswap', id, input.chainId, input.version, input.walletAddress.toLowerCase(), input.limit,
+      input.cursor ?? null, input.q ?? null,
+    ]);
+    const cached = this.walletPositionResponses.get(cacheKey);
+    if (cached !== undefined && cached.expiresAt > Date.now()) return cached.result;
+    const inflight = this.walletPositionInflight.get(cacheKey);
+    if (inflight !== undefined) return inflight;
+    const request = this.loadPancakeWalletPositions(id, input);
+    this.walletPositionInflight.set(cacheKey, request);
+    try {
+      const result = await request;
+      this.walletPositionResponses.set(cacheKey, {
+        expiresAt: Date.now() + WALLET_POSITION_RESPONSE_CACHE_TTL_MILLISECONDS, result,
+      });
+      return result;
+    } finally {
+      this.walletPositionInflight.delete(cacheKey);
+    }
+  }
+
+  private async loadPancakeWalletPositions(id: string, input: {
+    chainId: 56; version: 'v3'; walletAddress: string; limit: number; cursor?: string | undefined; q?: string | undefined;
+  }): Promise<UniswapWalletPositionsResult> {
+    const integration = this.integrations.getRuntime(id);
+    if (!integration.enabled || integration.type !== 'evm_rpc') throw new AppError(409, 'PROTOCOL_NOT_READY', 'Enabled EVM RPC is required');
+    const config = rpcIntegrationConfigSchema.parse(integration.config);
+    if (!config.chainIds.includes(56)) throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'RPC does not cover BNB Smart Chain');
+    const health = this.networkHealth.get(id, 56);
+    if (health?.rpcStatus !== 'ok' || health.pancakeV3Status !== 'ok') {
+      throw new AppError(409, 'PROTOCOL_NOT_READY', 'Test the PancakeSwap V3 capability first');
+    }
+    const resolved = resolveEvmRpcRequest(config, 56);
+    const wallet = getAddress(input.walletAddress);
+    const readerKey = `pancakeswap:${id}:56:v3`;
+    const reader = this.getPancakeV3Reader(readerKey, {
+      rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: 56,
+      timeoutMilliseconds: config.timeoutMilliseconds, multicallBatchSizeBytes: config.multicallBatchSizeBytes,
+    });
+    let discovered;
+    try {
+      discovered = await reader.discover(wallet);
+    } catch {
+      throw new AppError(502, 'INDEXER_PARTIAL_FAILURE', 'PancakeSwap V3 wallet discovery failed');
+    }
+    const after = input.cursor === undefined ? undefined : BigInt(input.cursor);
+    const candidates = discovered.tokenIds.filter((tokenId) => after === undefined || BigInt(tokenId) > after)
+      .sort((left, right) => BigInt(left) < BigInt(right) ? -1 : BigInt(left) > BigInt(right) ? 1 : 0);
+    const results: Array<PromiseSettledResult<UniswapWalletPosition>> = [];
+    for (let offset = 0; offset < candidates.length; offset += 2) {
+      results.push(...await Promise.allSettled(candidates.slice(offset, offset + 2).map(async (tokenId) => (
+        this.readWalletPosition(`${readerKey}:${tokenId}`, tokenId, reader)
+      ))));
+    }
+    const readable = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    const failedPositionCount = results.length - readable.length;
+    const query = input.q?.trim().toLowerCase();
+    const matches = readable.filter((position) => query === undefined || query.length === 0 || [
+      position.tokenId, position.token0.symbol, position.token1.symbol, position.token0.address,
+      position.token1.address, `${position.token0.symbol}/${position.token1.symbol}`,
+      `${position.token1.symbol}/${position.token0.symbol}`, position.version === 'v3' ? position.poolAddress : '',
+    ].some((value) => value.toLowerCase().includes(query)));
+    const items = matches.slice(0, input.limit);
+    return {
+      status: failedPositionCount > 0 ? 'partial' : items.length === 0 ? 'empty' : 'ok',
+      discovery: { caughtUp: true, scannedThroughBlock: discovered.blockNumber.toString(), chainTipBlock: health.blockNumber },
+      items, failedPositionCount,
+      nextCursor: matches.length > input.limit ? items.at(-1)?.tokenId ?? null : null,
+      error: failedPositionCount > 0 ? { code: 'INDEXER_PARTIAL_FAILURE', message: 'Some positions could not be read' } : null,
+    };
+  }
+
   public async close(): Promise<void> {
     for (const job of this.walletIndexJobs.values()) job.controller.abort();
     await Promise.allSettled([...this.walletIndexJobs.values()].map((job) => job.promise));
     this.walletIndexJobs.clear();
     this.uniswapV3Readers.clear();
     this.uniswapV4Readers.clear();
+    this.pancakeV3Readers.clear();
     this.walletPositionResponses.clear();
     this.walletPositionInflight.clear();
     this.walletPositionReads.clear();
@@ -661,6 +769,17 @@ export class IntegrationOperationsService {
     return reader;
   }
 
+  private getPancakeV3Reader(
+    key: string,
+    options: { rpcUrl: string; headers?: Record<string, string>; expectedChainId: number; timeoutMilliseconds: number; multicallBatchSizeBytes: number },
+  ): UniswapV3PositionReaderPort {
+    const existing = this.pancakeV3Readers.get(key);
+    if (existing !== undefined) return existing;
+    const reader = this.pancakeV3ReaderFactory.create(options);
+    this.pancakeV3Readers.set(key, reader);
+    return reader;
+  }
+
   private clearUniswapWalletCaches(integrationId: string): void {
     for (const key of this.uniswapV3Readers.keys()) {
       if (key.startsWith(`${integrationId}:`)) this.uniswapV3Readers.delete(key);
@@ -668,17 +787,24 @@ export class IntegrationOperationsService {
     for (const key of this.uniswapV4Readers.keys()) {
       if (key.startsWith(`${integrationId}:`)) this.uniswapV4Readers.delete(key);
     }
+    for (const key of this.pancakeV3Readers.keys()) {
+      if (key.startsWith(`pancakeswap:${integrationId}:`)) this.pancakeV3Readers.delete(key);
+    }
     for (const key of this.walletPositionResponses.keys()) {
-      if (key.startsWith(`["${integrationId}"`)) this.walletPositionResponses.delete(key);
+      if (key.startsWith(`["${integrationId}"`) || key.startsWith(`["pancakeswap","${integrationId}"`)) {
+        this.walletPositionResponses.delete(key);
+      }
     }
     for (const key of this.walletPositionInflight.keys()) {
-      if (key.startsWith(`["${integrationId}"`)) this.walletPositionInflight.delete(key);
+      if (key.startsWith(`["${integrationId}"`) || key.startsWith(`["pancakeswap","${integrationId}"`)) {
+        this.walletPositionInflight.delete(key);
+      }
     }
     for (const key of this.walletPositionReads.keys()) {
-      if (key.startsWith(`${integrationId}:`)) this.walletPositionReads.delete(key);
+      if (key.startsWith(`${integrationId}:`) || key.startsWith(`pancakeswap:${integrationId}:`)) this.walletPositionReads.delete(key);
     }
     for (const key of this.walletPositionReadInflight.keys()) {
-      if (key.startsWith(`${integrationId}:`)) this.walletPositionReadInflight.delete(key);
+      if (key.startsWith(`${integrationId}:`) || key.startsWith(`pancakeswap:${integrationId}:`)) this.walletPositionReadInflight.delete(key);
     }
   }
 

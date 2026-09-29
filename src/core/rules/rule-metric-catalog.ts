@@ -201,6 +201,21 @@ export const UNISWAP_POOL_RULE_METRICS: RuleMetricDefinition[] = [
   uniswapEvent('burn', '移除流动性事件'), uniswapEvent('fee_collection', '领取手续费事件', ['v3']),
 ];
 
+const PANCAKE_POSITION_RULE_METRICS: RuleMetricDefinition[] = UNISWAP_POSITION_RULE_METRICS
+  .filter((definition) => definition.versions?.includes('v3') ?? true)
+  .map((definition) => ({
+    ...definition,
+    monitorTypes: definition.monitorTypes.map((type) => type === 'uniswap_position' ? 'pancake_position' : 'pancake_wallet'),
+    chainIds: [56], versions: ['v3'], labels: [...new Set(['protocol', ...definition.labels])],
+  }));
+
+const PANCAKE_POOL_RULE_METRICS: RuleMetricDefinition[] = UNISWAP_POOL_RULE_METRICS
+  .filter((definition) => definition.versions?.includes('v3') ?? true)
+  .map((definition) => ({
+    ...definition, monitorTypes: ['pancake_pool'], chainIds: [56], versions: ['v3'],
+    labels: [...new Set(['protocol', ...definition.labels])],
+  }));
+
 export const RULE_METRICS = {
   market: MARKET_RULE_METRICS,
   aave_account: AAVE_ACCOUNT_RULE_METRICS,
@@ -208,6 +223,9 @@ export const RULE_METRICS = {
   uniswap_position: UNISWAP_POSITION_RULE_METRICS.filter((definition) => definition.monitorTypes.includes('uniswap_position')),
   uniswap_wallet: UNISWAP_POSITION_RULE_METRICS.filter((definition) => definition.monitorTypes.includes('uniswap_wallet')),
   uniswap_pool: UNISWAP_POOL_RULE_METRICS,
+  pancake_position: PANCAKE_POSITION_RULE_METRICS.filter((definition) => definition.monitorTypes.includes('pancake_position')),
+  pancake_wallet: PANCAKE_POSITION_RULE_METRICS.filter((definition) => definition.monitorTypes.includes('pancake_wallet')),
+  pancake_pool: PANCAKE_POOL_RULE_METRICS,
 } as const;
 
 export function ruleMetricDefinition(monitorType: string, metricId: string): RuleMetricDefinition | undefined {

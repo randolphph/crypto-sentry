@@ -18,6 +18,11 @@ const uniswapWalletPositionsQuerySchema = z.object({
   walletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/), q: z.string().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().regex(/^\d+$/).optional(),
 });
+const pancakeWalletPositionsQuerySchema = z.object({
+  chainId: z.coerce.number().pipe(z.literal(56)).default(56), version: z.literal('v3').default('v3'),
+  walletAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/), q: z.string().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.string().regex(/^\d+$/).optional(),
+});
 
 export function registerIntegrationRoutes(
   app: FastifyInstance,
@@ -81,6 +86,14 @@ export function registerIntegrationRoutes(
   } }, async (request) => {
     const { id } = idParamsSchema.parse(request.params);
     return operations.uniswapWalletPositions(id, uniswapWalletPositionsQuerySchema.parse(request.query));
+  });
+
+  app.get('/api/v1/integrations/:id/pancakeswap/wallet-positions', { schema: {
+    tags: ['integrations', 'pancakeswap'], summary: 'Discover directly owned PancakeSwap V3 positions on BNB Smart Chain',
+    params: openApiSchema(idParamsSchema), querystring: openApiSchema(pancakeWalletPositionsQuerySchema),
+  } }, async (request) => {
+    const { id } = idParamsSchema.parse(request.params);
+    return operations.pancakeWalletPositions(id, pancakeWalletPositionsQuerySchema.parse(request.query));
   });
 
   app.post('/api/v1/integrations/binance/default', { schema: {

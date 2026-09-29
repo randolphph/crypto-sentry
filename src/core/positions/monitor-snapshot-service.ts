@@ -24,7 +24,7 @@ export class MonitorSnapshotService {
 
   public get(monitorId: string) {
     const monitor = this.monitors.get(monitorId);
-    if (monitor.type === 'uniswap_pool') {
+    if (monitor.type === 'uniswap_pool' || monitor.type === 'pancake_pool') {
       const snapshot = this.uniswapPool.get(monitorId);
       const { summary, error, observedAt, dataAgeSeconds, status, maxStaleSeconds, ...data } = snapshot;
       return { monitorId, monitorType: monitor.type, status, observedAt, dataAgeSeconds, maxStaleSeconds,
@@ -46,7 +46,7 @@ export class MonitorSnapshotService {
         capability: { available: true, reason: null }, summary, data, error,
       };
     }
-    if (['uniswap_position', 'uniswap_wallet', 'lp_position'].includes(monitor.type)) {
+    if (['uniswap_position', 'uniswap_wallet', 'pancake_position', 'pancake_wallet', 'lp_position'].includes(monitor.type)) {
       const snapshot = this.uniswap.get(monitorId);
       const { summary, error, observedAt, dataAgeSeconds, status, maxStaleSeconds, ...data } = snapshot;
       return {

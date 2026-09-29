@@ -76,6 +76,8 @@ export interface CreateAppOptions {
   uniswapV4OwnershipIndexerFactory?: UniswapV4OwnershipIndexerFactory;
   pollingMinimumIntervalMilliseconds?: number;
   uniswapPoolReaderFactory?: UniswapPoolReaderFactory;
+  pancakeV3PositionReaderFactory?: UniswapV3PositionReaderFactory;
+  pancakePoolReaderFactory?: UniswapPoolReaderFactory;
 }
 
 export async function createApp(options: CreateAppOptions = {}): Promise<FastifyInstance> {
@@ -189,11 +191,14 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     uniswapV4Ownership,
     options.uniswapV3PositionReaderFactory,
     options.uniswapV4PositionReaderFactory,
+    options.pancakeV3PositionReaderFactory,
   );
   const monitors = new MonitorRepository(database.db, integrations);
   const monitorService = new MonitorService(monitors, integrations, integrationNetworkHealth, rpcFetch, {
     ...(options.uniswapV3PositionReaderFactory === undefined ? {} : { v3Factory: options.uniswapV3PositionReaderFactory }),
     ...(options.uniswapV4PositionReaderFactory === undefined ? {} : { v4Factory: options.uniswapV4PositionReaderFactory }),
+    ...(options.pancakeV3PositionReaderFactory === undefined ? {} : { pancakeV3Factory: options.pancakeV3PositionReaderFactory }),
+    ...(options.pancakePoolReaderFactory === undefined ? {} : { pancakePoolFactory: options.pancakePoolReaderFactory }),
   });
   const rules = new RuleRepository(database.db);
   const alerts = new AlertRepository(database.db);
@@ -272,6 +277,24 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       onError: (error) => app.log.warn({ err: error }, 'Uniswap pool monitor error'),
     },
   );
+  const pancakeV3PositionCoordinator = new UniswapV3PositionCoordinator(
+    integrations, monitors, uniswapV4Ownership, metricPipeline, pollingScheduler,
+    {
+      protocol: 'pancakeswap', fetch: rpcFetch,
+      ...(options.pancakeV3PositionReaderFactory === undefined
+        ? {} : { readerFactory: options.pancakeV3PositionReaderFactory }),
+      onError: (error) => app.log.warn({ err: error }, 'PancakeSwap V3 position scan error'),
+    },
+  );
+  const pancakePoolCoordinator = new UniswapPoolCoordinator(
+    integrations, monitors, uniswapPools, chainScanCursors, metricPipeline, pollingScheduler,
+    {
+      protocol: 'pancakeswap', fetch: rpcFetch,
+      ...(options.pancakePoolReaderFactory === undefined ? {} : { readerFactory: options.pancakePoolReaderFactory }),
+      samples: new UniswapPoolSwapSampleRepository(database.db),
+      onError: (error) => app.log.warn({ err: error }, 'PancakeSwap V3 pool monitor error'),
+    },
+  );
   const marketMetricService = options.webSocketFactory === false ? undefined : new MarketMetricService(
     new PriceSampleRepository(database.db),
     metricPipeline,
@@ -314,12 +337,15 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     if (event.entity === 'rule') {
       aavePositionCoordinator.reconcile();
       uniswapPoolCoordinator.reconcile();
+      pancakePoolCoordinator.reconcile();
     }
     if (event.entity === 'monitor' || event.entity === 'integration') {
       aavePositionCoordinator.reconcile();
       aaveEventCoordinator.reconcile();
       uniswapV3PositionCoordinator.reconcile();
       uniswapPoolCoordinator.reconcile();
+      pancakeV3PositionCoordinator.reconcile();
+      pancakePoolCoordinator.reconcile();
     }
   });
   marketDataCoordinator?.reconcile();
@@ -327,6 +353,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
   aaveEventCoordinator.reconcile();
   uniswapV3PositionCoordinator.reconcile();
   uniswapPoolCoordinator.reconcile();
+  pancakeV3PositionCoordinator.reconcile();
+  pancakePoolCoordinator.reconcile();
 
   app.get('/health', { schema: { security: [], tags: ['health'] } }, async () => {
     database.sqlite.prepare('SELECT 1').get();
@@ -356,6 +384,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     aaveEventCoordinator.close();
     uniswapV3PositionCoordinator.close();
     uniswapPoolCoordinator.close();
+    pancakeV3PositionCoordinator.close();
+    pancakePoolCoordinator.close();
     await pollingScheduler.close();
     await marketMetricService?.close();
     await integrationOperations.close();

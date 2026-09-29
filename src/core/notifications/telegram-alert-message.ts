@@ -160,6 +160,7 @@ function formatUniswapAlert(
   const pair = labels.token0Symbol !== undefined && labels.token1Symbol !== undefined
     ? `${labels.token0Symbol}/${labels.token1Symbol}` : undefined;
   const version = labels.version.toUpperCase();
+  const protocolPrefix = labels.protocol === 'pancakeswap' ? 'PancakeSwap ' : '';
   const isPool = labels.resourceId !== undefined && labels.tokenId === undefined;
   const subject = isPool ? '池子' : labels.tokenId === undefined ? 'LP 钱包' : 'LP';
   const stateTitle = metric === 'in_range' && current !== null
@@ -172,7 +173,7 @@ function formatUniswapAlert(
   const target = lineValue(job.message, 'Target');
 
   return [
-    `${severity.emoji} ${severity.label}${repeated ? '（再次提醒）' : ''}｜${subject} ${stateTitle}`,
+    `${severity.emoji} ${severity.label}${repeated ? '（再次提醒）' : ''}｜${protocolPrefix}${subject} ${stateTitle}`,
     ...(identity.length > 0 ? [`${isPool ? '池子' : '仓位'}：${identity}`]
       : target === undefined ? [] : [`对象：${compactTarget(target)}`]),
     ...(current === null || metric === 'in_range' || metric === 'position_closed'

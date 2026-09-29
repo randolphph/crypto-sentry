@@ -222,6 +222,7 @@ GET /api/v1/integrations/catalog
     "routingModes": [{ "id": "fixed", "name": "单链" }, { "id": "url_template", "name": "URL 模板" }, { "id": "header", "name": "Header 选链" }, { "id": "query", "name": "Query 选链" }],
     "networks": [
       { "chainId": 1, "name": "Ethereum", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "available", "uniswapV4": "available" } },
+      { "chainId": 56, "name": "BNB Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "unsupported", "uniswapV4": "unsupported", "pancakeV3": "available" } },
       { "chainId": 4663, "name": "Robinhood Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "available", "uniswapV4": "available" } }
     ],
     "configDefaults": { "timeoutMilliseconds": 5000, "multicallBatchSizeBytes": 8192 }
@@ -232,7 +233,10 @@ GET /api/v1/integrations/catalog
     { "id": "aave_pool", "status": "available", "chainIds": [1] },
     { "id": "uniswap_position", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
     { "id": "uniswap_wallet", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
-    { "id": "uniswap_pool", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] }
+    { "id": "uniswap_pool", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
+    { "id": "pancake_position", "status": "available", "chainIds": [56], "versions": ["v3"] },
+    { "id": "pancake_wallet", "status": "available", "chainIds": [56], "versions": ["v3"] },
+    { "id": "pancake_pool", "status": "available", "chainIds": [56], "versions": ["v3"] }
   ]
 }
 ```
@@ -359,7 +363,10 @@ type MonitorType =
   | "aave_pool"
   | "uniswap_position"
   | "uniswap_pool"
-  | "uniswap_wallet";
+  | "uniswap_wallet"
+  | "pancake_position"
+  | "pancake_pool"
+  | "pancake_wallet";
 ```
 
 通用接口：
@@ -432,6 +439,29 @@ GET /api/v1/integrations/:id/uniswap/wallet-positions?chainId=1&version=v4&walle
 ```
 
 `/uniswap/pools` 仅查询先前写入 SQLite 的 legacy Pool 缓存，支持 symbol/address/poolAddress/poolId/fee tier 搜索和游标分页；它不会启动、恢复或等待任何全链索引，因此不得作为创建 `uniswap_pool` 的前置步骤。Dashboard 应直接提交用户确认的 V3 poolAddress 或 V4 poolId。V3 首次扫描只读取该 Pool 的链上 token/fee 元数据并缓存；V4 poolId 不能反推出 PoolKey，故仅凭 poolId 时 token/价格/TVL/金额估值会明确保持 unavailable/null，tick、liquidity、费用和按 poolId 过滤的事件仍可监控。
+
+## PancakeSwap V3（BNB Smart Chain）
+
+首期支持 Chain ID `56` 上的 PancakeSwap V3。EVM RPC 测试响应通过
+`connectivity.pancakeV3` 报告官方 Factory 和 NonfungiblePositionManager 是否可用；
+`/api/v1/integrations/readiness` 的 `pancakeswap` 字段报告已就绪的 BSC RPC。
+
+可创建以下 Monitor：
+
+- `pancake_position`: `{ rpcIntegrationId, chainId: 56, version: "v3", tokenId }`
+- `pancake_wallet`: `{ rpcIntegrationId, chainIds: [56], versions: ["v3"], walletAddress }`
+- `pancake_pool`: `{ rpcIntegrationId, chainId: 56, version: "v3", poolAddress }`
+
+钱包创建页可以先调用：
+
+`GET /api/v1/integrations/:id/pancakeswap/wallet-positions?walletAddress=0x...&chainId=56&version=v3`
+
+该接口只发现钱包直接持有的 PositionManager NFT，返回结果中的 `protocol` 为
+`pancakeswap`。已存入 MasterChef V3 的 NFT 不在首期发现范围内，前端应显示这一限制。
+
+`pancake_pool` 在创建前读取池子的 `factory()`，只接受官方 PancakeSwap V3 Factory
+创建的 Pool。创建后使用通用 `/api/v1/monitors/:id/snapshot`；单仓位和钱包也可分别读取
+`/pancake-position` 和 `/pancake-positions`。
 
 Wallet V3 直接枚举 ERC-721，V4 使用后台、可恢复的 Transfer 索引；单个 Position 读取失败只增加 failedPositionCount。`q` 支持 tokenId、poolAddress/poolId、token0/token1 symbol、token address，以及正向或反向 `TOKEN0/TOKEN1` 币对；过滤后再分页。
 

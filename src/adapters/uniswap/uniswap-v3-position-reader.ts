@@ -78,7 +78,7 @@ const poolAbi = [{
     { name: 'observationIndex', type: 'uint16' },
     { name: 'observationCardinality', type: 'uint16' },
     { name: 'observationCardinalityNext', type: 'uint16' },
-    { name: 'feeProtocol', type: 'uint8' },
+    { name: 'feeProtocol', type: 'uint32' },
     { name: 'unlocked', type: 'bool' },
   ],
 }] as const;
@@ -136,7 +136,7 @@ export const supportedUniswapV3Deployments = new Map<number, UniswapV3Deployment
 ]);
 
 export interface UniswapV3Position {
-  protocol: 'uniswap';
+  protocol: 'uniswap' | 'pancakeswap';
   version: 'v3';
   chainId: number;
   chainName: string;
@@ -170,6 +170,8 @@ export interface UniswapV3PositionReaderOptions {
   sharedReadCacheTtlMilliseconds?: number;
   now?: () => number;
   publicClient?: PublicClient;
+  deployment?: UniswapV3Deployment;
+  protocol?: 'uniswap' | 'pancakeswap';
 }
 
 export interface UniswapV3OwnedPositions {
@@ -233,7 +235,7 @@ export class UniswapV3PositionReader {
       args: [wallet],
       blockNumber,
     });
-    const tokenIds = await this.readTokenIds(wallet, balance, blockNumber, signal);
+    const tokenIds = await this.readTokenIds(wallet, deployment.positionManagerAddress, balance, blockNumber, signal);
     this.tokenIdsByWallet.set(wallet.toLowerCase(), {
       tokenIds,
       expiresAt: this.now() + Math.max(0, this.tokenIdCacheTtlMilliseconds),
@@ -243,14 +245,14 @@ export class UniswapV3PositionReader {
 
   private async readTokenIds(
     wallet: Address,
+    positionManagerAddress: Address,
     balance: bigint,
     blockNumber: bigint,
     signal?: AbortSignal,
   ): Promise<string[]> {
     if (balance === 0n) return [];
     const contracts = Array.from({ length: Number(balance) }, (_, index) => ({
-      address: supportedUniswapV3Deployments.get(this.options.expectedChainId)?.positionManagerAddress
-        ?? ZERO_ADDRESS as Address,
+      address: positionManagerAddress,
       abi: positionManagerAbi,
       functionName: 'tokenOfOwnerByIndex' as const,
       args: [wallet, BigInt(index)] as const,
@@ -327,7 +329,7 @@ export class UniswapV3PositionReader {
       blockNumber,
     });
     this.poolAddresses.set(poolKey, poolAddress);
-    if (poolAddress.toLowerCase() === ZERO_ADDRESS) throw new Error(`Uniswap V3 pool was not found for position ${tokenId}`);
+    if (poolAddress.toLowerCase() === ZERO_ADDRESS) throw new Error(`V3 pool was not found for position ${tokenId}`);
     signal?.throwIfAborted();
     const [slot0, metadata0, metadata1] = await Promise.all([
       this.readPoolSlot0(poolAddress, blockNumber),
@@ -337,7 +339,7 @@ export class UniswapV3PositionReader {
     signal?.throwIfAborted();
     const currentTick = slot0[1];
     return {
-      protocol: 'uniswap',
+      protocol: this.options.protocol ?? 'uniswap',
       version: 'v3',
       chainId: deployment.chainId,
       chainName: deployment.chainName,
@@ -421,9 +423,9 @@ export class UniswapV3PositionReader {
   }
 
   private async loadDeployment(): Promise<UniswapV3Deployment> {
-    const deployment = supportedUniswapV3Deployments.get(this.options.expectedChainId);
+    const deployment = this.options.deployment ?? supportedUniswapV3Deployments.get(this.options.expectedChainId);
     if (deployment === undefined) {
-      throw new Error(`Uniswap V3 is not supported on chain ${this.options.expectedChainId}`);
+      throw new Error(`V3 concentrated liquidity is not supported on chain ${this.options.expectedChainId}`);
     }
     const chainId = await this.publicClient.getChainId();
     if (chainId !== deployment.chainId) {

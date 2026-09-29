@@ -133,6 +133,7 @@ describe('compatible database migrations', () => {
       expect.objectContaining({ name: 'aave_account_read_status' }),
       expect.objectContaining({ name: 'aave_reserve_catalog_status' }),
       expect.objectContaining({ name: 'aave_event_logs_status' }),
+      expect.objectContaining({ name: 'pancake_v3_status' }),
     ]));
     sqlite.close();
   });
