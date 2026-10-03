@@ -423,7 +423,15 @@ export class AaveV3PositionCoordinator {
         ['supplied_base', asset.suppliedBase, position.baseCurrencySymbol],
         ['debt_base', asset.debtBase, position.baseCurrencySymbol],
         ['usage_as_collateral', asset.usageAsCollateralEnabled, 'boolean'],
+        ['supply_apr_percent', asset.supplyAprPercent, 'percent'],
+        ['supply_apy_percent', asset.supplyApyPercent, 'percent'],
       ];
+      if (asset.variableBorrowAprPercent !== null) assetMetrics.push(
+        ['variable_borrow_apr_percent', asset.variableBorrowAprPercent, 'percent'],
+      );
+      if (asset.variableBorrowApyPercent !== null) assetMetrics.push(
+        ['variable_borrow_apy_percent', asset.variableBorrowApyPercent, 'percent'],
+      );
       for (const [name, value, unit] of assetMetrics) {
         await this.metricPipeline.ingest(metric(monitorId, target, name, value, timestamp, {
           status: 'ok', unit, labels,

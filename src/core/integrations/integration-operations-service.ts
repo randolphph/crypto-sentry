@@ -23,7 +23,7 @@ import { UniswapV3PositionReader } from '../../adapters/uniswap/uniswap-v3-posit
 import { UniswapV4PositionReader } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { UniswapV4OwnershipIndexer } from '../../adapters/uniswap/uniswap-v4-ownership-indexer.js';
 import { getAddress } from 'viem';
-import { AaveV3PositionReader } from '../../adapters/aave/aave-v3-position-reader.js';
+import { AaveV3PositionReader, isProductAaveV3Chain } from '../../adapters/aave/aave-v3-position-reader.js';
 import { AaveV3ReserveCatalogReader } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
 import type { AaveReserveCatalog } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
 import type { AaveReserveCatalogReaderOptions } from '../../adapters/aave/aave-v3-reserve-catalog-reader.js';
@@ -148,7 +148,7 @@ export class IntegrationOperationsService {
         if (!parsed.success) continue;
         for (const chainId of parsed.data.chainIds) {
           const health = healthByIntegration.get(`${integration.id}:${chainId}`);
-          if (chainId === 1 && health?.rpcStatus === 'ok' && health.aaveV3Status === 'ok') {
+          if (isProductAaveV3Chain(chainId) && health?.rpcStatus === 'ok' && health.aaveV3Status === 'ok') {
             const current = aaveNetworks.get(chainId) ?? {
               chainId, name: evmNetworkName(chainId), ready: true, integrationIds: [],
               capabilities: { accountRead: true, reserveCatalog: true, eventLogs: true },
@@ -284,7 +284,7 @@ export class IntegrationOperationsService {
       const networks = await Promise.all(config.chainIds.map(async (chainId) => {
         const connectivity: Record<string, 'ok' | 'error' | 'unknown'> = {
           rpc: 'unknown',
-          ...(chainId === 1 ? { aaveV3: 'unknown' as const } : {}),
+          ...(isProductAaveV3Chain(chainId) ? { aaveV3: 'unknown' as const } : {}),
           ...([1, 4_663].includes(chainId) ? { uniswapV3: 'unknown' as const, uniswapV4: 'unknown' as const } : {}),
           ...(chainId === 56 ? { pancakeV3: 'unknown' as const } : {}),
         };
@@ -330,7 +330,7 @@ export class IntegrationOperationsService {
               return 'error';
             }
           };
-          if (chainId === 1) {
+          if (isProductAaveV3Chain(chainId)) {
             aaveCapabilities.accountRead = await probe('aaveAccountRead', async () => {
               await new AaveV3PositionReader({
                 rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
@@ -342,6 +342,7 @@ export class IntegrationOperationsService {
               await this.aaveReserveReaderFactory.create({
                 rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: chainId,
                 fetch: this.fetchImplementation, timeoutMilliseconds: config.timeoutMilliseconds,
+                multicallBatchSizeBytes: config.multicallBatchSizeBytes,
               }).read();
             });
             aaveCapabilities.eventLogs = await probe('aaveEventLogs', async () => {
@@ -390,7 +391,7 @@ export class IntegrationOperationsService {
           ok: errorResult === null,
           blockNumber,
           connectivity,
-          ...(chainId === 1 ? { aaveCapabilities } : {}),
+          ...(isProductAaveV3Chain(chainId) ? { aaveCapabilities } : {}),
           capabilityErrors,
           error: errorResult,
         };
@@ -435,21 +436,26 @@ export class IntegrationOperationsService {
 
   public invalidateTestResults(integrationId: string): void {
     this.networkHealth.removeIntegration(integrationId);
-    this.aaveReserveCache.delete(integrationId);
+    for (const key of this.aaveReserveCache.keys()) {
+      if (key.startsWith(`${integrationId}:`)) this.aaveReserveCache.delete(key);
+    }
     this.clearUniswapWalletCaches(integrationId);
   }
 
   public async aaveReserves(id: string, chainId: number): Promise<AaveReserveCatalog & { stale: boolean }> {
-    if (chainId !== 1) throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'Aave reserve catalog is only available for Ethereum');
+    if (!isProductAaveV3Chain(chainId)) {
+      throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'Aave reserve catalog is only available for supported Aave networks');
+    }
     const integration = this.integrations.getRuntime(id);
     if (!integration.enabled || integration.type !== 'evm_rpc') {
       throw new AppError(409, 'PROTOCOL_NOT_READY', 'An enabled EVM RPC integration is required');
     }
     const health = this.networkHealth.list().find((item) => item.integrationId === id && item.chainId === chainId);
     if (health?.rpcStatus !== 'ok' || health.aaveReserveCatalogStatus !== 'ok') {
-      throw new AppError(409, 'RESOURCE_CATALOG_NOT_READY', 'Test the Ethereum Aave capability before loading reserves');
+      throw new AppError(409, 'RESOURCE_CATALOG_NOT_READY', 'Test the selected Aave network before loading reserves');
     }
-    const cached = this.aaveReserveCache.get(id);
+    const cacheKey = `${id}:${chainId}`;
+    const cached = this.aaveReserveCache.get(cacheKey);
     if (cached !== undefined && Date.now() - Date.parse(cached.observedAt) < 60_000) return { ...cached, stale: false };
     try {
       const config = rpcIntegrationConfigSchema.parse(integration.config);
@@ -460,8 +466,9 @@ export class IntegrationOperationsService {
         expectedChainId: chainId,
         fetch: this.fetchImplementation,
         timeoutMilliseconds: config.timeoutMilliseconds,
+        multicallBatchSizeBytes: config.multicallBatchSizeBytes,
       }).read();
-      this.aaveReserveCache.set(id, catalog);
+      this.aaveReserveCache.set(cacheKey, catalog);
       return { ...catalog, stale: false };
     } catch {
       if (cached !== undefined) return {

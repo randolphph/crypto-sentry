@@ -63,7 +63,7 @@ export function registerIntegrationRoutes(
 
   app.get('/api/v1/integrations/:id/aave/reserves', { schema: {
     tags: ['integrations', 'aave'],
-    summary: 'List Aave V3 Ethereum reserves from the official deployment',
+    summary: 'List Aave V3 reserves from an official supported deployment',
     params: openApiSchema(idParamsSchema),
     querystring: openApiSchema(aaveReserveQuerySchema),
   } }, async (request) => {

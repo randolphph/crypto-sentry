@@ -56,7 +56,7 @@ function participates(walletAddress: string, event: AaveV3ChainEvent): boolean {
 }
 
 export class AaveV3EventCoordinator {
-  private readonly scheduledIntegrationIds = new Set<string>();
+  private readonly scheduledTargets = new Set<string>();
   private readonly readerFactory: AaveV3EventReaderFactory;
   private readonly confirmationBlocks: bigint;
   private readonly reorgRewindBlocks: bigint;
@@ -90,54 +90,60 @@ export class AaveV3EventCoordinator {
     const accountMonitors = this.monitors.listEnabledAaveMonitors().flatMap((monitor) => (
       monitor.legacy ? [] : [monitor]
     ));
-    const integrationIds = new Set([
-      ...poolMonitors.map((monitor) => monitor.rpcIntegrationId),
-      ...accountMonitors.map((monitor) => monitor.rpcIntegrationId),
-    ]);
-    for (const id of this.scheduledIntegrationIds) {
-      if (integrationIds.has(id)) continue;
-      this.scheduler.remove(this.taskId(id));
-      this.scheduledIntegrationIds.delete(id);
-    }
-    for (const integrationId of integrationIds) {
-      const intervals = [
-        ...poolMonitors.filter((monitor) => monitor.rpcIntegrationId === integrationId).map((monitor) => monitor.intervalSeconds),
-        ...accountMonitors.filter((monitor) => monitor.rpcIntegrationId === integrationId).map((monitor) => monitor.intervalSeconds),
-      ];
-      this.scheduler.upsert({
-        id: this.taskId(integrationId),
-        intervalMilliseconds: Math.min(...intervals) * 1_000,
-        run: async (signal) => this.scan(integrationId, signal),
+    const targets = new Map<string, { integrationId: string; chainId: number; intervalSeconds: number }>();
+    for (const monitor of [...poolMonitors, ...accountMonitors]) {
+      const key = this.targetKey(monitor.rpcIntegrationId, monitor.chainId);
+      const current = targets.get(key);
+      targets.set(key, {
+        integrationId: monitor.rpcIntegrationId,
+        chainId: monitor.chainId,
+        intervalSeconds: Math.min(current?.intervalSeconds ?? Number.POSITIVE_INFINITY, monitor.intervalSeconds),
       });
-      this.scheduledIntegrationIds.add(integrationId);
+    }
+    for (const key of this.scheduledTargets) {
+      if (targets.has(key)) continue;
+      this.scheduler.remove(this.taskId(key));
+      this.scheduledTargets.delete(key);
+    }
+    for (const [key, target] of targets) {
+      this.scheduler.upsert({
+        id: this.taskId(key),
+        intervalMilliseconds: target.intervalSeconds * 1_000,
+        run: async (signal) => this.scan(target.integrationId, target.chainId, signal),
+      });
+      this.scheduledTargets.add(key);
     }
   }
 
   public close(): void {
-    for (const integrationId of this.scheduledIntegrationIds) this.scheduler.remove(this.taskId(integrationId));
-    this.scheduledIntegrationIds.clear();
+    for (const key of this.scheduledTargets) this.scheduler.remove(this.taskId(key));
+    this.scheduledTargets.clear();
   }
 
-  private taskId(integrationId: string): string {
-    return `aave-v3-events:${integrationId}`;
+  private targetKey(integrationId: string, chainId: number): string {
+    return `${integrationId}:${chainId}`;
   }
 
-  private async scan(integrationId: string, signal: AbortSignal): Promise<void> {
+  private taskId(key: string): string {
+    return `aave-v3-events:${key}`;
+  }
+
+  private async scan(integrationId: string, chainId: number, signal: AbortSignal): Promise<void> {
     const integration = this.integrations.getRuntime(integrationId);
     if (!integration.enabled || integration.type !== 'evm_rpc') return;
     const config = rpcIntegrationConfigSchema.safeParse(integration.config);
-    if (!config.success || !config.data.chainIds.includes(1)) return;
-    const resolved = resolveEvmRpcRequest(config.data, 1);
+    if (!config.success || !config.data.chainIds.includes(chainId)) return;
+    const resolved = resolveEvmRpcRequest(config.data, chainId);
     const reader = this.readerFactory.create({
       rpcUrl: resolved.rpcUrl,
       headers: resolved.headers,
-      expectedChainId: 1,
+      expectedChainId: chainId,
       timeoutMilliseconds: config.data.timeoutMilliseconds,
     });
     try {
       const tip = await reader.latestBlock(signal);
       const confirmedTip = tip > this.confirmationBlocks ? tip - this.confirmationBlocks : 0n;
-      const saved = this.cursors.get(integrationId, 'aave_v3_events', 1, 'pool');
+      const saved = this.cursors.get(integrationId, 'aave_v3_events', chainId, 'pool');
       let fromBlock = saved === undefined
         ? (confirmedTip > this.initialLookbackBlocks ? confirmedTip - this.initialLookbackBlocks : 0n)
         : (saved > this.reorgRewindBlocks ? saved - this.reorgRewindBlocks + 1n : 0n);
@@ -146,22 +152,22 @@ export class AaveV3EventCoordinator {
         const toBlock = fromBlock + this.blockChunkSize - 1n < confirmedTip
           ? fromBlock + this.blockChunkSize - 1n : confirmedTip;
         const events = await reader.scan(fromBlock, toBlock, signal);
-        for (const event of events) await this.distribute(integrationId, event);
-        this.cursors.save(integrationId, 'aave_v3_events', 1, 'pool', toBlock);
-        await this.emitProgress(integrationId, tip, confirmedTip, toBlock);
+        for (const event of events) await this.distribute(integrationId, chainId, event);
+        this.cursors.save(integrationId, 'aave_v3_events', chainId, 'pool', toBlock);
+        await this.emitProgress(integrationId, chainId, tip, confirmedTip, toBlock);
         fromBlock = toBlock + 1n;
       }
     } catch (error) {
       if (signal.aborted) return;
       this.onError(error instanceof Error ? error : new Error(String(error)));
-      await this.emitFailure(integrationId);
+      await this.emitFailure(integrationId, chainId);
     }
   }
 
-  private async distribute(integrationId: string, event: AaveV3ChainEvent): Promise<void> {
+  private async distribute(integrationId: string, chainId: number, event: AaveV3ChainEvent): Promise<void> {
     const eventLabels = labels(event);
     for (const monitor of this.monitors.listEnabledAavePoolMonitors()) {
-      if (monitor.rpcIntegrationId !== integrationId) continue;
+      if (monitor.rpcIntegrationId !== integrationId || monitor.chainId !== chainId) continue;
       if (monitor.reserveAssetAddresses.length > 0 && !monitor.reserveAssetAddresses.some(
         (address) => address.toLowerCase() === event.reserveAssetAddress.toLowerCase(),
       )) continue;
@@ -179,7 +185,8 @@ export class AaveV3EventCoordinator {
       });
     }
     for (const monitor of this.monitors.listEnabledAaveMonitors()) {
-      if (monitor.legacy || monitor.rpcIntegrationId !== integrationId || !participates(monitor.walletAddress, event)) continue;
+      if (monitor.legacy || monitor.rpcIntegrationId !== integrationId || monitor.chainId !== chainId ||
+        !participates(monitor.walletAddress, event)) continue;
       await this.metricPipeline.ingest({
         monitorId: monitor.monitorId, source: 'aave_v3', target: monitor.walletAddress,
         name: `account_${event.eventType}`, value: event.tokenAmount, unit: event.symbol,
@@ -189,14 +196,16 @@ export class AaveV3EventCoordinator {
     }
   }
 
-  private async emitProgress(integrationId: string, tip: bigint, confirmedTip: bigint, scannedThrough: bigint): Promise<void> {
+  private async emitProgress(integrationId: string, chainId: number, tip: bigint, confirmedTip: bigint, scannedThrough: bigint): Promise<void> {
     const now = new Date().toISOString();
-    for (const monitor of this.monitors.listEnabledAavePoolMonitors().filter((item) => item.rpcIntegrationId === integrationId)) {
+    for (const monitor of this.monitors.listEnabledAavePoolMonitors().filter(
+      (item) => item.rpcIntegrationId === integrationId && item.chainId === chainId,
+    )) {
       await this.metricPipeline.ingest({
-        monitorId: monitor.monitorId, source: 'aave_v3', target: 'ethereum', name: 'event_scan_status', value: true,
+        monitorId: monitor.monitorId, source: 'aave_v3', target: String(chainId), name: 'event_scan_status', value: true,
         observedAt: now, receivedAt: now, status: 'ok',
         labels: {
-          chainId: '1',
+          chainId: String(chainId),
           chainTipBlock: tip.toString(),
           confirmedTipBlock: confirmedTip.toString(),
           scannedThroughBlock: scannedThrough.toString(),
@@ -206,12 +215,14 @@ export class AaveV3EventCoordinator {
     }
   }
 
-  private async emitFailure(integrationId: string): Promise<void> {
+  private async emitFailure(integrationId: string, chainId: number): Promise<void> {
     const now = new Date().toISOString();
-    for (const monitor of this.monitors.listEnabledAavePoolMonitors().filter((item) => item.rpcIntegrationId === integrationId)) {
+    for (const monitor of this.monitors.listEnabledAavePoolMonitors().filter(
+      (item) => item.rpcIntegrationId === integrationId && item.chainId === chainId,
+    )) {
       await this.metricPipeline.ingest({
-        monitorId: monitor.monitorId, source: 'aave_v3', target: 'ethereum', name: 'event_scan_status', value: false,
-        observedAt: now, receivedAt: now, status: 'error', labels: { chainId: '1', reason: 'rpc_scan_failed' },
+        monitorId: monitor.monitorId, source: 'aave_v3', target: String(chainId), name: 'event_scan_status', value: false,
+        observedAt: now, receivedAt: now, status: 'error', labels: { chainId: String(chainId), reason: 'rpc_scan_failed' },
       });
     }
   }

@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 已支持测试消息和持久化告警投递；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum 与 Plasma 的 Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 已支持测试消息和持久化告警投递；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
 
@@ -98,7 +98,7 @@ Dashboard 可先读取数据源目录和当前就绪状态，避免在前端硬�
 ```text
 GET  /api/v1/integrations/catalog            # 服务商、网络和安全默认值
 GET  /api/v1/integrations/readiness          # Aave/Binance/Uniswap 是否可创建有效 Monitor
-GET  /api/v1/integrations/:id/aave/reserves # Ethereum Aave V3 官方 Reserve 目录
+GET  /api/v1/integrations/:id/aave/reserves # Ethereum/Plasma Aave V3 官方 Reserve 目录
 GET  /api/v1/integrations/:id/uniswap/pools # 仅查询既有的 legacy Pool 缓存；不会触发索引
 GET  /api/v1/integrations/:id/uniswap/wallet-positions # 创建 Monitor 前发现 LP
 POST /api/v1/integrations/binance/default    # 幂等创建无需密钥的 Binance 公共行情源
@@ -130,7 +130,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
-`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 会逐个测试全部 `chainIds`：先调用 `eth_chainId` 与 `eth_blockNumber`，再检查该网络当前已实现协议的真实合约。Ethereum 分别验证 Aave Account、Reserve Catalog 与事件日志，Readiness 只有在三项真实探测均成功时才开放；Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。响应使用 `networks[]` 保留每条链的独立结果；测试流程完成返回 HTTP 200，只有全部链成功时顶层 `ok` 才为 true。配置网络不一致使用 `RPC_CHAIN_ID_MISMATCH`，连接或能力失败使用不含敏感 URL 的稳定错误码。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。EVM HTTP transport 默认最多重试一次；Aave Account 由上层 endpoint failover 负责重试并关闭 transport 重试，避免一次失败被重复放大。
+`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 会逐个测试全部 `chainIds`：先调用 `eth_chainId` 与 `eth_blockNumber`，再检查该网络当前已实现协议的真实合约。Ethereum 与 Plasma 分别验证 Aave Account、Reserve Catalog 与事件日志，Readiness 只有在三项真实探测均成功时才开放；Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。响应使用 `networks[]` 保留每条链的独立结果；测试流程完成返回 HTTP 200，只有全部链成功时顶层 `ok` 才为 true。配置网络不一致使用 `RPC_CHAIN_ID_MISMATCH`，连接或能力失败使用不含敏感 URL 的稳定错误码。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。EVM HTTP transport 默认最多重试一次；Aave Account 由上层 endpoint failover 负责重试并关闭 transport 重试，避免一次失败被重复放大。
 
 Binance market Monitor 还输出 24 小时 base/quote volume；永续合约输出 funding rate、next funding time、open interest 和窗口 OI 变化率。价格、volume、funding 优先复用共享 WebSocket，OI 按 Integration + symbol 合并 REST 轮询并遵循 Monitor interval。价格和 OI 样本持久化到 SQLite，重启后可继续窗口计算；缺失值使用 warming/error 状态和 `unavailable`，不会伪装为数值 0。Catalog 的 `samplingPresets` 与 `ruleMetrics` 是 Dashboard 渲染规则表单的唯一能力来源。
 
@@ -140,7 +140,7 @@ Metric 支持 gauge/event 两种语义。链上 event 必须带 `chainId:txHash:
 
 ## Aave V3 地址监控
 
-先为需要扫描的网络各创建一个启用的 `evm_rpc` 集成。当前自动识别 Ethereum（1）、Arbitrum（42161）、Base（8453）和 BNB Chain（56）；同一网络配置多个 RPC 时会按顺序故障转移。Pool、Oracle、Data Provider 和资产地址均来自 Aave 官方 Address Book，无需手工填写合约地址。
+先为需要扫描的网络各创建一个启用的 `evm_rpc` 集成。新版 Monitor 开放 Ethereum（1）和 Plasma（9745）；旧地址式 Monitor 还会自动识别 Arbitrum（42161）、Base（8453）和 BNB Chain（56）。同一网络配置多个 RPC 时会按顺序故障转移。Pool、Oracle、Data Provider 和资产地址均来自 Aave 官方 Address Book，无需手工填写合约地址。
 
 创建 Monitor 时只需要钱包地址：
 
@@ -165,16 +165,18 @@ GET /api/v1/monitors/:id/positions
 响应包含 `status`、数据时间与年龄、扫描成功/失败网络数，以及按网络分组的账户风险和逐资产余额。`status` 明确区分 `warming_up`、`ok`、`empty`、`partial`、`stale` 和 `error`；没有仓位的网络只出现在 `networkScans`，不会生成空仓位卡片。账户没有债务时，结构化响应使用 `healthFactor: null` 和 `healthFactorInfinite: true` 表达无限健康因子，Dashboard 应显示 `∞` 或“无借款”，而不是展示 Aave 合约的巨大整数哨兵值；有债务时返回实际 `healthFactor` 且 `healthFactorInfinite` 为 `false`。底层原始数据仍可通过 `GET /api/v1/monitors/:id/metrics` 读取：
 
 - 账户级：`total_collateral_base`、`total_debt_base`、`available_borrows_base`、`ltv_percent`、`liquidation_threshold_percent`、`health_factor`
-- 资产级：`supplied_amount`、`stable_debt_amount`、`variable_debt_amount`、`total_debt_amount`、`supplied_base`、`debt_base`、`usage_as_collateral`
+- 资产级：`supplied_amount`、`stable_debt_amount`、`variable_debt_amount`、`total_debt_amount`、`supplied_base`、`debt_base`、`usage_as_collateral`、`supply_apr_percent`、`supply_apy_percent`、`variable_borrow_apr_percent`、`variable_borrow_apy_percent`
 - 扫描级：`rpc_status`、`position_chain_count`、`position_asset_count`
 
 每个链和资产通过 Metric labels 区分。读取完全只读，不需要私钥、助记词或钱包签名；单链读取失败会进入 `error`，不会把失败伪装成零仓位。
 
 每轮 Aave 扫描先取得最新区块号，账户汇总、Oracle 和所有资产读取均固定在同一块高，结构化仓位中的 `blockNumber` 可供网页展示和排障。Multicall 按配置的 calldata 字节数自动分批。单个 RPC 最多尝试两次并进行指数退避，同链多个 RPC 会自动故障转移；连续三轮失败后打开 60 秒熔断器。独立 freshness watchdog 会在最后成功数据超过 `maxStaleSeconds` 时产生 `data_age_seconds` stale 指标。
 
-新 Dashboard 使用 `aave_account` 并显式指定 `rpcIntegrationId` 与 `chainId: 1`。Account 还提供 `health_factor_infinite`、抵押/债务窗口变化指标和 supply/withdraw/borrow/repay/liquidation 事件。窗口样本持久化到 SQLite，重启后继续计算；无借款不会把 Aave 的最大整数哨兵作为可执行健康因子。
+新 Dashboard 使用 `aave_account` 并显式指定 `rpcIntegrationId` 与 `chainId`（Ethereum 为 `1`，Plasma 为 `9745`）。Account 还提供 `health_factor_infinite`、抵押/债务窗口变化指标和 supply/withdraw/borrow/repay/liquidation 事件。窗口样本持久化到 SQLite，重启后继续计算；无借款不会把 Aave 的最大整数哨兵作为可执行健康因子。
 
-`aave_pool` 使用同一个 Ethereum RPC，可选 `reserveAssetAddresses`；空数组监控全部官方 Reserve。事件扫描按 Integration 合并，采用确认区块、RPC 范围分片、持久游标和重扫窗口，eventId 使用 `chainId:txHash:logIndex` 并持久去重。每个事件保留 token 原始精度格式化数量；Aave Oracle 失败时 USD 为 `null`、valuationStatus 为 unavailable，不返回 0。统一快照通过 `GET /api/v1/monitors/:id/snapshot` 返回最近事件和扫描进度，其中 caughtUp 比较 `scannedThroughBlock >= confirmedTipBlock`；`chainTipBlock` 是未扣确认数的链头。事件 observedAt 使用各自 blockNumber 的时间戳，并缓存同区块查询。
+资产快照同时返回供应 APR/APY 与可变借款 APR/APY。供应利率直接复用 `getUserReserveData`；只有实际存在可变债务时，才额外对借款资产执行一次批量 `getReserveData`，不会为无债务账户增加 RPC 请求。利率是百分比字符串，借款利率读取失败或没有可变债务时返回 `null`。
+
+`aave_pool` 使用所选 Ethereum 或 Plasma RPC，可选 `reserveAssetAddresses`；空数组监控该链全部官方 Reserve。事件扫描按 Integration 合并，采用确认区块、RPC 范围分片、持久游标和重扫窗口，eventId 使用 `chainId:txHash:logIndex` 并持久去重。每个事件保留 token 原始精度格式化数量；Aave Oracle 失败时 USD 为 `null`、valuationStatus 为 unavailable，不返回 0。统一快照通过 `GET /api/v1/monitors/:id/snapshot` 返回最近事件和扫描进度，其中 caughtUp 比较 `scannedThroughBlock >= confirmedTipBlock`；`chainTipBlock` 是未扣确认数的链头。事件 observedAt 使用各自 blockNumber 的时间戳，并缓存同区块查询。
 
 真实 RPC 冒烟测试默认不会加入普通测试套件。部署环境配置好测试参数后可显式运行：
 

@@ -4,6 +4,8 @@ import type { Address, PublicClient } from 'viem';
 import { createEvmPublicClient } from '../evm/evm-rpc-client.js';
 import { supportedAaveV3Markets } from './aave-v3-position-reader.js';
 
+const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as Address;
+
 const configurationAbi = [{
   type: 'function', name: 'getReserveConfigurationData', stateMutability: 'view',
   inputs: [{ name: 'asset', type: 'address' }],
@@ -39,8 +41,8 @@ export interface AaveReserveCatalogItem {
 }
 
 export interface AaveReserveCatalog {
-  chainId: 1;
-  chainName: 'Ethereum';
+  chainId: number;
+  chainName: string;
   protocol: 'aave';
   version: 'v3';
   poolAddress: Address;
@@ -57,6 +59,7 @@ export interface AaveReserveCatalogReaderOptions {
   headers?: Record<string, string>;
   expectedChainId: number;
   timeoutMilliseconds?: number;
+  multicallBatchSizeBytes?: number;
   fetch?: typeof globalThis.fetch;
   publicClient?: PublicClient;
   now?: () => Date;
@@ -73,9 +76,9 @@ export class AaveV3ReserveCatalogReader {
 
   public async read(signal?: AbortSignal): Promise<AaveReserveCatalog> {
     const market = supportedAaveV3Markets.get(this.options.expectedChainId);
-    if (market === undefined || market.chainId !== 1) throw new Error('Aave V3 reserve catalog is only available on Ethereum');
+    if (market === undefined) throw new Error(`Aave V3 reserve catalog is not available on chain ${this.options.expectedChainId}`);
     const chainId = await this.publicClient.getChainId();
-    if (chainId !== 1) throw new Error(`EVM RPC chain ID mismatch: expected 1, received ${chainId}`);
+    if (chainId !== market.chainId) throw new Error(`EVM RPC chain ID mismatch: expected ${market.chainId}, received ${chainId}`);
     signal?.throwIfAborted();
     const blockNumber = await this.publicClient.getBlockNumber({ cacheTime: 0 });
     const baseUnit = await this.publicClient.readContract({
@@ -86,7 +89,13 @@ export class AaveV3ReserveCatalogReader {
       { address: market.oracleAddress, abi: oracleAbi, functionName: 'getAssetPrice' as const, args: [asset.underlyingAddress] as const },
       { address: asset.underlyingAddress, abi: erc20Abi, functionName: 'name' as const },
     ]);
-    const results = await this.publicClient.multicall({ contracts, allowFailure: true, blockNumber });
+    const results = await this.publicClient.multicall({
+      contracts,
+      allowFailure: true,
+      batchSize: this.options.multicallBatchSizeBytes ?? 8_192,
+      blockNumber,
+      multicallAddress: MULTICALL3_ADDRESS,
+    });
     signal?.throwIfAborted();
     let partial = false;
     const items = market.assets.map((asset, index): AaveReserveCatalogItem => {
@@ -119,7 +128,7 @@ export class AaveV3ReserveCatalogReader {
       };
     });
     return {
-      chainId: 1, chainName: 'Ethereum', protocol: 'aave', version: 'v3',
+      chainId: market.chainId, chainName: market.chainName, protocol: 'aave', version: 'v3',
       poolAddress: market.poolAddress, poolAddressesProviderAddress: market.poolAddressesProviderAddress,
       items, blockNumber: blockNumber.toString(), observedAt: this.now().toISOString(),
       status: partial ? 'partial' : 'ok',

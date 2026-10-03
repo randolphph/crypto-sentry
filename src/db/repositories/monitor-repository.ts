@@ -33,7 +33,7 @@ export type AaveRuntimeMonitor = {
   walletAddress: string;
   collateralChangeWindowSeconds: number[];
   debtChangeWindowSeconds: number[];
-} & ({ legacy: true } | { legacy: false; rpcIntegrationId: string; chainId: 1 });
+} & ({ legacy: true } | { legacy: false; rpcIntegrationId: string; chainId: 1 | 9_745 });
 
 export type UniswapRuntimeMonitor = {
   monitorId: string;
@@ -48,7 +48,7 @@ export interface AavePoolRuntimeMonitor {
   intervalSeconds: number;
   maxStaleSeconds: number;
   rpcIntegrationId: string;
-  chainId: 1;
+  chainId: 1 | 9_745;
   reserveAssetAddresses: string[];
 }
 
@@ -402,10 +402,11 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
   ): Record<string, unknown> {
     const normalized = monitorConfigSchema(monitorType).parse(config) as Record<string, unknown>;
     if (monitorType === 'aave_pool') {
-      const reserves = new Set((supportedAaveV3Markets.get(1)?.assets ?? []).map((asset) => asset.underlyingAddress.toLowerCase()));
+      const chainId = normalized.chainId as number;
+      const reserves = new Set((supportedAaveV3Markets.get(chainId)?.assets ?? []).map((asset) => asset.underlyingAddress.toLowerCase()));
       const unknown = (normalized.reserveAssetAddresses as string[]).find((address) => !reserves.has(address.toLowerCase()));
       if (unknown !== undefined) {
-        throw new AppError(404, 'RESOURCE_NOT_FOUND', 'Aave reserve is not present in the official Ethereum V3 deployment', {
+        throw new AppError(404, 'RESOURCE_NOT_FOUND', 'Aave reserve is not present in the selected official V3 deployment', {
           reserveAssetAddresses: unknown,
         });
       }

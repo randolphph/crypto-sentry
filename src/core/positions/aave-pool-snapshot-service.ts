@@ -36,7 +36,7 @@ export class AavePoolSnapshotService {
       return [{
         eventId,
         eventType: source.labels?.eventType ?? null,
-        chainId: 1,
+        chainId: Number(source.labels?.chainId ?? config.chainId),
         reserveAssetAddress: source.labels?.reserveAssetAddress ?? null,
         symbol: source.labels?.symbol ?? null,
         tokenAmount: typeof values.token?.value === 'string' ? values.token.value : null,
@@ -74,7 +74,7 @@ export class AavePoolSnapshotService {
         selectedReserveCount: config.reserveAssetAddresses.length,
         monitorsAllReserves: config.reserveAssetAddresses.length === 0,
       },
-      chainId: 1,
+      chainId: config.chainId,
       reserveAssetAddresses: config.reserveAssetAddresses,
       discovery: {
         caughtUp: progress?.status === 'ok' && progress.labels?.scannedThroughBlock !== undefined &&

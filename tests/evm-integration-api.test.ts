@@ -5,6 +5,7 @@ import { createApp } from '../src/app.js';
 import type { AppConfig } from '../src/config.js';
 import { ETHEREUM_UNISWAP_V3 } from '../src/adapters/uniswap/uniswap-v3-position-reader.js';
 import { ETHEREUM_UNISWAP_V4 } from '../src/adapters/uniswap/uniswap-v4-position-reader.js';
+import { supportedAaveV3Markets } from '../src/adapters/aave/aave-v3-position-reader.js';
 
 const token = 'evm-test-api-token-that-is-long-enough';
 const authorization = { authorization: `Bearer ${token}` };
@@ -74,12 +75,15 @@ describe('EVM RPC integration API', () => {
     fetchMock.mockClear();
     app = await createApp({
       config, logger: false, fetch: fetchMock, webSocketFactory: false,
-      aaveReserveCatalogReaderFactory: { create: () => ({ read: async () => ({
-        chainId: 1 as const, chainName: 'Ethereum' as const, protocol: 'aave' as const, version: 'v3' as const,
-        poolAddress: '0x0000000000000000000000000000000000000001',
-        poolAddressesProviderAddress: '0x0000000000000000000000000000000000000002',
-        items: [], blockNumber: '100', observedAt: '2026-09-16T00:00:00.000Z', status: 'ok' as const, error: null,
-      }) }) },
+      aaveReserveCatalogReaderFactory: { create: (options) => ({ read: async () => {
+        const market = supportedAaveV3Markets.get(options.expectedChainId);
+        if (market === undefined) throw new Error('Missing Aave market fixture');
+        return {
+          chainId: market.chainId, chainName: market.chainName, protocol: 'aave' as const, version: 'v3' as const,
+          poolAddress: market.poolAddress, poolAddressesProviderAddress: market.poolAddressesProviderAddress,
+          items: [], blockNumber: '100', observedAt: '2026-09-16T00:00:00.000Z', status: 'ok' as const, error: null,
+        };
+      } }) },
       aaveCapabilityEventReaderFactory: { create: () => ({ latestBlock: async () => 100n, scan: async () => [] }) },
     });
   });
@@ -112,6 +116,16 @@ describe('EVM RPC integration API', () => {
         type: 'evm_rpc',
         provider: 'custom',
         config: { chainId: 4_663, rpcUrl: 'https://rpc.mainnet.chain.robinhood.com' },
+      },
+    });
+  }
+
+  async function createPlasmaRpcIntegration() {
+    return app.inject({
+      method: 'POST', url: '/api/v1/integrations', headers: authorization,
+      payload: {
+        name: 'Plasma Mainnet', type: 'evm_rpc', provider: 'custom',
+        config: { chainId: 9_745, rpcUrl: 'https://rpc.example/plasma-secret' },
       },
     });
   }
@@ -298,6 +312,57 @@ describe('EVM RPC integration API', () => {
     expect(readiness.json()).toMatchObject({
       uniswap: { ready: true, networks: [{ chainId: 4_663, versions: { v3: true, v4: true } }] },
     });
+  });
+
+  it('tests Plasma Aave capabilities and exposes it in readiness and reserve discovery', async () => {
+    actualChainId = 9_745;
+    const created = await createPlasmaRpcIntegration();
+    const integrationId = created.json<{ id: string }>().id;
+    const response = await app.inject({
+      method: 'POST', url: `/api/v1/integrations/${integrationId}/test`, headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      ok: true,
+      networks: [{
+        chainId: 9_745, chainName: 'Plasma',
+        connectivity: { rpc: 'ok', aaveV3: 'ok' },
+        aaveCapabilities: { accountRead: 'ok', reserveCatalog: 'ok', eventLogs: 'ok' },
+      }],
+    });
+    expect(response.body).not.toContain('plasma-secret');
+
+    const reserves = await app.inject({
+      method: 'GET', url: `/api/v1/integrations/${integrationId}/aave/reserves?chainId=9745`, headers: authorization,
+    });
+    expect(reserves.statusCode).toBe(200);
+    expect(reserves.json()).toMatchObject({ chainId: 9_745, chainName: 'Plasma', status: 'ok', stale: false });
+
+    const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
+    expect(readiness.json()).toMatchObject({
+      aave: { ready: true, networks: [{ chainId: 9_745, name: 'Plasma', ready: true, integrationIds: [integrationId] }] },
+    });
+
+    const account = await app.inject({
+      method: 'POST', url: '/api/v1/monitors', headers: authorization,
+      payload: {
+        name: 'Plasma Aave account', type: 'aave_account', enabled: false,
+        config: { rpcIntegrationId: integrationId, chainId: 9_745, walletAddress: '0x0000000000000000000000000000000000001234' },
+      },
+    });
+    expect(account.statusCode).toBe(201);
+    expect(account.json()).toMatchObject({ config: { chainId: 9_745 } });
+
+    const pool = await app.inject({
+      method: 'POST', url: '/api/v1/monitors', headers: authorization,
+      payload: {
+        name: 'Plasma Aave pool', type: 'aave_pool', enabled: false,
+        config: { rpcIntegrationId: integrationId, chainId: 9_745, reserveAssetAddresses: [] },
+      },
+    });
+    expect(pool.statusCode).toBe(201);
+    expect(pool.json()).toMatchObject({ config: { chainId: 9_745, reserveAssetAddresses: [] } });
   });
 
   it('rejects a different network with the expected and actual chain IDs', async () => {

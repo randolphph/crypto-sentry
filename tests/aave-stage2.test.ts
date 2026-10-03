@@ -55,6 +55,10 @@ describe('Aave phase 2 resources and events', () => {
     expect(catalog.items).toHaveLength(market.assets.length);
     expect(catalog.items[0]).toMatchObject({ priceUsd: null, priceStatus: 'error', active: true, borrowingEnabled: true });
     expect(catalog.items[1]).toMatchObject({ priceUsd: '1', priceStatus: 'ok', name: 'Reserve 1' });
+    expect(publicClient.multicall).toHaveBeenCalledWith(expect.objectContaining({
+      batchSize: 8_192,
+      multicallAddress: '0xcA11bde05977b3631167028862bE2a173976CA11',
+    }));
   });
 
   it('scans confirmed blocks once per integration, distributes five event types, and deduplicates reorg replay', async () => {
@@ -62,29 +66,29 @@ describe('Aave phase 2 resources and events', () => {
     databases.push(database);
     const integrations = new IntegrationRepository(database.db, new EncryptionService(Buffer.alloc(32, 4)));
     const integration = integrations.create({
-      name: 'Ethereum', type: 'evm_rpc', provider: 'custom', enabled: true,
-      config: { chainId: 1, rpcUrl: 'https://rpc.invalid' },
+      name: 'Plasma', type: 'evm_rpc', provider: 'custom', enabled: true,
+      config: { chainId: 9_745, rpcUrl: 'https://rpc.invalid' },
     });
     const monitors = new MonitorRepository(database.db, integrations);
-    const market = supportedAaveV3Markets.get(1);
+    const market = supportedAaveV3Markets.get(9_745);
     const reserve = market?.assets[0];
     if (reserve === undefined) throw new Error('Aave reserve fixture is missing');
     const walletAddress = '0x0000000000000000000000000000000000001234';
     const pool = monitors.create({
       name: 'Aave pool', type: 'aave_pool', enabled: true, intervalSeconds: 20, maxStaleSeconds: 90,
-      config: { rpcIntegrationId: integration.id, chainId: 1, reserveAssetAddresses: [reserve.underlyingAddress] },
+      config: { rpcIntegrationId: integration.id, chainId: 9_745, reserveAssetAddresses: [reserve.underlyingAddress] },
     });
     const account = monitors.create({
       name: 'Aave account', type: 'aave_account', enabled: true, intervalSeconds: 20, maxStaleSeconds: 90,
-      config: { rpcIntegrationId: integration.id, chainId: 1, walletAddress },
+      config: { rpcIntegrationId: integration.id, chainId: 9_745, walletAddress },
     });
     const latest = new LatestMetricStore();
     const pipeline = new MetricPipeline(monitors, latest, [], new MetricEventRepository(database.db));
     const scheduler = new CapturingScheduler();
     const types = ['supply', 'withdraw', 'borrow', 'repay', 'liquidation'] as const;
     const chainEvents: AaveV3ChainEvent[] = types.map((eventType, index) => ({
-      eventId: `1:0x${String(index + 1).padStart(64, '0')}:${index}`,
-      eventType, chainId: 1, blockNumber: '100', transactionHash: `0x${String(index + 1).padStart(64, '0')}`,
+      eventId: `9745:0x${String(index + 1).padStart(64, '0')}:${index}`,
+      eventType, chainId: 9_745, blockNumber: '100', transactionHash: `0x${String(index + 1).padStart(64, '0')}`,
       logIndex: index, observedAt: `2026-09-16T00:00:0${index}.000Z`, reserveAssetAddress: reserve.underlyingAddress,
       symbol: reserve.symbol, tokenAmount: String(index + 1), usdAmount: index === 4 ? null : String(index + 1),
       valuationStatus: index === 4 ? 'unavailable' : 'ok', user: walletAddress,
@@ -101,7 +105,7 @@ describe('Aave phase 2 resources and events', () => {
       },
     );
     coordinator.reconcile();
-    const task = scheduler.tasks.get(`aave-v3-events:${integration.id}`);
+    const task = scheduler.tasks.get(`aave-v3-events:${integration.id}:9745`);
     if (task === undefined) throw new Error('Aave event task was not scheduled');
     await task.run(new AbortController().signal);
     await task.run(new AbortController().signal);
@@ -116,7 +120,7 @@ describe('Aave phase 2 resources and events', () => {
     expect(snapshot).toMatchObject({
       monitorType: 'aave_pool', status: 'partial', capability: { available: true },
       summary: { eventCount: 5 },
-      data: { discovery: {
+      data: { chainId: 9_745, discovery: {
         caughtUp: true, scannedThroughBlock: '88', confirmedTipBlock: '88', chainTipBlock: '100', confirmationBlocks: '12',
       } },
     });

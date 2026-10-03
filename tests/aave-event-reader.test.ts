@@ -37,4 +37,35 @@ describe('AaveV3EventReader event timestamps', () => {
     expect(second.map((event) => event.observedAt)).toEqual(first.map((event) => event.observedAt));
     expect(getBlock).toHaveBeenCalledTimes(2);
   });
+
+  it('uses the Plasma deployment and chain-scoped event IDs', async () => {
+    const market = supportedAaveV3Markets.get(9_745);
+    const reserve = market?.assets[0];
+    if (market === undefined || reserve === undefined) throw new Error('Missing Plasma Aave fixture');
+    const transactionHash = `0x${'1'.padStart(64, '0')}` as const;
+    const publicClient = {
+      getLogs: vi.fn(async () => [{
+        blockNumber: 20n, transactionHash, logIndex: 3, eventName: 'Supply', args: {
+          reserve: reserve.underlyingAddress,
+          user: '0x0000000000000000000000000000000000001234',
+          onBehalfOf: '0x0000000000000000000000000000000000001234', amount: 1_000_000n,
+        },
+      }]),
+      getBlock: vi.fn(async () => ({ timestamp: 3_000n })),
+      readContract: vi.fn(async ({ functionName }: { functionName: string }) => (
+        functionName === 'BASE_CURRENCY_UNIT' ? 100_000_000n : 100_000_000n
+      )),
+    } as unknown as PublicClient;
+
+    const events = await new AaveV3EventReader({
+      rpcUrl: 'https://rpc.invalid', expectedChainId: 9_745, publicClient,
+    }).scan(20n, 20n);
+
+    expect(events).toEqual([expect.objectContaining({
+      chainId: 9_745,
+      eventId: `9745:${transactionHash}:3`,
+      reserveAssetAddress: reserve.underlyingAddress,
+    })]);
+    expect(publicClient.getLogs).toHaveBeenCalledWith(expect.objectContaining({ address: market.poolAddress }));
+  });
 });

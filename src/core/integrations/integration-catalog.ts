@@ -1,7 +1,7 @@
 import { ROBINHOOD_UNISWAP_V3, supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 import { supportedUniswapV4Deployments } from '../../adapters/uniswap/uniswap-v4-position-reader.js';
 import { RULE_METRICS } from '../rules/rule-metric-catalog.js';
-import { supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
+import { productAaveV3ChainIds, supportedAaveV3Markets } from '../../adapters/aave/aave-v3-position-reader.js';
 import { supportedPancakeV3Deployments } from '../../adapters/pancake/pancake-v3-position-reader.js';
 
 export const EVM_RPC_PROVIDERS = ['alchemy', 'infura', 'quicknode', 'custom'] as const;
@@ -46,6 +46,7 @@ export const INTEGRATION_CATALOG = {
     ],
     networks: [
       { chainId: 1, name: 'Ethereum', productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'available', uniswapV4: 'available' } },
+      { chainId: 9_745, name: 'Plasma', productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       { chainId: 42_161, name: 'Arbitrum', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       { chainId: 8_453, name: 'Base', productEnabled: false, capabilities: { aaveV3: 'planned', uniswapV3: 'unsupported', uniswapV4: 'unsupported' } },
       { chainId: 56, name: 'BNB Chain', productEnabled: true, capabilities: { aaveV3: 'unsupported', uniswapV3: 'unsupported', uniswapV4: 'unsupported', pancakeV3: 'available' } },
@@ -65,8 +66,8 @@ export const INTEGRATION_CATALOG = {
   },
   monitorTypes: [
     { id: 'market', status: 'available' },
-    { id: 'aave_account', status: 'available', chainIds: [1] },
-    { id: 'aave_pool', status: 'available', chainIds: [1] },
+    { id: 'aave_account', status: 'available', chainIds: productAaveV3ChainIds },
+    { id: 'aave_pool', status: 'available', chainIds: productAaveV3ChainIds },
     { id: 'uniswap_position', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
     { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
     { id: 'uniswap_pool', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
@@ -75,7 +76,7 @@ export const INTEGRATION_CATALOG = {
     { id: 'pancake_pool', status: 'available', chainIds: [56], versions: ['v3'] },
   ],
   aave: {
-    deployments: [...supportedAaveV3Markets.values()].filter((market) => market.chainId === 1).map((market) => ({
+    deployments: [...supportedAaveV3Markets.values()].filter((market) => productAaveV3ChainIds.includes(market.chainId as 1 | 9_745)).map((market) => ({
       chainId: market.chainId,
       chainName: market.chainName,
       version: 'v3',

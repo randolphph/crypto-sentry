@@ -22,7 +22,7 @@ export type AaveEventType = 'supply' | 'withdraw' | 'borrow' | 'repay' | 'liquid
 export interface AaveV3ChainEvent {
   eventId: string;
   eventType: AaveEventType;
-  chainId: 1;
+  chainId: number;
   blockNumber: string;
   transactionHash: string;
   logIndex: number;
@@ -76,7 +76,7 @@ export class AaveV3EventReader {
 
   public async scan(fromBlock: bigint, toBlock: bigint, signal?: AbortSignal): Promise<AaveV3ChainEvent[]> {
     const market = supportedAaveV3Markets.get(this.options.expectedChainId);
-    if (market === undefined || market.chainId !== 1) throw new Error('Aave V3 events are only available on Ethereum');
+    if (market === undefined) throw new Error(`Aave V3 events are not available on chain ${this.options.expectedChainId}`);
     signal?.throwIfAborted();
     const [logs, baseUnit] = await Promise.all([
       this.publicClient.getLogs({ address: market.poolAddress, events: eventAbi, fromBlock, toBlock }),
@@ -133,9 +133,9 @@ export class AaveV3EventReader {
       const collateralUsd = collateralAmount === null || collateralPrice === null || collateralPrice === undefined
         ? null : new Decimal(collateralAmount).mul(collateralPrice.toString()).div(baseUnit.toString()).toSignificantDigits(30).toString();
       return [{
-        eventId: `1:${log.transactionHash}:${log.logIndex}`,
+        eventId: `${market.chainId}:${log.transactionHash}:${log.logIndex}`,
         eventType,
-        chainId: 1,
+        chainId: market.chainId,
         blockNumber: String(log.blockNumber),
         transactionHash: log.transactionHash,
         logIndex: log.logIndex,

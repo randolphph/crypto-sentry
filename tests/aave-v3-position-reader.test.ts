@@ -14,7 +14,7 @@ function reserveData(
   variableDebt: bigint,
   collateralEnabled = true,
 ) {
-  return [supplied, stableDebt, variableDebt, 0n, 0n, 0n, 0n, 0, collateralEnabled] as const;
+  return [supplied, stableDebt, variableDebt, 0n, 0n, 0n, 5n * 10n ** 25n, 0, collateralEnabled] as const;
 }
 
 describe('AaveV3PositionReader', () => {
@@ -23,10 +23,14 @@ describe('AaveV3PositionReader', () => {
     expect(market).toBeDefined();
     const firstAsset = market?.assets[0];
     expect(firstAsset).toBeDefined();
-    const multicall = vi.fn(async () => market?.assets.flatMap((_asset, index) => [
-      { status: 'success', result: index === 0 ? reserveData(2n * 10n ** 18n, 10n ** 17n, 4n * 10n ** 17n) : reserveData(0n, 0n, 0n) },
-      { status: 'success', result: index === 0 ? 2_000n * 10n ** 8n : 0n },
-    ]));
+    const multicall = vi.fn(async ({ contracts }: { contracts: Array<{ functionName: string }> }) => (
+      contracts[0]?.functionName === 'getReserveData'
+        ? [{ status: 'success', result: [0n, 0n, 0n, 0n, 0n, 0n, 6n * 10n ** 25n, 0n, 0n, 0n, 0n, 0n] }]
+        : market?.assets.flatMap((_asset, index) => [
+          { status: 'success', result: index === 0 ? reserveData(2n * 10n ** 18n, 10n ** 17n, 4n * 10n ** 17n) : reserveData(0n, 0n, 0n) },
+          { status: 'success', result: index === 0 ? 2_000n * 10n ** 8n : 0n },
+        ])
+    ));
     const publicClient = {
       getChainId: vi.fn(async () => 1),
       getBlockNumber: vi.fn(async () => 12_345_678n),
@@ -61,10 +65,12 @@ describe('AaveV3PositionReader', () => {
         suppliedBase: '4000',
         debtBase: '1000',
         usageAsCollateralEnabled: true,
+        supplyAprPercent: '5',
+        variableBorrowAprPercent: '6',
       }],
     });
-    expect(multicall).toHaveBeenCalledOnce();
-    expect(multicall).toHaveBeenCalledWith(expect.objectContaining({
+    expect(multicall).toHaveBeenCalledTimes(2);
+    expect(multicall).toHaveBeenNthCalledWith(1, expect.objectContaining({
       batchSize: 8_192,
       blockNumber: 12_345_678n,
     }));

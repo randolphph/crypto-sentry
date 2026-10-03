@@ -66,6 +66,10 @@ describe('AavePositionSnapshotService', () => {
       metric('supplied_base', '4000', weth, 'ok', 'USD'),
       metric('debt_base', '1000', weth, 'ok', 'USD'),
       metric('usage_as_collateral', true, weth, 'ok', 'boolean'),
+      metric('supply_apr_percent', '5', weth, 'ok', 'percent'),
+      metric('supply_apy_percent', '5.127', weth, 'ok', 'percent'),
+      metric('variable_borrow_apr_percent', '6', weth, 'ok', 'percent'),
+      metric('variable_borrow_apy_percent', '6.184', weth, 'ok', 'percent'),
       metric('position_asset_count', '1'),
     ]).get('mon_aave');
 
@@ -86,7 +90,11 @@ describe('AavePositionSnapshotService', () => {
       positions: [{
         chainId: 1,
         account: { healthFactor: '1.5', healthFactorInfinite: false, totalCollateralBase: '5000' },
-        assets: [{ symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5' }],
+        assets: [{
+          symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5', supplyAprPercent: '5',
+          supplyApyPercent: '5.127', variableBorrowAprPercent: '6', variableBorrowApyPercent: '6.184',
+          rateObservedAt: observedAt,
+        }],
       }],
     });
   });

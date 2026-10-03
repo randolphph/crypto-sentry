@@ -3,6 +3,7 @@ import {
   AaveV3Base,
   AaveV3BNB,
   AaveV3Ethereum,
+  AaveV3Plasma,
 } from '@aave-dao/aave-address-book';
 import { Decimal } from 'decimal.js';
 import { getAddress } from 'viem';
@@ -45,6 +46,16 @@ const dataProviderAbi = [{
     { name: 'liquidityRate', type: 'uint256' },
     { name: 'stableRateLastUpdated', type: 'uint40' },
     { name: 'usageAsCollateralEnabled', type: 'bool' },
+  ],
+}] as const;
+
+const reserveDataAbi = [{
+  type: 'function', name: 'getReserveData', stateMutability: 'view',
+  inputs: [{ name: 'asset', type: 'address' }],
+  outputs: [
+    { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' },
+    { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' },
+    { type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'uint40' },
   ],
 }] as const;
 
@@ -101,6 +112,10 @@ export interface AaveV3AssetPosition extends AaveV3Asset {
   suppliedBase: string;
   debtBase: string;
   usageAsCollateralEnabled: boolean;
+  supplyAprPercent: string;
+  supplyApyPercent: string;
+  variableBorrowAprPercent: string | null;
+  variableBorrowApyPercent: string | null;
 }
 
 export interface AaveV3Position {
@@ -149,10 +164,17 @@ function marketFromAddressBook(chainName: string, market: AddressBookMarket): Aa
 
 export const supportedAaveV3Markets = new Map<number, AaveV3Market>([
   marketFromAddressBook('Ethereum', AaveV3Ethereum),
+  marketFromAddressBook('Plasma', AaveV3Plasma),
   marketFromAddressBook('Arbitrum', AaveV3Arbitrum),
   marketFromAddressBook('Base', AaveV3Base),
   marketFromAddressBook('BNB Chain', AaveV3BNB),
 ].map((market) => [market.chainId, market]));
+
+export const productAaveV3ChainIds = [1, 9_745] as const;
+
+export function isProductAaveV3Chain(chainId: number): chainId is (typeof productAaveV3ChainIds)[number] {
+  return (productAaveV3ChainIds as readonly number[]).includes(chainId);
+}
 
 function decimalRatio(value: bigint, divisor: bigint): string {
   return new Decimal(value.toString()).div(divisor.toString()).toSignificantDigits(30).toString();
@@ -169,6 +191,19 @@ function assetBaseValue(value: bigint, price: bigint, decimals: number, baseCurr
     .div(baseCurrencyUnit.toString())
     .toSignificantDigits(30)
     .toString();
+}
+
+const RAY = new Decimal(10).pow(27);
+const SECONDS_PER_YEAR = 31_536_000;
+
+function ratePercent(rate: bigint): string {
+  return new Decimal(rate.toString()).div(RAY).mul(100).toSignificantDigits(30).toString();
+}
+
+function rateApyPercent(rate: bigint): string {
+  const annualRate = new Decimal(rate.toString()).div(RAY);
+  return annualRate.div(SECONDS_PER_YEAR).plus(1).pow(SECONDS_PER_YEAR).minus(1)
+    .mul(100).toSignificantDigits(30).toString();
 }
 
 export interface AaveV3PositionReaderOptions {
@@ -252,17 +287,42 @@ export class AaveV3PositionReader {
     });
     signal?.throwIfAborted();
 
-    const assets: AaveV3AssetPosition[] = [];
+    const pendingAssets: Array<{ asset: AaveV3Asset; supplied: bigint; stableDebt: bigint; variableDebt: bigint;
+      usageAsCollateralEnabled: boolean; price: bigint; liquidityRate: bigint }> = [];
     for (const [index, asset] of market.assets.entries()) {
       const reserveResult = results[index * 2];
       const priceResult = results[index * 2 + 1];
       if (reserveResult?.status !== 'success' || priceResult?.status !== 'success') continue;
       const reserveData = reserveResult.result as readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, number, boolean];
       const price = priceResult.result as bigint;
-      const [supplied, stableDebt, variableDebt, , , , , , usageAsCollateralEnabled] = reserveData;
+      const [supplied, stableDebt, variableDebt, , , , liquidityRate, , usageAsCollateralEnabled] = reserveData;
       const totalAssetDebt = stableDebt + variableDebt;
       if (supplied === 0n && totalAssetDebt === 0n) continue;
-      assets.push({
+      pendingAssets.push({ asset, supplied, stableDebt, variableDebt, usageAsCollateralEnabled, price, liquidityRate });
+    }
+    const borrowedAssets = pendingAssets.filter(({ variableDebt }) => variableDebt > 0n);
+    const borrowRateResults = borrowedAssets.length === 0 ? [] : await this.publicClient.multicall({
+      allowFailure: true,
+      batchSize: this.options.multicallBatchSizeBytes ?? 8_192,
+      blockNumber,
+      contracts: borrowedAssets.map(({ asset }) => ({
+        address: market.dataProviderAddress, abi: reserveDataAbi, functionName: 'getReserveData' as const,
+        args: [asset.underlyingAddress] as const,
+      })),
+      multicallAddress: MULTICALL3_ADDRESS,
+    });
+    signal?.throwIfAborted();
+    const borrowRates = new Map(borrowedAssets.flatMap(({ asset }, index) => {
+      const result = borrowRateResults[index];
+      return result?.status === 'success'
+        ? [[asset.underlyingAddress.toLowerCase(), (result.result as readonly bigint[])[6] ?? 0n] as const]
+        : [];
+    }));
+    const assets: AaveV3AssetPosition[] = pendingAssets.map((item) => {
+      const { asset, supplied, stableDebt, variableDebt, usageAsCollateralEnabled, price, liquidityRate } = item;
+      const totalAssetDebt = stableDebt + variableDebt;
+      const variableBorrowRate = borrowRates.get(asset.underlyingAddress.toLowerCase());
+      return {
         ...asset,
         supplied: tokenAmount(supplied, asset.decimals),
         stableDebt: tokenAmount(stableDebt, asset.decimals),
@@ -271,8 +331,12 @@ export class AaveV3PositionReader {
         suppliedBase: assetBaseValue(supplied, price, asset.decimals, baseCurrencyUnit),
         debtBase: assetBaseValue(totalAssetDebt, price, asset.decimals, baseCurrencyUnit),
         usageAsCollateralEnabled,
-      });
-    }
+        supplyAprPercent: ratePercent(liquidityRate),
+        supplyApyPercent: rateApyPercent(liquidityRate),
+        variableBorrowAprPercent: variableBorrowRate === undefined ? null : ratePercent(variableBorrowRate),
+        variableBorrowApyPercent: variableBorrowRate === undefined ? null : rateApyPercent(variableBorrowRate),
+      };
+    });
 
     return {
       chainId: market.chainId,

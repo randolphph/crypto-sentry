@@ -1,3 +1,5 @@
+import { productAaveV3ChainIds } from '../../adapters/aave/aave-v3-position-reader.js';
+
 export interface RuleMetricDefinition {
   id: string;
   name: string;
@@ -79,7 +81,7 @@ function aaveGauge(
     operators: options.valueType === 'boolean' ? booleanOperators : numericOperators,
     units, requiresWindow: options.window ?? false,
     ...(options.window === true ? { windowSecondsMin: 5, windowSecondsMax: 86_400 } : {}),
-    monitorTypes: ['aave_account'], chainIds: [1],
+    monitorTypes: ['aave_account'], chainIds: [...productAaveV3ChainIds],
     labels: ['chainId', 'chainName', ...(options.window === true ? ['windowSeconds'] : []), ...(options.labels ?? [])],
   };
 }
@@ -87,7 +89,7 @@ function aaveGauge(
 function aaveAccountEvent(id: string, name: string): RuleMetricDefinition {
   return {
     id, name, kind: 'event', valueType: 'decimal', operators: numericOperators,
-    units: ['token'], requiresWindow: false, monitorTypes: ['aave_account'], chainIds: [1],
+    units: ['token'], requiresWindow: false, monitorTypes: ['aave_account'], chainIds: [...productAaveV3ChainIds],
     labels: ['eventType', 'chainId', 'reserveAssetAddress', 'symbol', 'user', 'onBehalfOf', 'repayer', 'to', 'liquidator'],
   };
 }
@@ -106,6 +108,10 @@ export const AAVE_ACCOUNT_RULE_METRICS: RuleMetricDefinition[] = [
   aaveGauge('available_borrows_base', '可借额度', ['base_currency']),
   aaveGauge('supplied_amount', '资产供应量', ['token'], { labels: ['symbol', 'assetAddress'] }),
   aaveGauge('total_debt_amount', '资产债务量', ['token'], { labels: ['symbol', 'assetAddress'] }),
+  aaveGauge('supply_apr_percent', '供应年利率', ['percent'], { labels: ['symbol', 'assetAddress'] }),
+  aaveGauge('supply_apy_percent', '供应年化收益率', ['percent'], { labels: ['symbol', 'assetAddress'] }),
+  aaveGauge('variable_borrow_apr_percent', '可变借款年利率', ['percent'], { labels: ['symbol', 'assetAddress'] }),
+  aaveGauge('variable_borrow_apy_percent', '可变借款年化利率', ['percent'], { labels: ['symbol', 'assetAddress'] }),
   aaveGauge('usage_as_collateral', '作为抵押品', ['boolean'], { valueType: 'boolean', labels: ['symbol', 'assetAddress'] }),
   aaveGauge('total_collateral_change_base', '抵押变化额', ['base_currency'], { window: true }),
   aaveGauge('total_collateral_change_percent', '抵押变化率', ['percent'], { window: true }),
@@ -123,12 +129,12 @@ export const AAVE_ACCOUNT_RULE_METRICS: RuleMetricDefinition[] = [
 export const AAVE_POOL_RULE_METRICS: RuleMetricDefinition[] = [
   {
     id: 'aave_event_amount_token', name: 'Aave 事件 Token 数量', kind: 'event', valueType: 'decimal',
-    operators: numericOperators, units: ['token'], requiresWindow: false, monitorTypes: ['aave_pool'], chainIds: [1],
+    operators: numericOperators, units: ['token'], requiresWindow: false, monitorTypes: ['aave_pool'], chainIds: [...productAaveV3ChainIds],
     labels: ['eventType', 'chainId', 'reserveAssetAddress', 'symbol', 'user', 'onBehalfOf', 'repayer', 'to', 'liquidator'],
   },
   {
     id: 'aave_event_amount_usd', name: 'Aave 事件 USD 金额', kind: 'event', valueType: 'decimal',
-    operators: numericOperators, units: ['USD'], requiresWindow: false, monitorTypes: ['aave_pool'], chainIds: [1],
+    operators: numericOperators, units: ['USD'], requiresWindow: false, monitorTypes: ['aave_pool'], chainIds: [...productAaveV3ChainIds],
     labels: ['eventType', 'chainId', 'reserveAssetAddress', 'symbol', 'user', 'onBehalfOf', 'repayer', 'to', 'liquidator'],
   },
 ];

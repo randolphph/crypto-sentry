@@ -17,6 +17,11 @@ export interface AaveAssetSnapshot {
   suppliedBase: string | null;
   debtBase: string | null;
   usageAsCollateral: boolean | null;
+  supplyAprPercent: string | null;
+  supplyApyPercent: string | null;
+  variableBorrowAprPercent: string | null;
+  variableBorrowApyPercent: string | null;
+  rateObservedAt: string | null;
 }
 
 export interface AaveChainPositionSnapshot {
@@ -203,6 +208,12 @@ export class AavePositionSnapshotService {
       suppliedBase: stringValue(valueByName(assetMetrics, 'supplied_base')),
       debtBase: stringValue(valueByName(assetMetrics, 'debt_base')),
       usageAsCollateral: booleanValue(valueByName(assetMetrics, 'usage_as_collateral')),
+      supplyAprPercent: stringValue(valueByName(assetMetrics, 'supply_apr_percent')),
+      supplyApyPercent: stringValue(valueByName(assetMetrics, 'supply_apy_percent')),
+      variableBorrowAprPercent: stringValue(valueByName(assetMetrics, 'variable_borrow_apr_percent')),
+      variableBorrowApyPercent: stringValue(valueByName(assetMetrics, 'variable_borrow_apy_percent')),
+      rateObservedAt: latestObservation(assetMetrics.filter((metric) => metric.name.includes('_rate_') ||
+        metric.name.includes('_apr_') || metric.name.includes('_apy_'))),
     })).sort((left, right) => left.symbol.localeCompare(right.symbol));
 
     return {

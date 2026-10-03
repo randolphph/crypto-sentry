@@ -41,6 +41,10 @@ const position: AaveV3Position = {
     suppliedBase: '4000',
     debtBase: '1000',
     usageAsCollateralEnabled: true,
+    supplyAprPercent: '5',
+    supplyApyPercent: '5.1271096334354555',
+    variableBorrowAprPercent: '6',
+    variableBorrowApyPercent: '6.18365465453596',
   }],
 };
 
@@ -112,6 +116,9 @@ describe('Aave position monitor API', () => {
       expect(items.find(({ name }) => name === 'total_debt_amount')).toMatchObject({
         value: '0.5', labels: { symbol: 'WETH' },
       });
+      expect(items.find(({ name }) => name === 'supply_apr_percent')).toMatchObject({
+        value: '5', labels: { symbol: 'WETH' },
+      });
       expect(items.find(({ name }) => name === 'position_chain_count')).toMatchObject({ value: '1' });
     });
     expect(read).toHaveBeenCalledWith(walletAddress, expect.any(AbortSignal));
@@ -132,7 +139,10 @@ describe('Aave position monitor API', () => {
         chainName: 'Ethereum',
         blockNumber: '12345678',
         account: { healthFactor: '1.5', healthFactorInfinite: false, totalCollateralBase: '5000' },
-        assets: [{ symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5' }],
+        assets: [{
+          symbol: 'WETH', suppliedAmount: '2', totalDebtAmount: '0.5',
+          supplyAprPercent: '5', variableBorrowAprPercent: '6',
+        }],
       }],
     });
   });

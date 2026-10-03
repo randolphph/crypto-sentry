@@ -84,6 +84,12 @@ describe('Integration setup API', () => {
     expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 1)).toMatchObject({
       productEnabled: true, capabilities: { aaveV3: 'available', uniswapV3: 'available', uniswapV4: 'available' },
     });
+    expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 9_745)).toEqual({
+      chainId: 9_745,
+      name: 'Plasma',
+      productEnabled: true,
+      capabilities: { aaveV3: 'available', uniswapV3: 'unsupported', uniswapV4: 'unsupported' },
+    });
     expect(catalogBody.evmRpc.networks.find(({ chainId }) => chainId === 4_663)).toMatchObject({
       productEnabled: true, capabilities: { aaveV3: 'unsupported', uniswapV3: 'available', uniswapV4: 'available' },
     });
@@ -96,7 +102,8 @@ describe('Integration setup API', () => {
       },
     });
     expect(catalogBody.monitorTypes).toEqual(expect.arrayContaining([
-      { id: 'aave_pool', status: 'available', chainIds: [1] },
+      { id: 'aave_account', status: 'available', chainIds: [1, 9_745] },
+      { id: 'aave_pool', status: 'available', chainIds: [1, 9_745] },
       { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
       { id: 'pancake_wallet', status: 'available', chainIds: [56], versions: ['v3'] },
     ]));
@@ -121,6 +128,7 @@ describe('Integration setup API', () => {
     ]));
     expect(catalogBody.evmRpc.networks).toEqual([
       expect.objectContaining({ chainId: 1, name: 'Ethereum' }),
+      expect.objectContaining({ chainId: 9_745, name: 'Plasma' }),
       expect.objectContaining({ chainId: 42_161, name: 'Arbitrum' }),
       expect.objectContaining({ chainId: 8_453, name: 'Base' }),
       expect.objectContaining({ chainId: 56, name: 'BNB Chain' }),

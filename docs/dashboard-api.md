@@ -222,6 +222,7 @@ GET /api/v1/integrations/catalog
     "routingModes": [{ "id": "fixed", "name": "单链" }, { "id": "url_template", "name": "URL 模板" }, { "id": "header", "name": "Header 选链" }, { "id": "query", "name": "Query 选链" }],
     "networks": [
       { "chainId": 1, "name": "Ethereum", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "available", "uniswapV4": "available" } },
+      { "chainId": 9745, "name": "Plasma", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "unsupported", "uniswapV4": "unsupported" } },
       { "chainId": 56, "name": "BNB Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "unsupported", "uniswapV4": "unsupported", "pancakeV3": "available" } },
       { "chainId": 4663, "name": "Robinhood Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "available", "uniswapV4": "available" } }
     ],
@@ -229,8 +230,8 @@ GET /api/v1/integrations/catalog
   },
   "monitorTypes": [
     { "id": "market", "status": "available" },
-    { "id": "aave_account", "status": "available", "chainIds": [1] },
-    { "id": "aave_pool", "status": "available", "chainIds": [1] },
+    { "id": "aave_account", "status": "available", "chainIds": [1, 9745] },
+    { "id": "aave_pool", "status": "available", "chainIds": [1, 9745] },
     { "id": "uniswap_position", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
     { "id": "uniswap_wallet", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
     { "id": "uniswap_pool", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
@@ -273,11 +274,11 @@ GET /api/v1/integrations/catalog
 
 Market 目录当前包含 `price`、`price_change_percent`、`base_volume_24h`、`quote_volume_24h`、`funding_rate_percent`、`next_funding_time`、`open_interest`、`open_interest_change_percent` 和 `data_age_seconds`。其中 `price_change_percent` 表示区间价格波动的绝对幅度，只接受 `gte` 和非负阈值，因此上涨或下跌达到同一阈值都会触发。资金费率和 OI 仅适用于 perpetual。窗口上限与 30 分钟样本保留一致。
 
-Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、抵押/债务窗口变化，以及 `account_supply`、`account_withdraw`、`account_borrow`、`account_repay`、`account_liquidation`、`account_position_opened`、`account_position_closed` 事件。仓位开关事件仅在持久化的账户状态发生变化且能关联到新链上事件时产生。Aave Pool 使用 `aave_event_amount_token` 与 `aave_event_amount_usd`，用 `labels.eventType` 区分五类事件；Oracle 不可用时只产生 token amount，绝不把 USD 金额伪装为 0。
+Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、供应 APR/APY、可变借款 APR/APY、抵押/债务窗口变化，以及 `account_supply`、`account_withdraw`、`account_borrow`、`account_repay`、`account_liquidation`、`account_position_opened`、`account_position_closed` 事件。仓位开关事件仅在持久化的账户状态发生变化且能关联到新链上事件时产生。Aave Pool 使用 `aave_event_amount_token` 与 `aave_event_amount_usd`，用 `labels.eventType` 区分五类事件；Oracle 不可用时只产生 token amount，绝不把 USD 金额伪装为 0。
 
 Uniswap Position 与 Wallet 的目录分别按 `monitorTypes` 过滤。`in_range_count`、`out_of_range_count`、`failed_position_count`、`aggregate_value_usd`、`aggregate_fees_usd` 只对 Wallet 开放；`position_count` 因两类 Monitor 都实际产生而同时开放。Pool 目录包括 `volume_token0`、`volume_token1`、`volume_usd`、`volume_change_percent`，它们都要求 `windowSeconds`（20–86400 秒），并按 `chainId`、`version`、`resourceId`、`windowSeconds` 区分。
 
-Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Uniswap deployment 目录同时返回 Ethereum/Robinhood V3 Factory 与 V4 PoolManager、PositionManager、StateView、deploymentBlock 和 explorerUrl。
+Ethereum 与 Plasma（Chain ID `9745`）开放新版 Aave Monitor。Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Uniswap deployment 目录同时返回 Ethereum/Robinhood V3 Factory 与 V4 PoolManager、PositionManager、StateView、deploymentBlock 和 explorerUrl。
 
 ### Aave Reserve 资源目录
 
@@ -285,7 +286,7 @@ Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目�
 GET /api/v1/integrations/:rpcIntegrationId/aave/reserves?chainId=1
 ```
 
-该接口要求 Integration 已启用、覆盖 Ethereum，并且最近的 `reserveCatalog` 能力测试通过。Pool、Addresses Provider、Data Provider、Oracle 和 token 地址均来自后端内置的 Aave 官方部署；Dashboard 不提交协议合约地址。成功响应：
+该接口要求 Integration 已启用、覆盖请求中的 Ethereum 或 Plasma，并且最近的 `reserveCatalog` 能力测试通过。Pool、Addresses Provider、Data Provider、Oracle 和 token 地址均来自后端内置的 Aave 官方部署；Dashboard 不提交协议合约地址。成功响应：
 
 ```json
 {
@@ -391,13 +392,13 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 { "integrationId": "int_binance", "marketType": "spot", "providerSymbol": "BTCUSDT", "canonicalSymbol": "BTC/USD", "priceType": "last" }
 ```
 
-`aave_account` 目前只开放 Ethereum，并只使用指定 Integration：
+`aave_account` 开放 Ethereum 与 Plasma，并只使用指定 Integration；`chainId` 分别为 `1` 或 `9745`：
 
 ```json
 { "rpcIntegrationId": "int_rpc", "chainId": 1, "walletAddress": "0x0000000000000000000000000000000000001234" }
 ```
 
-`aave_pool` 监控 Ethereum Aave V3 的协议事件。`reserveAssetAddresses` 来自 Reserve 目录；省略或空数组表示全部 Reserve。创建与 PATCH 都拒绝目录外地址：
+`aave_pool` 监控所选 Ethereum 或 Plasma Aave V3 的协议事件。`reserveAssetAddresses` 来自对应链的 Reserve 目录；省略或空数组表示全部 Reserve。创建与 PATCH 都拒绝目录外地址：
 
 ```json
 {
@@ -572,7 +573,7 @@ type MonitorSnapshot = {
 ```
 
 - market：`data.metrics` 为真实最新 Metric。
-- Aave Account：`data.networkScans`、`data.positions` 与钱包信息复用现有结构化仓位数据。无借款时 `healthFactor:null`、`healthFactorInfinite:true`，底层 `health_factor` Metric 为 `unsupported`，不会因无限值误告警。
+- Aave Account：`data.networkScans`、`data.positions` 与钱包信息复用现有结构化仓位数据。每个资产增加 `supplyAprPercent`、`supplyApyPercent`、`variableBorrowAprPercent`、`variableBorrowApyPercent` 和 `rateObservedAt`；利率是百分比字符串，不可用时为 `null`。无借款时 `healthFactor:null`、`healthFactorInfinite:true`，底层 `health_factor` Metric 为 `unsupported`，不会因无限值误告警。
 - Aave Pool：`data.discovery` 同时返回 `scannedThroughBlock`、`confirmedTipBlock`、`chainTipBlock`、`confirmationBlocks`。`caughtUp` 的定义是 `scannedThroughBlock >= confirmedTipBlock`；chain tip 是最新块，而 confirmed tip 已减去确认块数，因此正常运行时两者通常不同。`data.recentEvents` 的 observedAt 来自事件实际 blockNumber 的时间戳，相同区块只读取一次；token/USD 数量分别可空，`summary.eventCount` 按 eventId 计数。
 - Uniswap Position/Wallet：`data.positions`、发现进度、链/版本选择为真实当前数据；分组键包含 chainId/version/tokenId，多版本可返回 `partial`。返回 token 数量、边界距离、关闭状态和可靠时的 USD 估值；不可估值字段为 `null`。V3 的 `tokensOwed0/1` 和 `fees_owed_token0/1` 仅表示 PositionManager 已记账待领取金额，不是完整 fee-growth 模拟；Snapshot 通过 `feeStatus` 明示这一点。
 - Uniswap Pool：`data.pool` 返回 tick、双向价格、active liquidity、可用 TVL/fee 字段、`valuationStatus` 与 `feeStatus`；`data.recentEvents` 返回 swap/mint/burn，V3 还可返回 fee_collection；`data.discovery` 返回同步块高。`data.volumes[]` 按 windowSeconds 分组，包含 rolling `volumeToken0`、`volumeToken1`、可靠时的 `volumeUsd`，以及当前窗口相对紧邻前一窗口的 `volumeChangePercent`。前一窗口为 0、尚未预热或 USD 不可靠时相关值为 `null`/warming_up，不返回伪造的 0。
