@@ -154,7 +154,7 @@ function uniswapGauge(
     operators: options.boolean === true ? booleanOperators : numericOperators,
     units, requiresWindow: options.window ?? false,
     ...(options.window === true ? { windowSecondsMin: 20, windowSecondsMax: 86_400 } : {}),
-    monitorTypes, chainIds: [1, 4_663], versions: options.versions ?? ['v3', 'v4'],
+    monitorTypes, chainIds: [1, 56, 4_663], versions: options.versions ?? ['v3', 'v4'],
     labels: ['chainId', 'version', ...identityLabels, ...(options.window === true ? ['windowSeconds'] : [])],
   };
 }
@@ -162,7 +162,7 @@ function uniswapGauge(
 function uniswapEvent(id: string, name: string, versions: Array<'v3' | 'v4'> = ['v3', 'v4']): RuleMetricDefinition {
   return {
     id, name, kind: 'event', valueType: 'decimal', operators: numericOperators, units: ['token'], requiresWindow: false,
-    monitorTypes: ['uniswap_pool'], chainIds: [1, 4_663], versions,
+    monitorTypes: ['uniswap_pool'], chainIds: [1, 56, 4_663], versions,
     labels: ['chainId', 'version', 'resourceId', 'eventType', 'token0Address', 'token0Symbol', 'token1Address', 'token1Symbol'],
   };
 }

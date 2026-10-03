@@ -11,6 +11,7 @@ import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
 import { resolveEvmRpcRequest } from './evm-rpc-config.js';
 import { Decimal } from 'decimal.js';
 import { BSC_PANCAKE_V3 } from '../../adapters/pancake/pancake-v3-position-reader.js';
+import { supportedUniswapV3Deployments } from '../../adapters/uniswap/uniswap-v3-position-reader.js';
 
 export interface UniswapPoolReaderPort {
   latestBlock(signal?: AbortSignal): Promise<bigint>;
@@ -195,10 +196,18 @@ export class UniswapPoolCoordinator {
     const config = rpcIntegrationConfigSchema.parse(integration.config);
     const resolved = resolveEvmRpcRequest(config, monitor.chainId);
     const readerKey = `${monitor.rpcIntegrationId}:${monitor.chainId}:${config.timeoutMilliseconds}:${resolved.rpcUrl}:${JSON.stringify(resolved.headers)}`;
+    const expectedV3FactoryAddress = monitor.version === 'v3'
+      ? this.protocol === 'pancakeswap'
+        ? BSC_PANCAKE_V3.factoryAddress
+        : supportedUniswapV3Deployments.get(monitor.chainId)?.factoryAddress
+      : undefined;
+    if (monitor.version === 'v3' && expectedV3FactoryAddress === undefined) {
+      throw new Error(`Uniswap V3 is not supported on chain ${monitor.chainId}`);
+    }
     const reader = this.readers.get(readerKey) ?? this.readerFactory.create({
       rpcUrl: resolved.rpcUrl, headers: resolved.headers, expectedChainId: monitor.chainId,
       timeoutMilliseconds: config.timeoutMilliseconds,
-      ...(this.protocol === 'pancakeswap' ? { expectedV3FactoryAddress: BSC_PANCAKE_V3.factoryAddress } : {}),
+      ...(expectedV3FactoryAddress === undefined ? {} : { expectedV3FactoryAddress }),
     });
     this.readers.set(readerKey, reader);
     const target = await this.resolveTarget(monitor, reader, signal);

@@ -156,7 +156,8 @@ export class IntegrationOperationsService {
             current.integrationIds.push(integration.id);
             aaveNetworks.set(chainId, current);
           }
-          if ([1, 4_663].includes(chainId) && health?.rpcStatus === 'ok' && (health.uniswapV3Status === 'ok' || health.uniswapV4Status === 'ok')) {
+          if ((supportedUniswapV3Deployments.has(chainId) || supportedUniswapV4Deployments.has(chainId)) &&
+            health?.rpcStatus === 'ok' && (health.uniswapV3Status === 'ok' || health.uniswapV4Status === 'ok')) {
             const current = uniswapNetworks.get(chainId) ?? {
               chainId,
               name: evmNetworkName(chainId),
@@ -285,7 +286,8 @@ export class IntegrationOperationsService {
         const connectivity: Record<string, 'ok' | 'error' | 'unknown'> = {
           rpc: 'unknown',
           ...(isProductAaveV3Chain(chainId) ? { aaveV3: 'unknown' as const } : {}),
-          ...([1, 4_663].includes(chainId) ? { uniswapV3: 'unknown' as const, uniswapV4: 'unknown' as const } : {}),
+          ...(supportedUniswapV3Deployments.has(chainId) ? { uniswapV3: 'unknown' as const } : {}),
+          ...(supportedUniswapV4Deployments.has(chainId) ? { uniswapV4: 'unknown' as const } : {}),
           ...(chainId === 56 ? { pancakeV3: 'unknown' as const } : {}),
         };
         let blockNumber: string | null = null;
@@ -506,7 +508,10 @@ export class IntegrationOperationsService {
     }
     const config = rpcIntegrationConfigSchema.parse(integration.config);
     if (!config.chainIds.includes(input.chainId)) throw new AppError(400, 'RPC_CHAIN_UNSUPPORTED', 'RPC does not cover the selected chain');
-    if (![1, 4_663].includes(input.chainId)) throw new AppError(409, 'PROTOCOL_NOT_READY', 'Uniswap is not enabled on this chain');
+    const supported = input.version === 'v3'
+      ? supportedUniswapV3Deployments.has(input.chainId)
+      : supportedUniswapV4Deployments.has(input.chainId);
+    if (!supported) throw new AppError(409, 'PROTOCOL_NOT_READY', 'Uniswap is not enabled on this chain');
     const health = this.networkHealth.list().find((item) => item.integrationId === id && item.chainId === input.chainId);
     const capability = input.version === 'v3' ? health?.uniswapV3Status : health?.uniswapV4Status;
     if (health?.rpcStatus !== 'ok' || capability !== 'ok') {

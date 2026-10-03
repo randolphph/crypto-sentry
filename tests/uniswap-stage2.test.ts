@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ETHEREUM_UNISWAP_V3 } from '../src/adapters/uniswap/uniswap-v3-position-reader.js';
-import { ETHEREUM_UNISWAP_V4 } from '../src/adapters/uniswap/uniswap-v4-position-reader.js';
+import { BSC_UNISWAP_V3, ETHEREUM_UNISWAP_V3 } from '../src/adapters/uniswap/uniswap-v3-position-reader.js';
+import { BSC_UNISWAP_V4, ETHEREUM_UNISWAP_V4 } from '../src/adapters/uniswap/uniswap-v4-position-reader.js';
 import { UniswapPoolIndexCoordinator } from '../src/core/integrations/uniswap-pool-index-coordinator.js';
 import { UniswapPoolCoordinator } from '../src/core/integrations/uniswap-pool-coordinator.js';
 import { LatestMetricStore } from '../src/core/metrics/latest-metric-store.js';
@@ -30,9 +30,20 @@ afterEach(() => {
 });
 
 describe('Uniswap phase 2 resources and pool monitor', () => {
-  it('publishes official Ethereum V3 and V4 deployments', () => {
+  it('publishes official Ethereum and BNB Chain V3/V4 deployments', () => {
     expect(ETHEREUM_UNISWAP_V3).toMatchObject({ chainId: 1, chainName: 'Ethereum' });
     expect(ETHEREUM_UNISWAP_V4).toMatchObject({ chainId: 1, chainName: 'Ethereum' });
+    expect(BSC_UNISWAP_V3).toMatchObject({
+      chainId: 56, chainName: 'BNB Chain', deploymentBlock: 26_324_014n,
+      factoryAddress: '0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7',
+      positionManagerAddress: '0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613',
+    });
+    expect(BSC_UNISWAP_V4).toMatchObject({
+      chainId: 56, chainName: 'BNB Chain', deploymentBlock: 45_970_613n,
+      poolManagerAddress: '0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF',
+      positionManagerAddress: '0x7A4a5c919aE2541AeD11041A1AEeE68f1287f95b',
+      stateViewAddress: '0xd13Dd3D6E93f276FAfc9Db9E6BB47C1180aeE0c4',
+    });
     expect(ETHEREUM_UNISWAP_V3.factoryAddress).toMatch(/^0x[0-9A-Fa-f]{40}$/);
     expect(ETHEREUM_UNISWAP_V4.poolManagerAddress).toMatch(/^0x[0-9A-Fa-f]{40}$/);
   });

@@ -67,7 +67,7 @@
 - [x] Robinhood Chain Uniswap V3 钱包枚举、固定块仓位读取与结构化快照 API
 - [x] Robinhood Chain Uniswap V4 PositionManager/PoolManager/StateView 仓位适配器
 - [x] V4 钱包 Transfer 日志分块索引、SQLite 检查点与 ownerOf 对账
-- [x] Ethereum/Robinhood Uniswap V3/V4 官方部署、逐链能力测试和 Readiness
+- [x] Ethereum/BNB Chain/Robinhood Uniswap V3/V4 官方部署、逐链能力测试和 Readiness
 - [x] 旧 V3/V4 Pool 缓存、搜索与分页 API（不自动启动或恢复全链索引）
 - [x] 停止后台全链 Pool `eth_getLogs` 扫描；用户指定 Pool ID 后直接监听
 - [x] 端口绑定失败时关闭已初始化的 Scheduler/连接器，避免半启动进程继续请求 RPC
@@ -79,7 +79,8 @@
 - [x] Uniswap Pool 窗口 token/USD volume、相邻窗口 change 与持久样本
 - [x] Position tokenId 创建/PATCH 实读校验与 Wallet 多字段资源搜索
 - [ ] V4 可可靠归属的单池 TVL/完整手续费，以及非稳定币 Binance 估值回退
-- [ ] Uniswap V3 其他网络与 PancakeSwap V3 LP 适配器
+- [x] BNB Chain Uniswap V3/V4 与 PancakeSwap V3 LP 适配器
+- [ ] Uniswap 其他网络 LP 适配器
 - [ ] LP 当前代币数量、价格方向和完整未领取手续费计算
 
 ### 4. 通知与看板接入

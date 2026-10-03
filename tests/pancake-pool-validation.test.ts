@@ -3,6 +3,7 @@ import type { PublicClient } from 'viem';
 
 import { BSC_PANCAKE_V3 } from '../src/adapters/pancake/pancake-v3-position-reader.js';
 import { UniswapPoolReader } from '../src/adapters/uniswap/uniswap-pool-reader.js';
+import { BSC_UNISWAP_V3 } from '../src/adapters/uniswap/uniswap-v3-position-reader.js';
 
 const pool = '0x0000000000000000000000000000000000000030' as const;
 const token0 = '0x0000000000000000000000000000000000000010' as const;
@@ -42,5 +43,21 @@ describe('PancakeSwap V3 pool identity validation', () => {
       expectedV3FactoryAddress: BSC_PANCAKE_V3.factoryAddress,
     });
     await expect(reader.describeV3(pool)).rejects.toThrow('expected protocol factory');
+  });
+
+  it('keeps Uniswap V3 and PancakeSwap V3 pools separate on BNB Chain', async () => {
+    const uniswapReader = new UniswapPoolReader({
+      rpcUrl: 'https://bsc.example', expectedChainId: 56,
+      publicClient: client(BSC_UNISWAP_V3.factoryAddress),
+      expectedV3FactoryAddress: BSC_UNISWAP_V3.factoryAddress,
+    });
+    await expect(uniswapReader.describeV3(pool)).resolves.toMatchObject({ chainId: 56, poolAddress: pool });
+
+    const pancakePoolAsUniswap = new UniswapPoolReader({
+      rpcUrl: 'https://bsc.example', expectedChainId: 56,
+      publicClient: client(BSC_PANCAKE_V3.factoryAddress),
+      expectedV3FactoryAddress: BSC_UNISWAP_V3.factoryAddress,
+    });
+    await expect(pancakePoolAsUniswap.describeV3(pool)).rejects.toThrow('expected protocol factory');
   });
 });

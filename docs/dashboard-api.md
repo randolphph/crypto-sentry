@@ -223,7 +223,7 @@ GET /api/v1/integrations/catalog
     "networks": [
       { "chainId": 1, "name": "Ethereum", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "available", "uniswapV4": "available" } },
       { "chainId": 9745, "name": "Plasma", "productEnabled": true, "capabilities": { "aaveV3": "available", "uniswapV3": "unsupported", "uniswapV4": "unsupported" } },
-      { "chainId": 56, "name": "BNB Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "unsupported", "uniswapV4": "unsupported", "pancakeV3": "available" } },
+      { "chainId": 56, "name": "BNB Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "available", "uniswapV4": "available", "pancakeV3": "available" } },
       { "chainId": 4663, "name": "Robinhood Chain", "productEnabled": true, "capabilities": { "aaveV3": "unsupported", "uniswapV3": "available", "uniswapV4": "available" } }
     ],
     "configDefaults": { "timeoutMilliseconds": 5000, "multicallBatchSizeBytes": 8192 }
@@ -232,9 +232,9 @@ GET /api/v1/integrations/catalog
     { "id": "market", "status": "available" },
     { "id": "aave_account", "status": "available", "chainIds": [1, 9745] },
     { "id": "aave_pool", "status": "available", "chainIds": [1, 9745] },
-    { "id": "uniswap_position", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
-    { "id": "uniswap_wallet", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
-    { "id": "uniswap_pool", "status": "available", "chainIds": [1, 4663], "versions": ["v3", "v4"] },
+    { "id": "uniswap_position", "status": "available", "chainIds": [1, 56, 4663], "versions": ["v3", "v4"] },
+    { "id": "uniswap_wallet", "status": "available", "chainIds": [1, 56, 4663], "versions": ["v3", "v4"] },
+    { "id": "uniswap_pool", "status": "available", "chainIds": [1, 56, 4663], "versions": ["v3", "v4"] },
     { "id": "pancake_position", "status": "available", "chainIds": [56], "versions": ["v3"] },
     { "id": "pancake_wallet", "status": "available", "chainIds": [56], "versions": ["v3"] },
     { "id": "pancake_pool", "status": "available", "chainIds": [56], "versions": ["v3"] }
@@ -278,7 +278,7 @@ Aave Account 目录包含账户汇总、逐资产供应/债务、抵押开关、
 
 Uniswap Position 与 Wallet 的目录分别按 `monitorTypes` 过滤。`in_range_count`、`out_of_range_count`、`failed_position_count`、`aggregate_value_usd`、`aggregate_fees_usd` 只对 Wallet 开放；`position_count` 因两类 Monitor 都实际产生而同时开放。Pool 目录包括 `volume_token0`、`volume_token1`、`volume_usd`、`volume_change_percent`，它们都要求 `windowSeconds`（20–86400 秒），并按 `chainId`、`version`、`resourceId`、`windowSeconds` 区分。
 
-Ethereum 与 Plasma（Chain ID `9745`）开放新版 Aave Monitor。Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Uniswap deployment 目录同时返回 Ethereum/Robinhood V3 Factory 与 V4 PoolManager、PositionManager、StateView、deploymentBlock 和 explorerUrl。
+Ethereum 与 Plasma（Chain ID `9745`）开放新版 Aave Monitor。Arbitrum、Base、BNB 的旧 Aave Monitor 可继续运行，但新建产品目录不开放。Uniswap deployment 目录返回 Ethereum、BNB Chain、Robinhood Chain 的 V3 Factory 与 V4 PoolManager、PositionManager、StateView、deploymentBlock 和 explorerUrl。
 
 ### Aave Reserve 资源目录
 
@@ -408,7 +408,7 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 }
 ```
 
-`uniswap_position` 支持 Ethereum/Robinhood V3/V4：
+`uniswap_position` 支持 Ethereum/BNB Chain/Robinhood V3/V4：
 
 ```json
 { "rpcIntegrationId": "int_rpc", "chainId": 1, "version": "v3", "tokenId": "123" }
@@ -419,7 +419,7 @@ Monitor 可以没有 Rule，只做快照采集。Monitor 与 Rule 分别启停�
 `uniswap_wallet` 的数组会去重；同轮按链与版本展开，部分失败保留成功结果：
 
 ```json
-{ "rpcIntegrationId": "int_rpc", "chainIds": [1, 4663], "versions": ["v3", "v4"], "walletAddress": "0x0000000000000000000000000000000000001234" }
+{ "rpcIntegrationId": "int_rpc", "chainIds": [1, 56, 4663], "versions": ["v3", "v4"], "walletAddress": "0x0000000000000000000000000000000000001234" }
 ```
 
 `uniswap_pool` 直接使用用户确认的标识，不需要先查询或等待 Pool 目录：

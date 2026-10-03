@@ -130,8 +130,19 @@ export const ROBINHOOD_UNISWAP_V3: UniswapV3Deployment = {
   deploymentBlock: 0n,
 };
 
+export const BSC_UNISWAP_V3: UniswapV3Deployment = {
+  chainId: 56,
+  chainName: 'BNB Chain',
+  rpcUrl: '',
+  explorerUrl: 'https://bscscan.com',
+  deploymentBlock: 26_324_014n,
+  factoryAddress: getAddress('0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7'),
+  positionManagerAddress: getAddress('0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613'),
+};
+
 export const supportedUniswapV3Deployments = new Map<number, UniswapV3Deployment>([
   [ETHEREUM_UNISWAP_V3.chainId, ETHEREUM_UNISWAP_V3],
+  [BSC_UNISWAP_V3.chainId, BSC_UNISWAP_V3],
   [ROBINHOOD_UNISWAP_V3.chainId, ROBINHOOD_UNISWAP_V3],
 ]);
 

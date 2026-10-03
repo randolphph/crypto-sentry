@@ -118,8 +118,20 @@ export const ETHEREUM_UNISWAP_V4: UniswapV4Deployment = {
   stateViewAddress: getAddress('0x7ffe42c4a5deea5b0fec41c94c136cf115597227'),
 };
 
+export const BSC_UNISWAP_V4: UniswapV4Deployment = {
+  chainId: 56,
+  chainName: 'BNB Chain',
+  rpcUrl: '',
+  explorerUrl: 'https://bscscan.com',
+  deploymentBlock: 45_970_613n,
+  poolManagerAddress: getAddress('0x28e2ea090877bf75740558f6bfb36a5ffee9e9df'),
+  positionManagerAddress: getAddress('0x7a4a5c919ae2541aed11041a1aeee68f1287f95b'),
+  stateViewAddress: getAddress('0xd13dd3d6e93f276fafc9db9e6bb47c1180aee0c4'),
+};
+
 export const supportedUniswapV4Deployments = new Map<number, UniswapV4Deployment>([
   [ETHEREUM_UNISWAP_V4.chainId, ETHEREUM_UNISWAP_V4],
+  [BSC_UNISWAP_V4.chainId, BSC_UNISWAP_V4],
   [ROBINHOOD_UNISWAP_V4.chainId, ROBINHOOD_UNISWAP_V4],
 ]);
 

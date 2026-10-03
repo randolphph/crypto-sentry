@@ -11,7 +11,7 @@ CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。
 - Telegram 告警，以及可扩展的通知适配器接口
 - 提供给资产看板使用的状态和历史告警 API
 
-当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum 与 Plasma 的 Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 已支持测试消息和持久化告警投递；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
+当前仓库已经完成核心 API、SQLite 持久化、敏感配置加密、Metric 处理管线、持久化规则执行、告警落库和规则引擎健康诊断。Binance 现货与 U 本位永续已支持实时行情、成交量、资金费率和 Open Interest；Aave V3 已支持 Ethereum 与 Plasma 的 Account、官方 Reserve 目录和 Pool 事件监控，并保留旧多链地址 Monitor；Uniswap V3/V4 已支持 Ethereum、BNB Chain 与 Robinhood Chain 的 Position、Wallet、按用户指定 Pool ID 的直接监听和持久化窗口成交量。服务不再自动扫描全链 Pool 目录。Telegram 已支持测试消息和持久化告警投递；V4 单池 TVL/完整手续费、非稳定币 USD 回退和 V3 完整 fee-growth 模拟仍按不可用返回。详细进度见 [DEVELOPMENT.md](./DEVELOPMENT.md)。
 
 Dashboard 下一版使用的多链 RPC、Monitor 类型、Rule Group、Readiness 与统一 Snapshot 契约见 [docs/dashboard-api.md](./docs/dashboard-api.md)。
 
@@ -130,7 +130,7 @@ GET  /api/v1/integrations/:id/markets       # 查询本地市场缓存
 
 自动化验收覆盖 WebSocket 意外断开后的指数退避、重新订阅、旧连接消息隔离，以及断流期间 `stale`、新行情到达后恢复 `ok` 的完整状态链路。容量用例验证 100 个现货市场共用单条连接，并能在一个 5 秒周期内完成采样与派生指标处理。
 
-`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 会逐个测试全部 `chainIds`：先调用 `eth_chainId` 与 `eth_blockNumber`，再检查该网络当前已实现协议的真实合约。Ethereum 与 Plasma 分别验证 Aave Account、Reserve Catalog 与事件日志，Readiness 只有在三项真实探测均成功时才开放；Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。响应使用 `networks[]` 保留每条链的独立结果；测试流程完成返回 HTTP 200，只有全部链成功时顶层 `ok` 才为 true。配置网络不一致使用 `RPC_CHAIN_ID_MISMATCH`，连接或能力失败使用不含敏感 URL 的稳定错误码。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。EVM HTTP transport 默认最多重试一次；Aave Account 由上层 endpoint failover 负责重试并关闭 transport 重试，避免一次失败被重复放大。
+`evm_rpc` 集成的 `POST /api/v1/integrations/:id/test` 会逐个测试全部 `chainIds`：先调用 `eth_chainId` 与 `eth_blockNumber`，再检查该网络当前已实现协议的真实合约。Ethereum 与 Plasma 分别验证 Aave Account、Reserve Catalog 与事件日志，Readiness 只有在三项真实探测均成功时才开放；Ethereum、BNB Chain 与 Robinhood Chain 检查 Uniswap V3 Factory/NonfungiblePositionManager 和 V4 PoolManager/PositionManager/StateView 字节码。BNB Chain 还会独立检查 PancakeSwap V3，两个协议的结果互不覆盖。响应使用 `networks[]` 保留每条链的独立结果；测试流程完成返回 HTTP 200，只有全部链成功时顶层 `ok` 才为 true。配置网络不一致使用 `RPC_CHAIN_ID_MISMATCH`，连接或能力失败使用不含敏感 URL 的稳定错误码。RPC 配置还可设置 `timeoutMilliseconds`（默认 5000）和 `multicallBatchSizeBytes`（默认 8192）。通用轮询器采用“本轮完成后再安排下一轮”的方式避免同一任务重叠，并隔离不同监控任务的失败；移除或关闭任务时会发送 abort，并等待仍在清理的任务结束。EVM HTTP transport 默认最多重试一次；Aave Account 由上层 endpoint failover 负责重试并关闭 transport 重试，避免一次失败被重复放大。
 
 Binance market Monitor 还输出 24 小时 base/quote volume；永续合约输出 funding rate、next funding time、open interest 和窗口 OI 变化率。价格、volume、funding 优先复用共享 WebSocket，OI 按 Integration + symbol 合并 REST 轮询并遵循 Monitor interval。价格和 OI 样本持久化到 SQLite，重启后可继续窗口计算；缺失值使用 warming/error 状态和 `unavailable`，不会伪装为数值 0。Catalog 的 `samplingPresets` 与 `ruleMetrics` 是 Dashboard 渲染规则表单的唯一能力来源。
 
@@ -200,9 +200,9 @@ Content-Type: application/json
 
 默认创建 `health_factor <= 1.2` 的 warning（持续 60 秒）和 `health_factor <= 1.05` 的 critical（立即触发），冷却时间为 30 分钟。请求体可覆盖 `warningThreshold`、`criticalThreshold`、两级持续时间、`cooldownSeconds` 和 `notificationIntegrationIds`。接口是幂等的：同一 Monitor 和网络重复调用不会重复创建默认规则。
 
-## Ethereum / Robinhood Chain Uniswap V3/V4 LP 监控
+## Ethereum / BNB Chain / Robinhood Chain Uniswap V3/V4 LP 监控
 
-支持 Ethereum（Chain ID `1`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。服务不会自动扫描全链 Pool 创建事件；`/uniswap/pools` 只读取历史遗留缓存，不能作为创建 Pool Monitor 的前置条件。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
+支持 Ethereum（Chain ID `1`）、BNB Chain（Chain ID `56`）和 Robinhood Chain（Chain ID `4663`）上的 Uniswap V3/V4 NFT 仓位。后端内置官方 Factory/PoolManager/PositionManager/StateView 与部署块，不接受前端传入协议合约地址。BNB Chain 上的 Uniswap 与 PancakeSwap 使用各自的合约目录和 Monitor 类型。服务不会自动扫描全链 Pool 创建事件；`/uniswap/pools` 只读取历史遗留缓存，不能作为创建 Pool Monitor 的前置条件。V4 钱包发现使用可恢复的 Transfer 索引，API 可以先返回 warming_up，再在后续轮询中返回已发现仓位。
 
 Position Snapshot 的分组键为 `chainId + version + tokenId`。后端计算边界距离、token0/token1 数量、V3 已记账手续费和关闭状态；Wallet 汇总 position/in-range/out-of-range/failed 数量。包含可信稳定币的池可用链上价格计算 USD，否则 `positionValueUsd`/`tvlUsd` 为 `null` 且 valuationStatus 为 unavailable，绝不显示成 0。
 

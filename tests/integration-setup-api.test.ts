@@ -73,8 +73,10 @@ describe('Integration setup API', () => {
     });
     expect(catalogBody.uniswap.deployments.map(({ chainId, version }) => ({ chainId, version }))).toEqual([
       { chainId: 1, version: 'v3' },
+      { chainId: 56, version: 'v3' },
       { chainId: 4_663, version: 'v3' },
       { chainId: 1, version: 'v4' },
+      { chainId: 56, version: 'v4' },
       { chainId: 4_663, version: 'v4' },
     ]);
     expect(catalogBody.pancakeswap.deployments.map(({ chainId, version }) => ({ chainId, version }))).toEqual([
@@ -98,13 +100,13 @@ describe('Integration setup API', () => {
       name: 'BNB Chain',
       productEnabled: true,
       capabilities: {
-        aaveV3: 'unsupported', uniswapV3: 'unsupported', uniswapV4: 'unsupported', pancakeV3: 'available',
+        aaveV3: 'unsupported', uniswapV3: 'available', uniswapV4: 'available', pancakeV3: 'available',
       },
     });
     expect(catalogBody.monitorTypes).toEqual(expect.arrayContaining([
       { id: 'aave_account', status: 'available', chainIds: [1, 9_745] },
       { id: 'aave_pool', status: 'available', chainIds: [1, 9_745] },
-      { id: 'uniswap_wallet', status: 'available', chainIds: [1, 4_663], versions: ['v3', 'v4'] },
+      { id: 'uniswap_wallet', status: 'available', chainIds: [1, 56, 4_663], versions: ['v3', 'v4'] },
       { id: 'pancake_wallet', status: 'available', chainIds: [56], versions: ['v3'] },
     ]));
     expect(catalogBody.samplingPresets).toEqual([

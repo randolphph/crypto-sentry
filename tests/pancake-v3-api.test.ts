@@ -81,11 +81,17 @@ describe('PancakeSwap V3 monitoring API', () => {
     const tested = await app.inject({ method: 'POST', url: `/api/v1/integrations/${id}/test`, headers: authorization });
     expect(tested.statusCode).toBe(200);
     expect(tested.json()).toMatchObject({
-      ok: true, networks: [{ chainId: 56, connectivity: { rpc: 'ok', pancakeV3: 'ok' } }],
+      ok: true,
+      networks: [{ chainId: 56, connectivity: { rpc: 'ok', uniswapV3: 'ok', uniswapV4: 'ok', pancakeV3: 'ok' } }],
     });
     const readiness = await app.inject({ method: 'GET', url: '/api/v1/integrations/readiness', headers: authorization });
     expect(readiness.statusCode).toBe(200);
     expect(readiness.json()).toMatchObject({
+      uniswap: {
+        ready: true,
+        configuredNetworkCount: 1,
+        networks: [{ chainId: 56, name: 'BNB Chain', versions: { v3: true, v4: true }, integrationIds: [id] }],
+      },
       pancakeswap: {
         ready: true,
         configuredNetworkCount: 1,
