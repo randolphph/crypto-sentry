@@ -44,7 +44,7 @@ export class EncryptionService {
   }
 }
 
-const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[-_]?key|rpc[-_]?url)/i;
+const SENSITIVE_KEY_PATTERN = /(token|secret|password|api[-_]?key|device[-_]?key|rpc[-_]?url)/i;
 
 export function maskSensitiveConfig(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(maskSensitiveConfig);

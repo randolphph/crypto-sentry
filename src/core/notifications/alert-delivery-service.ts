@@ -2,6 +2,9 @@ import type { IntegrationRepository } from '../../db/repositories/integration-re
 import type { AlertRepository, ClaimedAlertDelivery } from '../../db/repositories/alert-repository.js';
 import { sendTelegramMessage } from '../../adapters/notifications/telegram-client.js';
 import { formatTelegramAlert } from './telegram-alert-message.js';
+import { sendBarkMessage } from '../../adapters/notifications/bark-client.js';
+import { barkConfigSchema } from './bark-config.js';
+import { formatBarkAlert } from './bark-alert-message.js';
 
 const POLL_MILLISECONDS = 5_000;
 const MAX_ATTEMPTS = 5;
@@ -81,17 +84,20 @@ export class AlertDeliveryService {
       this.alerts.completeDelivery(job, { status: 'skipped', errorCode: 'INTEGRATION_MISSING' });
       return;
     }
-    if (!integration.enabled || integration.type !== 'notification' || integration.provider !== 'telegram') {
+    if (!integration.enabled || integration.type !== 'notification' || !['telegram', 'bark'].includes(integration.provider)) {
       this.alerts.completeDelivery(job, { status: 'skipped', errorCode: 'INTEGRATION_UNAVAILABLE' });
       return;
     }
     const config = integration.config;
-    if (typeof config.botToken !== 'string' || typeof config.chatId !== 'string') {
+    const bark = integration.provider === 'bark' ? barkConfigSchema.safeParse(config) : null;
+    if (bark !== null ? !bark.success : typeof config.botToken !== 'string' || typeof config.chatId !== 'string') {
       this.alerts.completeDelivery(job, { status: 'skipped', errorCode: 'INTEGRATION_INVALID' });
       return;
     }
-    const result = await sendTelegramMessage(
-      { botToken: config.botToken, chatId: config.chatId },
+    const result = bark?.success === true
+      ? await sendBarkMessage(bark.data, formatBarkAlert(job), this.fetchImplementation)
+      : await sendTelegramMessage(
+      { botToken: config.botToken as string, chatId: config.chatId as string },
       formatTelegramAlert(job),
       this.fetchImplementation,
     );

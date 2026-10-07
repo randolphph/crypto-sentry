@@ -3,6 +3,7 @@ import { Decimal } from 'decimal.js';
 
 import { EVM_RPC_PROVIDERS } from '../core/integrations/integration-catalog.js';
 import { rpcIntegrationConfigSchema } from '../core/integrations/evm-rpc-config.js';
+import { barkConfigSchema } from '../core/notifications/bark-config.js';
 export { rpcIntegrationConfigSchema } from '../core/integrations/evm-rpc-config.js';
 
 const configRecord = z.record(z.string(), z.unknown());
@@ -168,12 +169,13 @@ export const integrationCreateSchema = z
     const supported =
       (value.type === 'market_data' && value.provider === 'binance') ||
       (value.type === 'evm_rpc' && evmRpcProviderSchema.safeParse(value.provider).success) ||
-      (value.type === 'notification' && value.provider === 'telegram');
+      (value.type === 'notification' && ['telegram', 'bark'].includes(value.provider));
     if (!supported) context.addIssue({ code: 'custom', path: ['provider'], message: 'Unsupported integration type/provider combination' });
     const expectedConfig =
       value.type === 'market_data' && value.provider === 'binance' ? binanceIntegrationConfigSchema :
       value.type === 'evm_rpc' && evmRpcProviderSchema.safeParse(value.provider).success ? rpcIntegrationConfigSchema :
-      value.type === 'notification' && value.provider === 'telegram' ? telegramConfigSchema : undefined;
+      value.type === 'notification' && value.provider === 'telegram' ? telegramConfigSchema :
+      value.type === 'notification' && value.provider === 'bark' ? barkConfigSchema : undefined;
     if (expectedConfig !== undefined) {
       const parsedConfig = expectedConfig.safeParse(value.config);
       if (!parsedConfig.success) {

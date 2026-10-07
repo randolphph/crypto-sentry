@@ -5,6 +5,7 @@ import type { IntegrationCreate, IntegrationPatch } from '../../api/schemas.js';
 import { AppError } from '../../api/errors.js';
 import { createId } from '../../core/ids.js';
 import { normalizeEvmRpcConfig } from '../../core/integrations/evm-rpc-config.js';
+import { barkConfigSchema } from '../../core/notifications/bark-config.js';
 import type { EncryptionService } from '../../security/encryption/encryption-service.js';
 import { maskSensitiveConfig } from '../../security/encryption/encryption-service.js';
 import type { AppDatabase } from '../client.js';
@@ -57,7 +58,8 @@ function mergeIntegrationConfig(
   return merged;
 }
 
-function normalizeConfig(type: string, config: Record<string, unknown>): Record<string, unknown> {
+function normalizeConfig(type: string, config: Record<string, unknown>, provider?: string): Record<string, unknown> {
+  if (type === 'notification' && provider === 'bark') return barkConfigSchema.parse(config);
   if (type !== 'evm_rpc') return config;
   try {
     return normalizeEvmRpcConfig(config);
@@ -81,7 +83,7 @@ export class IntegrationRepository {
       const { configCiphertext: _, ...runtimeRow } = row;
       return {
         ...runtimeRow,
-        config: normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext)),
+        config: normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext), row.provider),
       };
     });
   }
@@ -102,7 +104,7 @@ export class IntegrationRepository {
     const { configCiphertext: _, ...runtimeRow } = row;
     return {
       ...runtimeRow,
-      config: normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext)),
+      config: normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext), row.provider),
     };
   }
 
@@ -114,7 +116,7 @@ export class IntegrationRepository {
       type: input.type,
       provider: input.provider,
       enabled: input.enabled,
-      configCiphertext: this.encryption.encryptJson(normalizeConfig(input.type, input.config)),
+      configCiphertext: this.encryption.encryptJson(normalizeConfig(input.type, input.config, input.provider)),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -125,10 +127,11 @@ export class IntegrationRepository {
   public update(id: string, input: IntegrationPatch) {
     const row = this.database.select().from(integrations).where(eq(integrations.id, id)).get();
     if (row === undefined) throw new AppError(404, 'INTEGRATION_NOT_FOUND', 'Integration was not found');
-    const currentConfig = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext));
+    const currentConfig = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext), row.provider);
     const nextConfig = normalizeConfig(
       row.type,
       input.config === undefined ? currentConfig : mergeIntegrationConfig(row.type, currentConfig, input.config),
+      row.provider,
     );
     integrationCreateSchema.parse({
       name: input.name ?? row.name,
@@ -164,7 +167,7 @@ export class IntegrationRepository {
   }
 
   private present(row: typeof integrations.$inferSelect) {
-    const config = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext));
+    const config = normalizeConfig(row.type, this.encryption.decryptJson<Record<string, unknown>>(row.configCiphertext), row.provider);
     const { configCiphertext: _, ...publicRow } = row;
     return { ...publicRow, config: maskSensitiveConfig(config) };
   }

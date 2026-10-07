@@ -1,4 +1,4 @@
-const SENSITIVE_KEY = /^(?:rpcUrl|headers?|authorization|api[-_]?token|bot[-_]?token|token|secret|password|private[-_]?key|master[-_]?encryption[-_]?key)$/i;
+const SENSITIVE_KEY = /^(?:rpcUrl|headers?|authorization|api[-_]?token|bot[-_]?token|device[-_]?key|token|secret|password|private[-_]?key|master[-_]?encryption[-_]?key)$/i;
 const MAX_STRING_LENGTH = 4_096;
 const MAX_DEPTH = 8;
 

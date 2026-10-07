@@ -1,4 +1,6 @@
 import { BinanceRestClient, BinanceRestError } from '../../adapters/markets/binance/binance-rest-client.js';
+import { sendBarkMessage } from '../../adapters/notifications/bark-client.js';
+import { barkConfigSchema } from '../notifications/bark-config.js';
 import {
   discoverTelegramChats,
   sendTelegramMessage,
@@ -265,6 +267,15 @@ export class IntegrationOperationsService {
     const integration = this.integrations.getRuntime(id);
     if (!integration.enabled) {
       throw new AppError(409, 'INTEGRATION_DISABLED', 'Enable the integration before using it');
+    }
+    if (integration.type === 'notification' && integration.provider === 'bark') {
+      const config = barkConfigSchema.parse(integration.config);
+      const result = await sendBarkMessage(config, {
+        title: '✅ CryptoSentry 通知测试', body: 'Bark 通知测试成功，监控告警将发送到当前设备。',
+      }, this.fetchImplementation);
+      return result.ok
+        ? { ok: true, provider: 'bark', delivery: { status: 'sent' } }
+        : { ok: false, provider: 'bark', delivery: { status: 'failed' }, error: { code: result.code, message: result.message } };
     }
     if (integration.type === 'notification' && integration.provider === 'telegram') {
       const config = integration.config;

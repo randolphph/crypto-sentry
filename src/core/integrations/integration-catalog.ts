@@ -16,6 +16,12 @@ export const BINANCE_DEFAULT_CONFIG = {
 } as const;
 
 export const INTEGRATION_CATALOG = {
+  notifications: {
+    providers: [
+      { id: 'telegram', name: 'Telegram' },
+      { id: 'bark', name: 'Bark', defaultConfig: { serverUrl: 'https://api.day.app', group: 'CryptoSentry' } },
+    ],
+  },
   samplingPresets: [
     { id: 'realtime', intervalSeconds: 5 },
     { id: 'standard', intervalSeconds: 20 },
