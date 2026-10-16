@@ -23,6 +23,7 @@ export class SharedWebSocketFeed {
   private readonly subscribedStreams = new Set<string>();
   private socket: MarketWebSocketHandle | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  private connectionTimer: ReturnType<typeof setTimeout> | undefined;
   private rotationTimer: ReturnType<typeof setTimeout> | undefined;
   private stableTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempts = 0;
@@ -74,6 +75,10 @@ export class SharedWebSocketFeed {
     if (this.disposed || this.desiredStreams.size === 0 || this.socket !== undefined) return;
     const generation = ++this.generation;
     this.plannedClose = false;
+    this.connectionTimer = setTimeout(() => {
+      if (generation !== this.generation || this.disposed) return;
+      this.handleError(generation, new Error('WebSocket connection timed out'));
+    }, 10_000);
     try {
       this.socket = this.options.factory(websocketEndpoint(this.options.baseUrl), {
         open: () => this.handleOpen(generation),
@@ -89,6 +94,7 @@ export class SharedWebSocketFeed {
         error: (error) => this.handleError(generation, error),
       });
     } catch (error) {
+      this.clearConnectionTimer();
       this.socket = undefined;
       this.options.onError(toError(error));
       this.scheduleReconnect();
@@ -97,6 +103,7 @@ export class SharedWebSocketFeed {
 
   private handleOpen(generation: number): void {
     if (generation !== this.generation || this.socket === undefined) return;
+    this.clearConnectionTimer();
     this.clearReconnectTimer();
     this.subscribedStreams.clear();
     this.sendControl('SUBSCRIBE', [...this.desiredStreams]);
@@ -109,6 +116,7 @@ export class SharedWebSocketFeed {
 
   private handleClose(generation: number, code: number, reason: string): void {
     if (generation !== this.generation) return;
+    this.clearConnectionTimer();
     const planned = this.plannedClose;
     this.socket = undefined;
     this.subscribedStreams.clear();
@@ -121,6 +129,7 @@ export class SharedWebSocketFeed {
 
   private handleError(generation: number, error: Error): void {
     if (generation !== this.generation || this.disposed) return;
+    this.clearConnectionTimer();
     this.options.onError(error);
     this.socket?.terminate();
   }
@@ -161,6 +170,7 @@ export class SharedWebSocketFeed {
   }
 
   private clearTimers(): void {
+    this.clearConnectionTimer();
     this.clearReconnectTimer();
     this.clearRotationTimer();
     this.clearStableTimer();
@@ -169,6 +179,11 @@ export class SharedWebSocketFeed {
   private clearReconnectTimer(): void {
     if (this.reconnectTimer !== undefined) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
+  }
+
+  private clearConnectionTimer(): void {
+    if (this.connectionTimer !== undefined) clearTimeout(this.connectionTimer);
+    this.connectionTimer = undefined;
   }
 
   private clearRotationTimer(): void {

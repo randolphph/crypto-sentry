@@ -64,7 +64,14 @@ export class MonitorSnapshotService {
       monitorId, monitorType: monitor.type, status, observedAt, dataAgeSeconds,
       maxStaleSeconds: monitor.maxStaleSeconds,
       capability: { available: true, reason: null },
-      summary: { metricCount: metrics.length }, data: { metrics }, error: null,
+      summary: monitor.type === 'stock_price' ? {
+        symbol: monitor.config.symbol, source: metrics.find((metric) => metric.name === 'price')?.source ?? monitor.config.provider,
+        quoteCurrency: metrics.find((metric) => metric.name === 'price')?.unit ?? (monitor.config.provider === 'binance' ? 'USDT' : 'USD'),
+        priceBasis: metrics.find((metric) => metric.name === 'price')?.labels?.priceBasis === 'perpetual_mark' || monitor.config.provider === 'binance' ? '永续合约标记价格' : '股票行情',
+        session: metrics.find((metric) => metric.name === 'price')?.labels?.session ?? null,
+      } : { metricCount: metrics.length }, data: { metrics },
+      error: monitor.type === 'stock_price' && monitor.lastStatus === 'error'
+        ? { code: 'STOCK_QUOTE_UNAVAILABLE', message: metrics.find((metric) => metric.name === 'price')?.context?.error ?? '美股行情暂不可用' } : null,
     };
   }
 }

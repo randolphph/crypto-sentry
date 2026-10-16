@@ -222,7 +222,13 @@ const PANCAKE_POOL_RULE_METRICS: RuleMetricDefinition[] = UNISWAP_POOL_RULE_METR
     labels: [...new Set(['protocol', ...definition.labels])],
   }));
 
+export const STOCK_RULE_METRICS: RuleMetricDefinition[] = [
+  { id: 'price', name: '股价', kind: 'gauge', valueType: 'decimal', operators: numericOperators, units: ['quote_asset'], requiresWindow: false, monitorTypes: ['stock_price'], labels: ['symbol', 'provider', 'currency', 'priceBasis', 'session'] },
+  { id: 'data_age_seconds', name: '行情数据年龄', kind: 'gauge', valueType: 'decimal', operators: numericOperators, units: ['seconds'], requiresWindow: false, monitorTypes: ['stock_price'], labels: ['symbol', 'provider', 'currency', 'priceBasis', 'session'] },
+];
+
 export const RULE_METRICS = {
+  stock_price: STOCK_RULE_METRICS,
   market: MARKET_RULE_METRICS,
   aave_account: AAVE_ACCOUNT_RULE_METRICS,
   aave_pool: AAVE_POOL_RULE_METRICS,

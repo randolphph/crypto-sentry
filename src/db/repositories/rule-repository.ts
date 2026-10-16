@@ -181,8 +181,11 @@ export class RuleRepository {
           [`conditions.${index}`]: parsed.error.issues.map((issue) => issue.message).join('; '),
         });
       }
+      if (monitor.type === 'stock_price' && condition.metric === 'price' && (['true', 'false'].includes(condition.threshold) || new Decimal(condition.threshold).lte(0))) {
+        throw new AppError(400, 'RULE_CONDITION_INVALID', 'Target stock price must be positive');
+      }
       const definition = ruleMetricDefinition(monitor.type, condition.metric);
-      if (['market', 'aave_account', 'aave_pool', 'uniswap_position', 'uniswap_wallet', 'uniswap_pool'].includes(monitor.type) && definition === undefined) {
+      if (['stock_price', 'market', 'aave_account', 'aave_pool', 'uniswap_position', 'uniswap_wallet', 'uniswap_pool'].includes(monitor.type) && definition === undefined) {
         throw new AppError(400, 'RULE_METRIC_UNSUPPORTED', 'Metric is not supported by this monitor type', {
           [`conditions.${index}.metric`]: `${condition.metric} is not available for ${monitor.type}`,
         });

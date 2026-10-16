@@ -49,6 +49,12 @@ export const binanceIntegrationConfigSchema = z.object({
 export const evmRpcProviderSchema = z.enum(EVM_RPC_PROVIDERS);
 const telegramConfigSchema = z.object({ botToken: z.string().min(10), chatId: z.string().min(1) });
 export const telegramDiscoverSchema = z.object({ botToken: z.string().min(10) }).strict();
+export const stockPriceMonitorConfigSchema = z.object({
+  symbol: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)*$/u).max(20),
+  provider: z.enum(['auto', 'sina', 'yahoo', 'binance']).default('auto'),
+  includeExtended: z.boolean().default(true),
+}).strict();
+
 export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),
   marketType: z.enum(['spot', 'perpetual']),
@@ -141,6 +147,7 @@ export const pancakePoolMonitorConfigSchema = z.object({
 }).strict();
 
 export const monitorTypeSchema = z.enum([
+  'stock_price',
   'market',
   'aave_account',
   'aave_pool',
@@ -206,6 +213,7 @@ const monitorBaseSchema = z.object({
 export function monitorConfigSchema(type: MonitorType): z.ZodType {
   switch (type) {
     case 'market': return marketMonitorConfigSchema;
+    case 'stock_price': return stockPriceMonitorConfigSchema;
     case 'aave_account': return aaveAccountMonitorConfigSchema;
     case 'aave_pool': return aavePoolMonitorConfigSchema;
     case 'uniswap_position': return uniswapPositionMonitorConfigSchema;
@@ -234,8 +242,13 @@ export const monitorCreateSchema = monitorBaseSchema.superRefine((value, context
 });
 
 export const monitorPatchSchema = monitorBaseSchema
-  .omit({ type: true })
+  .omit({ type: true, enabled: true, intervalSeconds: true, maxStaleSeconds: true })
   .partial()
+  .extend({
+    enabled: enabled.optional(),
+    intervalSeconds: z.number().int().min(5).max(86_400).optional(),
+    maxStaleSeconds: z.number().int().min(5).max(86_400).optional(),
+  })
   .refine((value) => Object.keys(value).length > 0, 'At least one field is required');
 
 export const ruleConditionSchema = z.object({

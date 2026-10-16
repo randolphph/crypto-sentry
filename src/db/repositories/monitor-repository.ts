@@ -417,6 +417,7 @@ export class MonitorRepository implements MonitorRuntimeStateStore {
 
   private validateIntegrationReference(monitorType: string, config: Record<string, unknown>): void {
     validateMonitorConfig(monitorType as MonitorCreate['type'], config);
+    if (monitorType === 'stock_price') return;
     if (monitorType === 'aave_position') {
       const rpcIntegration = this.database
         .select({ id: integrations.id })

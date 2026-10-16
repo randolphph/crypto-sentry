@@ -204,10 +204,15 @@ export function formatTelegramAlert(job: ClaimedAlertDelivery): string {
   if (uniswapAlert !== undefined) return uniswapAlert;
   const target = lineValue(job.message, 'Target');
   const currentValue = lineValue(job.message, 'Current value') ?? job.currentValue;
+  const labels = lineEntries(job.message, 'Labels');
+  const stockSource = ['stock', 'perpetual_mark'].includes(labels.priceBasis ?? '')
+    ? `来源：${({ sina: '新浪', yahoo: 'Yahoo', binance: '币安' } as Record<string,string>)[labels.provider ?? ''] ?? labels.provider ?? '未知'} · ${labels.priceBasis === 'perpetual_mark' ? '股票永续标记价格' : '美股股价'}`
+    : undefined;
   return [
     `${severity.emoji} ${severity.label}${repeated ? '再次提醒' : ''}｜${ruleName(job.title)}`,
     ...(target === undefined ? [] : [`对象：${compactTarget(target)}`]),
     ...(currentValue === null ? [] : [`当前：${currentValue}`]),
+    ...(stockSource === undefined ? [] : [stockSource]),
     `时间：${beijingTime(job.observedAt)}（北京时间）`,
   ].join('\n');
 }

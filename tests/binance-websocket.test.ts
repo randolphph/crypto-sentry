@@ -97,6 +97,44 @@ describe('Shared WebSocket feed lifecycle', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it('times out a connection that never opens and reconnects without timing out a healthy socket', async () => {
+    const { factory, sockets } = createFakeFactory();
+    const errors: Error[] = [];
+    const feed = new SharedWebSocketFeed({
+      baseUrl: 'wss://stream.example', factory,
+      onMessage: () => undefined, onError: (error) => errors.push(error),
+    });
+    feed.setStreams(['btcusdt@miniTicker']);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(sockets[0]?.readyState).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets[0]?.readyState).toBe(3);
+    expect(errors.some((error) => error.message === 'WebSocket connection timed out')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sockets).toHaveLength(2);
+    sockets[1]?.open();
+    expect(parseControlMessage(sockets[1]?.sent[0] ?? '{}').params).toEqual(['btcusdt@miniTicker']);
+    const errorCount = errors.length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sockets[1]?.readyState).toBe(1);
+    expect(errors).toHaveLength(errorCount);
+    feed.close();
+  });
+
+  it('cancels the connection timeout when a pending feed is shut down', async () => {
+    const { factory, sockets } = createFakeFactory();
+    const errors: Error[] = [];
+    const feed = new SharedWebSocketFeed({
+      baseUrl: 'wss://stream.example', factory,
+      onMessage: () => undefined, onError: (error) => errors.push(error),
+    });
+    feed.setStreams(['btcusdt@miniTicker']);
+    feed.close();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
   it('updates subscriptions, reconnects with backoff, and resubscribes', async () => {
     const { factory, sockets } = createFakeFactory();
     const errors: Error[] = [];

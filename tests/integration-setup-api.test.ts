@@ -184,7 +184,7 @@ describe('Integration setup API', () => {
         config: {
           restUrl: 'https://api.binance.com',
           futuresRestUrl: 'https://fapi.binance.com',
-          spotWebsocketUrl: 'wss://stream.binance.com:9443',
+          spotWebsocketUrl: 'wss://stream.binance.com:443',
           futuresWebsocketUrl: 'wss://fstream.binance.com/market',
         },
       },

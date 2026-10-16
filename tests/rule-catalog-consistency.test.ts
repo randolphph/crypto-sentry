@@ -37,6 +37,7 @@ describe('rule metric catalog consistency', () => {
 
   it('contains every actionable metric emitted by each current producer', () => {
     const emitted: Record<keyof typeof RULE_METRICS, string[]> = {
+      stock_price: ['price', 'data_age_seconds'],
       market: [
         'price', 'price_change_percent', 'base_volume_24h', 'quote_volume_24h', 'funding_rate_percent',
         'next_funding_time', 'open_interest', 'open_interest_change_percent', 'data_age_seconds',

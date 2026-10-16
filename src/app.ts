@@ -16,6 +16,7 @@ import type { MarketWebSocketFactory } from './adapters/markets/websocket/websoc
 import { loadConfig } from './config.js';
 import type { AppConfig } from './config.js';
 import { ConfigEventBus } from './core/config-events/config-event-bus.js';
+import { UsStockCoordinator } from './core/integrations/us-stock-coordinator.js';
 import { BinanceMarketDataCoordinator } from './core/integrations/binance-market-data-coordinator.js';
 import { AaveV3PositionCoordinator } from './core/integrations/aave-v3-position-coordinator.js';
 import type { AaveV3PositionReaderFactory } from './core/integrations/aave-v3-position-coordinator.js';
@@ -316,6 +317,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       (error) => app.log.warn({ err: error }, 'Binance market data stream error'),
     );
 
+  const stockCoordinator = new UsStockCoordinator(monitors, metricPipeline, pollingScheduler, { fetch: baseFetch });
+
   const unsubscribeConfigEvents = events.subscribe((event) => {
     app.log.info({ entity: event.entity, operation: event.operation, id: event.id }, 'Configuration changed');
     if (event.entity === 'monitor') {
@@ -339,6 +342,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       uniswapPoolCoordinator.reconcile();
       pancakePoolCoordinator.reconcile();
     }
+    if (event.entity === 'monitor') stockCoordinator.reconcile();
     if (event.entity === 'monitor' || event.entity === 'integration') {
       aavePositionCoordinator.reconcile();
       aaveEventCoordinator.reconcile();
@@ -349,6 +353,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     }
   });
   marketDataCoordinator?.reconcile();
+  stockCoordinator.reconcile();
   aavePositionCoordinator.reconcile();
   aaveEventCoordinator.reconcile();
   uniswapV3PositionCoordinator.reconcile();
@@ -380,6 +385,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     clearInterval(heartbeat);
     unsubscribeConfigEvents();
     marketDataCoordinator?.close();
+    stockCoordinator.close();
     aavePositionCoordinator.close();
     aaveEventCoordinator.close();
     uniswapV3PositionCoordinator.close();

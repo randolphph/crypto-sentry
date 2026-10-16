@@ -11,7 +11,7 @@ export type EvmRpcProvider = (typeof EVM_RPC_PROVIDERS)[number];
 export const BINANCE_DEFAULT_CONFIG = {
   restUrl: 'https://api.binance.com',
   futuresRestUrl: 'https://fapi.binance.com',
-  spotWebsocketUrl: 'wss://stream.binance.com:9443',
+  spotWebsocketUrl: 'wss://stream.binance.com:443',
   futuresWebsocketUrl: 'wss://fstream.binance.com/market',
 } as const;
 
@@ -72,6 +72,7 @@ export const INTEGRATION_CATALOG = {
   },
   monitorTypes: [
     { id: 'market', status: 'available' },
+    { id: 'stock_price', status: 'available' },
     { id: 'aave_account', status: 'available', chainIds: productAaveV3ChainIds },
     { id: 'aave_pool', status: 'available', chainIds: productAaveV3ChainIds },
     { id: 'uniswap_position', status: 'available', chainIds: [1, 56, 4_663], versions: ['v3', 'v4'] },
