@@ -1,5 +1,9 @@
 # CryptoSentry
 
+股票后台行情支持 A 股（新浪 / 腾讯）、美股（新浪 / Yahoo / 币安）、港股（腾讯 / Yahoo）和韩股（Naver / Yahoo）。`POST /api/v1/stock-quotes/subscriptions` 持久化调用方的标的订阅，`POST /api/v1/stock-quotes/query` 获取股票估值报价；两者沿用 Bearer 认证。后台并行比较行情时间、限制采集并发并共用在途请求，订阅不创建告警任务。持仓估值使用股票原币报价，股票永续标记价格独立保存供监控使用。失败保留最后成功行情，重启后恢复订阅和报价。
+
+订阅请求为 `{ owner: "64位十六进制HMAC标识", source: "manual|ibkr|longport|watch", symbols: [{ market: "A|US|HK|KR", symbol: "600519" }] }`。同一 owner/source 的列表原子替换，空列表撤销该来源；其他来源或监控仍需使用时继续采价。默认 60 秒，A/HK/KR 非常规交易时段降低为 5 分钟；节假日未接入独立交易日历。已有美股监控统一升级为自动选源，采用最新有效报价，保留 USD 股票与 USDT 永续的价格口径标识。
+
 CryptoSentry 是一个单进程、API 驱动的个人加密资产监控服务。它部署在独立服务器上，即使资产看板关闭，也会持续采集数据、执行规则并保存告警。
 
 首期目标包括：

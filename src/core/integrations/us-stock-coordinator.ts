@@ -1,4 +1,4 @@
-import { UsStockQuoteReader } from '../../adapters/markets/us-stock-quotes.js';
+import type { StockQuoteService } from './stock-quote-service.js';
 import { stockPriceMonitorConfigSchema } from '../../api/schemas.js';
 import type { MonitorRepository } from '../../db/repositories/monitor-repository.js';
 import type { MetricPipeline } from '../metrics/metric-pipeline.js';
@@ -7,12 +7,12 @@ import type { PollingScheduler } from '../scheduling/polling-scheduler.js';
 type Monitor = ReturnType<MonitorRepository['get']>;
 export class UsStockCoordinator {
   private readonly generations = new Map<string, string>();
-  private readonly reader: UsStockQuoteReader;
   public constructor(private readonly monitors: MonitorRepository, private readonly pipeline: MetricPipeline, private readonly scheduler: PollingScheduler,
-    private readonly options: { fetch?: typeof globalThis.fetch; now?: () => Date } = {}) {
-    this.reader = new UsStockQuoteReader(options.fetch, options.now);
-  }
+    private readonly quotes: StockQuoteService, private readonly options: { now?: () => Date } = {}) {}
   public reconcile(): void {
+    this.quotes.setMonitors(this.monitors.list().filter((monitor) => monitor.type === 'stock_price' && monitor.enabled).map((monitor) => ({
+      id: monitor.id, symbol: stockPriceMonitorConfigSchema.parse(monitor.config).symbol, intervalSeconds: monitor.intervalSeconds,
+    })));
     const desired = new Set<string>();
     for (const monitor of this.monitors.list()) {
       if (monitor.type !== 'stock_price' || !monitor.enabled) continue;
@@ -36,16 +36,17 @@ export class UsStockCoordinator {
     const config = stockPriceMonitorConfigSchema.parse(monitor.config);
     const current = () => !signal.aborted && this.generations.get(monitor.id) === generation;
     try {
-      const quote = await this.reader.read({ ...config, maxStaleSeconds: monitor.maxStaleSeconds }, signal);
+      const quote = await this.quotes.get({ market: 'US', symbol: config.symbol }, 'monitor', monitor.intervalSeconds, signal);
+      if (!quote) throw new Error(this.quotes.error({ market: 'US', symbol: config.symbol }));
       if (!current()) return;
       const receivedAt = (this.options.now?.() ?? new Date()).toISOString();
       const age = Math.max(0, (Date.parse(receivedAt) - Date.parse(quote.observedAt)) / 1_000);
-      const status = age > monitor.maxStaleSeconds ? 'stale' as const : 'ok' as const;
+      const status = quote.status === 'error' ? 'error' as const : age > monitor.maxStaleSeconds ? 'stale' as const : 'ok' as const;
       const labels = { symbol: quote.symbol, provider: quote.provider, currency: quote.currency, quoteAsset: quote.currency, priceBasis: quote.priceBasis, session: quote.session };
       this.pipeline.forgetMonitor(monitor.id);
       for (const [name, value, unit] of [['price', quote.price, quote.currency], ['data_age_seconds', String(age), 'seconds']]) {
         if (!current()) return;
-        await this.pipeline.ingest({ monitorId: monitor.id, source: quote.provider, target: quote.symbol, name, value, unit, observedAt: quote.observedAt, receivedAt, status, labels });
+        await this.pipeline.ingest({ monitorId: monitor.id, source: quote.provider, target: quote.symbol, name, value, unit, observedAt: quote.observedAt, receivedAt, status, labels, ...(quote.error ? { context: { error: quote.error } } : {}) });
       }
     } catch (error) {
       if (!current()) return;

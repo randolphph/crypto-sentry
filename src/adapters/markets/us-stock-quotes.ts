@@ -7,11 +7,13 @@ export interface StockQuote {
   provider: Exclude<StockQuoteProvider, 'auto'>; observedAt: string;
   session: 'regular' | 'extended' | 'continuous';
   priceBasis: 'stock' | 'perpetual_mark';
+  name?: string;
+  changePct?: number;
 }
 export interface StockQuoteRequest { symbol: string; provider: StockQuoteProvider; includeExtended: boolean; maxStaleSeconds: number }
 const headers = { 'user-agent': 'Mozilla/5.0', accept: 'application/json,text/plain,*/*' };
 const yahooSchema = z.object({ chart: z.object({ result: z.array(z.object({
-  meta: z.object({ symbol: z.string(), currency: z.string(), regularMarketPrice: z.number(), regularMarketTime: z.number() }),
+  meta: z.object({ symbol: z.string(), currency: z.string(), regularMarketPrice: z.number(), regularMarketTime: z.number(), chartPreviousClose: z.number().optional(), previousClose: z.number().optional(), shortName: z.string().optional() }),
   timestamp: z.array(z.number()).optional(),
   indicators: z.object({ quote: z.array(z.object({ close: z.array(z.number().nullable()) })) }).optional(),
 })).nullable() }) });
@@ -45,23 +47,27 @@ export function sinaTradeTime(value: string, now: Date): string {
 export class UsStockQuoteReader {
   private equities: z.infer<typeof equitySchema>['symbols'] = [];
   private equitiesExpireAt = 0;
+  private equitiesPending: Promise<void> | undefined;
   public constructor(private readonly fetch: typeof globalThis.fetch = globalThis.fetch, private readonly now = () => new Date()) {}
 
   public async read(request: StockQuoteRequest, signal?: AbortSignal): Promise<StockQuote> {
+    const quotes = await this.readAll(request, signal);
+    const newest = quotes.sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))[0];
+    if (!newest) throw new Error('没有可用的美股行情');
+    return newest;
+  }
+
+  public async readAll(request: StockQuoteRequest, signal?: AbortSignal): Promise<StockQuote[]> {
     const sources = request.provider === 'auto' ? ['sina', 'yahoo', 'binance'] as const : [request.provider];
-    let newest: StockQuote | undefined; const errors: string[] = [];
-    for (const source of sources) {
-      if (signal?.aborted) throw signal.reason;
-      try {
-        const quote = source === 'sina' ? await this.sina(request, signal) : source === 'yahoo' ? await this.yahoo(request, signal) : await this.binance(request, signal);
-        const age = (this.now().getTime() - Date.parse(quote.observedAt)) / 1_000;
-        if (age < -60) throw new Error('行情时间位于未来');
-        if (!newest || Date.parse(quote.observedAt) > Date.parse(newest.observedAt)) newest = quote;
-        if (age <= request.maxStaleSeconds) return quote;
-      } catch (error) { errors.push(`${source}: ${error instanceof Error ? error.message : '行情读取失败'}`); }
-    }
-    if (newest) return newest;
-    throw new Error(errors.join('; ') || '没有可用的美股行情');
+    const results = await Promise.allSettled(sources.map(async (source) => {
+      const quote = source === 'sina' ? await this.sina(request, signal) : source === 'yahoo' ? await this.yahoo(request, signal) : await this.binance(request, signal);
+      if (Date.parse(quote.observedAt) > this.now().getTime() + 60_000) throw new Error('行情时间位于未来');
+      return quote;
+    }));
+    if (signal?.aborted) throw signal.reason;
+    const quotes = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    if (!quotes.length) throw new Error(results.flatMap((result, index) => result.status === 'rejected' ? [`${sources[index]}: ${result.reason instanceof Error ? result.reason.message : '行情读取失败'}`] : []).join('; '));
+    return quotes;
   }
 
   private async get(url: string, signal?: AbortSignal, extraHeaders: Record<string,string> = {}): Promise<Response> {
@@ -84,7 +90,8 @@ export class UsStockQuoteReader {
         if (Date.parse(extended.observedAt) > Date.parse(quote.observedAt)) quote = extended;
       } catch { /* Missing extended-session quote does not invalidate the regular quote. */ }
     }
-    return quote;
+    const changePct = Number(fields[2]);
+    return { ...quote, ...(fields[0] ? { name: fields[0] } : {}), ...(Number.isFinite(changePct) ? { changePct } : {}) };
   }
 
   private async yahoo(request: StockQuoteRequest, signal?: AbortSignal): Promise<StockQuote> {
@@ -102,14 +109,19 @@ export class UsStockQuoteReader {
         break;
       }
     }
-    return quote;
+    const previous = result.meta.chartPreviousClose ?? result.meta.previousClose;
+    const changePct = previous && previous > 0 ? new Decimal(quote.price).div(previous).minus(1).times(100).toNumber() : undefined;
+    return { ...quote, ...(result.meta.shortName ? { name: result.meta.shortName } : {}), ...(changePct === undefined ? {} : { changePct }) };
   }
 
   private async binance(request: StockQuoteRequest, signal?: AbortSignal): Promise<StockQuote> {
     if (this.equitiesExpireAt <= this.now().getTime()) {
-      const response = await this.get('https://fapi.binance.com/fapi/v1/exchangeInfo', signal);
-      this.equities = equitySchema.parse(await response.json()).symbols;
-      this.equitiesExpireAt = this.now().getTime() + 300_000;
+      this.equitiesPending ??= (async () => {
+        const response = await this.get('https://fapi.binance.com/fapi/v1/exchangeInfo', signal);
+        this.equities = equitySchema.parse(await response.json()).symbols;
+        this.equitiesExpireAt = this.now().getTime() + 300_000;
+      })().finally(() => { this.equitiesPending = undefined; });
+      await this.equitiesPending;
     }
     const market = this.equities.find((item) => identity(item.baseAsset) === identity(request.symbol) && item.quoteAsset === 'USDT' && item.status === 'TRADING' && item.underlyingType === 'EQUITY' && ['TRADIFI_PERPETUAL', 'PERPETUAL'].includes(item.contractType));
     if (!market) throw new Error('币安未提供该标的可交易的美股永续合约');

@@ -358,6 +358,25 @@ WHERE metric = 'price_change_percent';
 ALTER TABLE integration_network_health ADD COLUMN pancake_v3_status TEXT NOT NULL DEFAULT 'unknown';
 `,
   },
+  {
+    name: '0013_shared_stock_quotes',
+    sql: `
+CREATE TABLE stock_quote_subscriptions (
+  owner TEXT NOT NULL, source TEXT NOT NULL, market TEXT NOT NULL, symbol TEXT NOT NULL,
+  PRIMARY KEY (owner, source, market, symbol)
+);
+CREATE TABLE stock_quote_subscription_versions (
+  owner TEXT NOT NULL, source TEXT NOT NULL, revision INTEGER NOT NULL,
+  PRIMARY KEY (owner, source)
+);
+CREATE TABLE stock_quotes (
+  market TEXT NOT NULL, symbol TEXT NOT NULL, basis TEXT NOT NULL,
+  quote_json TEXT NOT NULL, received_at TEXT NOT NULL,
+  PRIMARY KEY (market, symbol, basis)
+);
+UPDATE monitors SET config_json = json_set(config_json, '$.provider', 'auto', '$.includeExtended', json('true')) WHERE type = 'stock_price';
+`,
+  },
 ] as const;
 
 export function runMigrations(sqlite: Database.Database): void {

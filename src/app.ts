@@ -11,6 +11,8 @@ import { registerIntegrationRoutes } from './api/integrations/routes.js';
 import { registerMonitorRoutes } from './api/monitors/routes.js';
 import { registerRuleRoutes } from './api/rules/routes.js';
 import { registerStatusRoutes } from './api/status/routes.js';
+import { registerStockQuoteRoutes } from './api/stock-quotes/routes.js';
+import { StockQuoteService } from './core/integrations/stock-quote-service.js';
 import { createNodeMarketWebSocket } from './adapters/markets/websocket/websocket-port.js';
 import type { MarketWebSocketFactory } from './adapters/markets/websocket/websocket-port.js';
 import { loadConfig } from './config.js';
@@ -317,7 +319,10 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
       (error) => app.log.warn({ err: error }, 'Binance market data stream error'),
     );
 
-  const stockCoordinator = new UsStockCoordinator(monitors, metricPipeline, pollingScheduler, { fetch: baseFetch });
+  const stockQuotes = new StockQuoteService(database.sqlite, pollingScheduler, { fetch: baseFetch });
+  registerStockQuoteRoutes(app, stockQuotes);
+  stockQuotes.reconcile();
+  const stockCoordinator = new UsStockCoordinator(monitors, metricPipeline, pollingScheduler, stockQuotes);
 
   const unsubscribeConfigEvents = events.subscribe((event) => {
     app.log.info({ entity: event.entity, operation: event.operation, id: event.id }, 'Configuration changed');
@@ -386,6 +391,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<Fastify
     unsubscribeConfigEvents();
     marketDataCoordinator?.close();
     stockCoordinator.close();
+    await stockQuotes.close();
     aavePositionCoordinator.close();
     aaveEventCoordinator.close();
     uniswapV3PositionCoordinator.close();

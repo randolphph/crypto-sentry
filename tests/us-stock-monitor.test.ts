@@ -26,14 +26,14 @@ describe('US stock quote adapters', () => {
     expect(sinaTradeTime('Dec 31 04:00PM EST', new Date('2027-01-01T02:00:00Z'))).toBe('2026-12-31T21:00:00.000Z');
     expect(() => sinaTradeTime('2026-10-15 17:18:00', now)).toThrow();
   });
-  it('prefers fresh Sina or Yahoo quotes before consulting Binance', async () => {
+  it('checks all automatic sources and chooses the newest rather than the first fresh quote', async () => {
     const fetch = vi.fn(async (input: string | URL | Request) => urlOf(input).includes('sinajs') ? new Response('denied', { status: 403 }) : yahoo());
     expect(await new UsStockQuoteReader(fetch, () => now).read(request)).toMatchObject({ provider: 'yahoo', price: '219' });
-    expect(fetch.mock.calls.every(([input]) => !urlOf(input).includes('binance'))).toBe(true);
+    expect(fetch.mock.calls.some(([input]) => urlOf(input).includes('binance'))).toBe(true);
     const stale = vi.fn(async (input: string | URL | Request) => urlOf(input).includes('sinajs') ? sina() : yahoo());
     expect(await new UsStockQuoteReader(stale, () => now).read({ ...request, includeExtended: false })).toMatchObject({ provider: 'yahoo' });
   });
-  it('automatically reaches Binance after stale or failed stock sources and keeps metadata and source preference', async () => {
+  it('automatically selects the newest Binance quote even when another source recovers with an older trade', async () => {
     let freshStocks = false;
     const fetch = vi.fn(async (input: string | URL | Request) => {
       const url = urlOf(input);
@@ -45,8 +45,8 @@ describe('US stock quote adapters', () => {
     const reader = new UsStockQuoteReader(fetch, () => now);
     expect(await reader.read(request)).toMatchObject({ provider: 'binance', price: '218.45', currency: 'USDT', priceBasis: 'perpetual_mark' });
     freshStocks = true; fetch.mockClear();
-    expect(await reader.read(request)).toMatchObject({ provider: 'sina', currency: 'USD', priceBasis: 'stock' });
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(await reader.read(request)).toMatchObject({ provider: 'binance', currency: 'USDT', priceBasis: 'perpetual_mark' });
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
   it('keeps the newest stale stock quote if Binance does not list the ticker, and respects a pinned source', async () => {
     const fetch = vi.fn(async (input: string | URL | Request) => {
@@ -132,11 +132,12 @@ it('polls in the backend, triggers and delivers once, observes frequency changes
     await vi.advanceTimersByTimeAsync(10_000); expect(deliveries).toHaveLength(1);
     const before = calls;
     await app.inject({ method: 'PATCH', url: `/api/v1/monitors/${monitor.id}`, headers, payload: { intervalSeconds: 60 } });
-    await vi.advanceTimersByTimeAsync(100); expect(calls).toBe(before + 1);
-    await vi.advanceTimersByTimeAsync(5_000); expect(calls).toBe(before + 1);
+    await vi.advanceTimersByTimeAsync(100); expect(calls).toBe(before);
+    await vi.advanceTimersByTimeAsync(5_000); expect(calls).toBe(before);
+    age = 3600_000;
+    await vi.advanceTimersByTimeAsync(120_000);
     const staleRule = await app.inject({ method: 'POST', url: '/api/v1/rules', headers, payload: { monitorId: monitor.id, name: '陈旧价格不得触发', enabled: true, combinator: 'and', conditions: [{ metric: 'price', labels: {}, operator: 'lte', threshold: '250', hysteresis: '0' }], durationSeconds: 0, cooldownSeconds: 0, severity: 'warning', notificationIntegrationIds: [notification.id] } });
     expect(staleRule.statusCode).toBe(201);
-    age = 3600_000;
     await vi.advanceTimersByTimeAsync(60_000);
     expect((await app.inject({ method: 'GET', url: `/api/v1/monitors/${monitor.id}/snapshot`, headers })).json<{status:string}>().status).toBe('stale');
     expect(deliveries).toHaveLength(1);

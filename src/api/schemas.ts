@@ -53,7 +53,7 @@ export const stockPriceMonitorConfigSchema = z.object({
   symbol: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)*$/u).max(20),
   provider: z.enum(['auto', 'sina', 'yahoo', 'binance']).default('auto'),
   includeExtended: z.boolean().default(true),
-}).strict();
+}).strict().transform((config) => ({ ...config, provider: 'auto' as const, includeExtended: true }));
 
 export const marketMonitorConfigSchema = z.object({
   integrationId: z.string().min(1),
